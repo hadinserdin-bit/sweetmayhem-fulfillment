@@ -204,27 +204,261 @@ for k, v in _defaults.items():
 
 st.markdown("""
 <style>
-[data-testid="stSidebar"] { background: #fdf0f5; }
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300&family=Inter:wght@300;400;500;600&display=swap');
+
+/* ── Base ── */
+html, body, [data-testid="stAppViewContainer"] {
+    font-family: 'Inter', sans-serif;
+    background: #faf8f6;
+    color: #1c1c1c;
+}
+[data-testid="stAppViewContainer"] > .main {
+    background: #faf8f6;
+}
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    background: #fff9fb !important;
+    border-right: 1px solid #f2e4ea;
+}
+[data-testid="stSidebarContent"] {
+    padding: 2rem 1.4rem;
+}
+.sidebar-brand {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 1.35rem;
+    font-weight: 500;
+    color: #a8265e;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.2rem;
+}
+.sidebar-tagline {
+    font-size: 0.68rem;
+    color: #b88fa0;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 1.8rem;
+}
+[data-testid="stSidebar"] .stRadio > label {
+    font-size: 0.78rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #888;
+    margin-bottom: 0.5rem;
+}
+[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label {
+    font-size: 0.82rem !important;
+    font-weight: 400 !important;
+    letter-spacing: 0.04em !important;
+    text-transform: none !important;
+    color: #3a3a3a !important;
+    padding: 0.4rem 0 !important;
+}
+[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:hover {
+    color: #a8265e !important;
+}
+[data-testid="stSidebar"] hr {
+    border-color: #f2e4ea;
+    margin: 1.2rem 0;
+}
+
+/* ── Buttons ── */
+.stButton > button {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+    border-radius: 4px !important;
+    padding: 0.6rem 1.6rem !important;
+    transition: all 0.2s ease !important;
+    border: 1.5px solid #c2185b !important;
+    color: #c2185b !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+.stButton > button:hover {
+    background: #c2185b !important;
+    color: white !important;
+}
+.stButton > button[kind="primary"] {
+    background: #c2185b !important;
+    color: white !important;
+    border-color: #c2185b !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: #a8265e !important;
+    border-color: #a8265e !important;
+}
+
+/* ── Inputs ── */
+.stTextInput input,
+.stTextArea textarea,
+.stNumberInput input {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 0.88rem !important;
+    border-radius: 4px !important;
+    border: 1px solid #e0d0d6 !important;
+    background: #fff !important;
+    color: #1c1c1c !important;
+}
+.stTextInput input:focus,
+.stTextArea textarea:focus {
+    border-color: #c2185b !important;
+    box-shadow: 0 0 0 2px rgba(194,24,91,0.08) !important;
+}
+.stSelectbox > div > div {
+    border-radius: 4px !important;
+    border: 1px solid #e0d0d6 !important;
+    font-size: 0.88rem !important;
+}
+label[data-testid="stWidgetLabel"] p {
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    color: #888 !important;
+}
+
+/* ── Tabs ── */
+.stTabs [data-testid="stTab"] {
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    color: #888 !important;
+}
+.stTabs [data-testid="stTab"][aria-selected="true"] {
+    color: #c2185b !important;
+    border-bottom-color: #c2185b !important;
+}
+
+/* ── File uploader ── */
+[data-testid="stFileUploader"] {
+    border: 1.5px dashed #e0d0d6 !important;
+    border-radius: 8px !important;
+    background: #fff !important;
+    padding: 1rem !important;
+}
+
+/* ── Dataframe ── */
+[data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+
+/* ── Alerts ── */
+[data-testid="stAlert"] {
+    border-radius: 6px !important;
+    font-size: 0.88rem !important;
+}
+
+/* ── Checkbox ── */
+.stCheckbox label p {
+    font-size: 0.85rem !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+    font-weight: 400 !important;
+    color: #1c1c1c !important;
+}
+
+/* ── Divider ── */
+hr { border-color: #f0e4e8 !important; }
+
+/* ── Brand header ── */
 .brand-header {
-    background: linear-gradient(135deg, #d63384 0%, #a8265e 100%);
-    border-radius: 12px; padding: 1.2rem 1.8rem; margin-bottom: 1.5rem;
+    background: linear-gradient(135deg, #c2185b 0%, #880e4f 100%);
+    border-radius: 6px;
+    padding: 2rem 2.4rem 1.8rem;
+    margin-bottom: 2rem;
+    position: relative;
+    overflow: hidden;
 }
-.brand-header h1 { color: white; margin: 0; font-size: 1.7rem; }
-.brand-header p  { color: #f5c6db; margin: 0.2rem 0 0; font-size: 0.9rem; }
+.brand-header::after {
+    content: '';
+    position: absolute;
+    top: -40px; right: -40px;
+    width: 180px; height: 180px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.04);
+}
+.brand-header-eyebrow {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.55);
+    margin: 0 0 0.4rem;
+}
+.brand-header h1 {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 2.4rem;
+    font-weight: 300;
+    color: white;
+    margin: 0;
+    letter-spacing: 0.06em;
+    line-height: 1.1;
+}
+.brand-header p {
+    font-size: 0.75rem;
+    font-weight: 400;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.5);
+    margin: 0.6rem 0 0;
+}
+
+/* ── Stat cards ── */
 .stat {
-    background: white; border: 1px solid #dee2e6;
-    border-radius: 10px; padding: 1rem 1.4rem; text-align: center;
+    background: #fff;
+    border: 1px solid #f0e4e8;
+    border-radius: 6px;
+    padding: 1.4rem 1.6rem;
+    text-align: center;
+    box-shadow: 0 1px 4px rgba(168,38,94,0.04);
 }
-.stat .num { font-size: 2rem; font-weight: 700; margin: 0; }
-.stat .lbl { font-size: 0.72rem; color: #6c757d; margin: 0;
-             text-transform: uppercase; letter-spacing: .05em; }
+.stat .num {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 2.6rem;
+    font-weight: 400;
+    line-height: 1;
+    margin: 0;
+}
+.stat .lbl {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: #b0909e;
+    margin: 0.4rem 0 0;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+}
+
+/* ── Subheaders ── */
+h2 {
+    font-family: 'Cormorant Garamond', serif !important;
+    font-weight: 400 !important;
+    font-size: 1.6rem !important;
+    color: #1c1c1c !important;
+    letter-spacing: 0.02em !important;
+}
+h3 {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.12em !important;
+    text-transform: uppercase !important;
+    color: #888 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.markdown("### 🌸 Sweet Mayhem")
+    st.markdown("""
+    <p class="sidebar-brand">Sweet Mayhem</p>
+    <p class="sidebar-tagline">Fulfillment Studio</p>
+    """, unsafe_allow_html=True)
     page = st.radio(
         "Navigate",
         ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory"],
@@ -235,8 +469,9 @@ with st.sidebar:
 
 st.markdown("""
 <div class="brand-header">
-  <h1>🌸 Sweet Mayhem</h1>
-  <p>Order Fulfillment Dashboard</p>
+  <p class="brand-header-eyebrow">Operations Dashboard</p>
+  <h1>Sweet Mayhem</h1>
+  <p>Order Fulfillment &amp; Inventory</p>
 </div>
 """, unsafe_allow_html=True)
 

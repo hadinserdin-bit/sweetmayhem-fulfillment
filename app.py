@@ -195,7 +195,6 @@ _defaults = dict(
     fulfillable=None, skipped=None, orig_inv=None, new_inv=None,
     ws=None, preview_done=False, removed=set(),
     fulfilled=False, report_buf=None, report_name=None,
-    dark_mode=False,
 )
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -203,39 +202,22 @@ for k, v in _defaults.items():
 
 # ─── CSS ──────────────────────────────────────────────────────────────────────
 
-if st.session_state.dark_mode:
-    _sidebar_bg    = "#1e1a2e"
-    _main_bg       = "#0e1117"
-    _card_bg       = "#1e1e2e"
-    _card_border   = "#3a3a5c"
-    _lbl_color     = "#a0a0c0"
-    _text_color    = "#e0e0f0"
-else:
-    _sidebar_bg    = "#fdf0f5"
-    _main_bg       = "#ffffff"
-    _card_bg       = "#ffffff"
-    _card_border   = "#dee2e6"
-    _lbl_color     = "#6c757d"
-    _text_color    = "#262730"
-
-st.markdown(f"""
+st.markdown("""
 <style>
-[data-testid="stAppViewContainer"] > .main {{ background: {_main_bg}; }}
-[data-testid="stSidebar"] {{ background: {_sidebar_bg}; }}
-[data-testid="stSidebar"] * {{ color: {_text_color} !important; }}
-.brand-header {{
+[data-testid="stSidebar"] { background: #fdf0f5; }
+.brand-header {
     background: linear-gradient(135deg, #d63384 0%, #a8265e 100%);
     border-radius: 12px; padding: 1.2rem 1.8rem; margin-bottom: 1.5rem;
-}}
-.brand-header h1 {{ color: white; margin: 0; font-size: 1.7rem; }}
-.brand-header p  {{ color: #f5c6db; margin: 0.2rem 0 0; font-size: 0.9rem; }}
-.stat {{
-    background: {_card_bg}; border: 1px solid {_card_border};
+}
+.brand-header h1 { color: white; margin: 0; font-size: 1.7rem; }
+.brand-header p  { color: #f5c6db; margin: 0.2rem 0 0; font-size: 0.9rem; }
+.stat {
+    background: white; border: 1px solid #dee2e6;
     border-radius: 10px; padding: 1rem 1.4rem; text-align: center;
-}}
-.stat .num {{ font-size: 2rem; font-weight: 700; margin: 0; }}
-.stat .lbl {{ font-size: 0.72rem; color: {_lbl_color}; margin: 0;
-             text-transform: uppercase; letter-spacing: .05em; }}
+}
+.stat .num { font-size: 2rem; font-weight: 700; margin: 0; }
+.stat .lbl { font-size: 0.72rem; color: #6c757d; margin: 0;
+             text-transform: uppercase; letter-spacing: .05em; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -243,11 +225,6 @@ st.markdown(f"""
 
 with st.sidebar:
     st.markdown("### 🌸 Sweet Mayhem")
-    _mode_label = "☀️ Light Mode" if st.session_state.dark_mode else "🌙 Dark Mode"
-    if st.button(_mode_label, use_container_width=True):
-        st.session_state.dark_mode = not st.session_state.dark_mode
-        st.rerun()
-    st.divider()
     page = st.radio(
         "Navigate",
         ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory"],

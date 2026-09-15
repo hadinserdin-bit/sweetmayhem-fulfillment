@@ -20,6 +20,34 @@ st.set_page_config(
     layout="wide",
 )
 
+# ─── Auth ─────────────────────────────────────────────────────────────────────
+
+def check_password():
+    if st.session_state.get("authenticated"):
+        return True
+    st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"] { background: #faf8f6; }
+    </style>
+    """, unsafe_allow_html=True)
+    col = st.columns([1, 1.2, 1])[1]
+    with col:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.markdown('<p style="font-family:\'Cormorant Garamond\',serif;font-size:2rem;font-weight:300;color:#c2185b;text-align:center;letter-spacing:0.06em">Sweet Mayhem</p>', unsafe_allow_html=True)
+        st.markdown('<p style="font-size:0.7rem;color:#b88fa0;text-align:center;letter-spacing:0.15em;text-transform:uppercase;margin-top:-1rem">Fulfillment Studio</p>', unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        pwd = st.text_input("Password", type="password", placeholder="Enter password")
+        if st.button("Sign In", type="primary", use_container_width=True):
+            if pwd == st.secrets["auth"]["password"]:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+    return False
+
+if not check_password():
+    st.stop()
+
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 SHEET_ID = "1t_L1qR3ikD-jjiA2P1tQETQ60hvR1nocX5AimPdSJ7o"

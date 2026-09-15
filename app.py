@@ -99,17 +99,27 @@ def fetch_shopify_orders():
 
 def shopify_fulfill_order(order_id):
     fo_resp = requests.get(f"{_SHOPIFY_BASE}/orders/{order_id}/fulfillment_orders.json", headers=_SHOPIFY_HEADERS)
-    fo_resp.raise_for_status()
+    if not fo_resp.ok:
+        raise Exception(f"Failed to get fulfillment orders: {fo_resp.status_code} {fo_resp.text}")
+    fulfillment_orders = fo_resp.json().get("fulfillment_orders", [])
+    SKIP = {"closed", "cancelled", "fulfilled", "incomplete"}
     fo_ids = [
         {"fulfillment_order_id": fo["id"]}
-        for fo in fo_resp.json()["fulfillment_orders"]
-        if fo["status"] == "open"
+        for fo in fulfillment_orders
+        if fo["status"] not in SKIP
     ]
     if not fo_ids:
-        return
-    payload = {"fulfillment": {"line_items_by_fulfillment_order": fo_ids}}
+        statuses = [fo["status"] for fo in fulfillment_orders]
+        raise Exception(f"No fulfillable fulfillment orders (statuses: {statuses})")
+    payload = {
+        "fulfillment": {
+            "line_items_by_fulfillment_order": fo_ids,
+            "notify_customer": False,
+        }
+    }
     f_resp = requests.post(f"{_SHOPIFY_BASE}/fulfillments.json", headers=_SHOPIFY_HEADERS, json=payload)
-    f_resp.raise_for_status()
+    if not f_resp.ok:
+        raise Exception(f"Fulfillment failed: {f_resp.status_code} {f_resp.text}")
 
 # ─── Logic ────────────────────────────────────────────────────────────────────
 

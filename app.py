@@ -252,6 +252,7 @@ _defaults = dict(
     fulfillable=None, skipped=None, orig_inv=None, new_inv=None,
     ws=None, preview_done=False, removed=set(),
     fulfilled=False, report_buf=None, report_name=None,
+    shopify_errors=[],
 )
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -624,15 +625,13 @@ if page == "📦 Fulfillment":
                             except Exception as e:
                                 errors.append(f"Inventory update failed: {e}")
 
+                        shopify_errs = []
                         with st.spinner("Marking orders as fulfilled in Shopify…"):
-                            shopify_ok, shopify_fail = 0, 0
                             for order in fulfillable:
                                 try:
                                     shopify_fulfill_order(order["id"])
-                                    shopify_ok += 1
                                 except Exception as e:
-                                    shopify_fail += 1
-                                    errors.append(f"{order['name']}: {e}")
+                                    shopify_errs.append(f"{order['name']}: {e}")
 
                         buf      = make_report(fulfillable)
                         date_str = datetime.now().strftime("%Y-%m-%d")
@@ -640,9 +639,8 @@ if page == "📦 Fulfillment":
                             fulfilled=True, preview_done=False,
                             report_buf=buf,
                             report_name=f"fulfilled_{date_str}.xlsx",
+                            shopify_errors=shopify_errs,
                         )
-                        if errors:
-                            st.warning("Completed with some issues:\n" + "\n".join(errors))
                         st.rerun()
 
         # Tab 2 — Skipped
@@ -674,7 +672,13 @@ if page == "📦 Fulfillment":
 
     # Post-fulfill download
     if st.session_state.fulfilled and st.session_state.report_buf:
-        st.success("✅ Orders marked as fulfilled in Shopify and inventory updated in Google Sheets.")
+        shopify_errors = st.session_state.get("shopify_errors", [])
+        if shopify_errors:
+            st.error("⚠️ Shopify fulfillment failed for some orders. See details below:")
+            for err in shopify_errors:
+                st.code(err)
+        else:
+            st.success("✅ Orders marked as fulfilled in Shopify and inventory updated in Google Sheets.")
         st.download_button(
             "📥 Download Fulfillment Report",
             data=st.session_state.report_buf,

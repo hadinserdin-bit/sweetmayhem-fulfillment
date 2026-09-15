@@ -5,6 +5,7 @@ Sweet Mayhem — Order Fulfillment Web App
 import streamlit as st
 import pandas as pd
 import gspread
+import requests
 from google.oauth2.service_account import Credentials
 from difflib import SequenceMatcher
 from datetime import datetime
@@ -63,6 +64,52 @@ def batch_update_qty(ws, updates):
         {"range": f"D{row}", "values": [[qty]]}
         for row, qty in updates
     ])
+
+# ─── Shopify ──────────────────────────────────────────────────────────────────
+
+_SHOPIFY_STORE   = st.secrets["shopify"]["store"]
+_SHOPIFY_TOKEN   = st.secrets["shopify"]["access_token"]
+_SHOPIFY_VERSION = st.secrets["shopify"]["api_version"]
+_SHOPIFY_HEADERS = {"X-Shopify-Access-Token": _SHOPIFY_TOKEN, "Content-Type": "application/json"}
+_SHOPIFY_BASE    = f"https://{_SHOPIFY_STORE}/admin/api/{_SHOPIFY_VERSION}"
+
+def fetch_shopify_orders():
+    resp = requests.get(
+        f"{_SHOPIFY_BASE}/orders.json",
+        headers=_SHOPIFY_HEADERS,
+        params={"fulfillment_status": "unfulfilled", "status": "open", "limit": 250},
+    )
+    resp.raise_for_status()
+    orders = []
+    for o in resp.json()["orders"]:
+        items = [
+            {"name": li["name"], "quantity": li.get("fulfillable_quantity", li["quantity"])}
+            for li in o["line_items"]
+            if li.get("fulfillable_quantity", li["quantity"]) > 0
+        ]
+        if items:
+            orders.append({
+                "name": o["name"],
+                "id": o["id"],
+                "email": o.get("email", ""),
+                "created_at": o["created_at"],
+                "line_items": items,
+            })
+    return sorted(orders, key=lambda x: x["created_at"])
+
+def shopify_fulfill_order(order_id):
+    fo_resp = requests.get(f"{_SHOPIFY_BASE}/orders/{order_id}/fulfillment_orders.json", headers=_SHOPIFY_HEADERS)
+    fo_resp.raise_for_status()
+    fo_ids = [
+        {"fulfillment_order_id": fo["id"]}
+        for fo in fo_resp.json()["fulfillment_orders"]
+        if fo["status"] == "open"
+    ]
+    if not fo_ids:
+        return
+    payload = {"fulfillment": {"line_items_by_fulfillment_order": fo_ids}}
+    f_resp = requests.post(f"{_SHOPIFY_BASE}/fulfillments.json", headers=_SHOPIFY_HEADERS, json=payload)
+    f_resp.raise_for_status()
 
 # ─── Logic ────────────────────────────────────────────────────────────────────
 
@@ -481,29 +528,21 @@ st.markdown("""
 
 if page == "📦 Fulfillment":
 
-    uploaded = st.file_uploader(
-        "Upload your Shopify orders export (.xlsx or .csv)",
-        type=["xlsx", "csv"],
-    )
-
     c1, c2 = st.columns(2)
-    preview_btn = c1.button("🔍 Preview  (no changes)", use_container_width=True)
-    fulfill_btn = c2.button("✅ Fulfill Orders", use_container_width=True, type="primary")
+    fetch_btn   = c1.button("🔄 Fetch from Shopify", use_container_width=True)
+    preview_btn = c2.button("🔍 Preview  (no changes)", use_container_width=True, disabled=not st.session_state.preview_done and st.session_state.fulfillable is None)
 
     st.divider()
 
-    # ── Run logic ─────────────────────────────────────────────────────────────
+    # ── Fetch orders from Shopify ──────────────────────────────────────────────
 
-    if preview_btn or fulfill_btn:
-        if not uploaded:
-            st.error("Please upload an orders file first.")
-            st.stop()
-        with st.spinner("Loading inventory from Google Sheets…"):
+    if fetch_btn:
+        with st.spinner("Fetching unfulfilled orders from Shopify…"):
             try:
-                inv, ws = load_inventory()
-                orders = load_orders(uploaded)
+                inv, ws  = load_inventory()
+                orders   = fetch_shopify_orders()
                 if not orders:
-                    st.warning("No unfulfilled orders found in this file.")
+                    st.warning("No unfulfilled orders found in Shopify.")
                     st.stop()
                 fulfillable, skipped, new_inv = determine_fulfillable(orders, inv)
                 st.session_state.update(
@@ -512,6 +551,7 @@ if page == "📦 Fulfillment":
                     preview_done=True, removed=set(),
                     fulfilled=False, report_buf=None,
                 )
+                st.success(f"Loaded {len(orders)} unfulfilled order(s) from Shopify.")
             except Exception as e:
                 st.error(str(e))
                 st.stop()
@@ -566,20 +606,34 @@ if page == "📦 Fulfillment":
                 )
                 if confirm:
                     if st.button("✅ Fulfill These Orders", type="primary", use_container_width=True):
-                        with st.spinner("Updating Google Sheets inventory…"):
+                        errors = []
+                        with st.spinner("Updating inventory in Google Sheets…"):
                             try:
                                 updates = [(orig_inv[k]["row"], cur_inv[k]["qty"]) for k in changes]
                                 batch_update_qty(st.session_state.ws, updates)
-                                buf = make_report(fulfillable)
-                                date_str = datetime.now().strftime("%Y-%m-%d")
-                                st.session_state.update(
-                                    fulfilled=True, preview_done=False,
-                                    report_buf=buf,
-                                    report_name=f"to_fulfill_{date_str}.xlsx",
-                                )
-                                st.rerun()
                             except Exception as e:
-                                st.error(str(e))
+                                errors.append(f"Inventory update failed: {e}")
+
+                        with st.spinner("Marking orders as fulfilled in Shopify…"):
+                            shopify_ok, shopify_fail = 0, 0
+                            for order in fulfillable:
+                                try:
+                                    shopify_fulfill_order(order["id"])
+                                    shopify_ok += 1
+                                except Exception as e:
+                                    shopify_fail += 1
+                                    errors.append(f"{order['name']}: {e}")
+
+                        buf      = make_report(fulfillable)
+                        date_str = datetime.now().strftime("%Y-%m-%d")
+                        st.session_state.update(
+                            fulfilled=True, preview_done=False,
+                            report_buf=buf,
+                            report_name=f"fulfilled_{date_str}.xlsx",
+                        )
+                        if errors:
+                            st.warning("Completed with some issues:\n" + "\n".join(errors))
+                        st.rerun()
 
         # Tab 2 — Skipped
         with tab2:
@@ -610,7 +664,7 @@ if page == "📦 Fulfillment":
 
     # Post-fulfill download
     if st.session_state.fulfilled and st.session_state.report_buf:
-        st.success("✅ Orders fulfilled! Inventory updated in Google Sheets.")
+        st.success("✅ Orders marked as fulfilled in Shopify and inventory updated in Google Sheets.")
         st.download_button(
             "📥 Download Fulfillment Report",
             data=st.session_state.report_buf,

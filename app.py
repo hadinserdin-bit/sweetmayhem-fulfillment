@@ -101,6 +101,22 @@ _SHOPIFY_VERSION = st.secrets["shopify"]["api_version"]
 _SHOPIFY_HEADERS = {"X-Shopify-Access-Token": _SHOPIFY_TOKEN, "Content-Type": "application/json"}
 _SHOPIFY_BASE    = f"https://{_SHOPIFY_STORE}/admin/api/{_SHOPIFY_VERSION}"
 
+def _parse_order(o):
+    items = [
+        {"name": li["name"], "quantity": li.get("fulfillable_quantity", li["quantity"])}
+        for li in o["line_items"]
+        if li.get("fulfillable_quantity", li["quantity"]) > 0
+    ]
+    if not items:
+        return None
+    return {
+        "name": o["name"],
+        "id": o["id"],
+        "email": o.get("email", ""),
+        "created_at": o["created_at"],
+        "line_items": items,
+    }
+
 def fetch_shopify_orders():
     resp = requests.get(
         f"{_SHOPIFY_BASE}/orders.json",
@@ -108,22 +124,25 @@ def fetch_shopify_orders():
         params={"fulfillment_status": "unfulfilled", "status": "open", "limit": 250},
     )
     resp.raise_for_status()
-    orders = []
-    for o in resp.json()["orders"]:
-        items = [
-            {"name": li["name"], "quantity": li.get("fulfillable_quantity", li["quantity"])}
-            for li in o["line_items"]
-            if li.get("fulfillable_quantity", li["quantity"]) > 0
-        ]
-        if items:
-            orders.append({
-                "name": o["name"],
-                "id": o["id"],
-                "email": o.get("email", ""),
-                "created_at": o["created_at"],
-                "line_items": items,
-            })
-    return sorted(orders, key=lambda x: x["created_at"])
+    orders = [_parse_order(o) for o in resp.json()["orders"]]
+    return sorted([o for o in orders if o], key=lambda x: x["created_at"])
+
+def fetch_shopify_order_by_name(order_name):
+    name = order_name.strip().lstrip("#")
+    resp = requests.get(
+        f"{_SHOPIFY_BASE}/orders.json",
+        headers=_SHOPIFY_HEADERS,
+        params={"name": f"#{name}", "status": "any", "limit": 5},
+    )
+    resp.raise_for_status()
+    results = resp.json().get("orders", [])
+    if not results:
+        raise Exception(f"Order #{name} not found in Shopify.")
+    o = results[0]
+    parsed = _parse_order(o)
+    if not parsed:
+        raise Exception(f"Order #{name} has no unfulfilled items.")
+    return [parsed]
 
 def shopify_fulfill_order(order_id):
     fo_resp = requests.get(f"{_SHOPIFY_BASE}/orders/{order_id}/fulfillment_orders.json", headers=_SHOPIFY_HEADERS)
@@ -568,8 +587,12 @@ st.markdown("""
 if page == "📦 Fulfillment":
 
     c1, c2 = st.columns(2)
-    fetch_btn   = c1.button("🔄 Fetch from Shopify", use_container_width=True)
+    fetch_btn   = c1.button("🔄 Fetch All Unfulfilled", use_container_width=True)
     preview_btn = c2.button("🔍 Preview  (no changes)", use_container_width=True, disabled=not st.session_state.preview_done and st.session_state.fulfillable is None)
+
+    sc1, sc2 = st.columns([3, 1])
+    order_input = sc1.text_input("", placeholder="Order number e.g. 17234", label_visibility="collapsed")
+    single_btn  = sc2.button("🔍 Fetch Order", use_container_width=True)
 
     st.divider()
 
@@ -591,6 +614,26 @@ if page == "📦 Fulfillment":
                     fulfilled=False, report_buf=None,
                 )
                 st.success(f"Loaded {len(orders)} unfulfilled order(s) from Shopify.")
+            except Exception as e:
+                st.error(str(e))
+                st.stop()
+
+    if single_btn:
+        if not order_input.strip():
+            st.warning("Enter an order number first.")
+            st.stop()
+        with st.spinner(f"Fetching order #{order_input.strip().lstrip('#')} from Shopify…"):
+            try:
+                inv, ws  = load_inventory()
+                orders   = fetch_shopify_order_by_name(order_input)
+                fulfillable, skipped, new_inv = determine_fulfillable(orders, inv)
+                st.session_state.update(
+                    fulfillable=fulfillable, skipped=skipped,
+                    orig_inv=inv, new_inv=new_inv, ws=ws,
+                    preview_done=True, removed=set(),
+                    fulfilled=False, report_buf=None,
+                )
+                st.success(f"Loaded order {orders[0]['name']} from Shopify.")
             except Exception as e:
                 st.error(str(e))
                 st.stop()

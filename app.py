@@ -197,6 +197,11 @@ _SHOPIFY_VERSION = st.secrets["shopify"]["api_version"]
 _SHOPIFY_HEADERS = {"X-Shopify-Access-Token": _SHOPIFY_TOKEN, "Content-Type": "application/json"}
 _SHOPIFY_BASE    = f"https://{_SHOPIFY_STORE}/admin/api/{_SHOPIFY_VERSION}"
 
+def _order_phone(o):
+    shipping = o.get("shipping_address") or {}
+    customer = o.get("customer") or {}
+    return (shipping.get("phone") or o.get("phone") or customer.get("phone") or "").strip()
+
 def _parse_order(o):
     items = [
         {"name": li["name"], "quantity": li.get("fulfillable_quantity", li["quantity"])}
@@ -209,6 +214,7 @@ def _parse_order(o):
         "name": o["name"],
         "id": o["id"],
         "email": o.get("email", ""),
+        "phone": _order_phone(o),
         "created_at": o["created_at"],
         "line_items": items,
     }
@@ -312,9 +318,11 @@ def load_orders(file):
     for _, row in df_u.iterrows():
         name = str(row["Name"]).strip()
         if name not in orders:
+            phone = str(row.get("Shipping Phone") or row.get("Phone") or "").strip()
             orders[name] = {
                 "name": name,
                 "email": str(row.get("Email", "")).strip(),
+                "phone": "" if phone.lower() == "nan" else phone,
                 "created_at": str(row.get("Created at", "")).strip(),
                 "line_items": [],
             }
@@ -380,6 +388,7 @@ def make_report(fulfillable):
                 "Order #": o["name"],
                 "Created At": o["created_at"],
                 "Email": o["email"],
+                "Phone": o.get("phone") or "MISSING",
                 "Item": item["name"],
                 "Qty": item["quantity"],
                 "Action": "Fulfill in Shopify",
@@ -891,11 +900,14 @@ if page == "📦 Fulfillment":
         cur_inv  = recalc_inv(orig_inv, fulfillable)
         changes  = [k for k in orig_inv if cur_inv.get(k, {}).get("qty") != orig_inv[k]["qty"]]
 
+        no_phone_count = sum(1 for o in fulfillable if not o.get("phone"))
+
         # Stat cards
-        sc1, sc2, sc3 = st.columns(3)
+        sc1, sc2, sc3, sc4 = st.columns(4)
         sc1.markdown(f'<div class="stat"><p class="num" style="color:#198754">{len(fulfillable)}</p><p class="lbl">Ready to fulfill</p></div>', unsafe_allow_html=True)
         sc2.markdown(f'<div class="stat"><p class="num" style="color:#e07b00">{len(skipped)}</p><p class="lbl">Skipped</p></div>', unsafe_allow_html=True)
         sc3.markdown(f'<div class="stat"><p class="num" style="color:#0d6efd">{len(changes)}</p><p class="lbl">Inventory changes</p></div>', unsafe_allow_html=True)
+        sc4.markdown(f'<div class="stat"><p class="num" style="color:#dc3545">{no_phone_count}</p><p class="lbl">No Phone Number</p></div>', unsafe_allow_html=True)
         st.markdown("")
 
         tab1, tab2, tab3 = st.tabs(["✅ To Fulfill", "⚠️ Skipped", "📊 Inventory Changes"])
@@ -905,23 +917,36 @@ if page == "📦 Fulfillment":
             if not fulfillable:
                 st.info("No fulfillable orders (or all removed).")
             else:
+                no_phone = [o for o in fulfillable if not o.get("phone")]
+                if no_phone:
+                    names = ", ".join(f"`{o['name']}`" for o in no_phone)
+                    st.warning(
+                        f"📵 {len(no_phone)} order(s) have no phone number on file — carriers can "
+                        f"fail delivery without one: {names}"
+                    )
+
                 st.caption("Click ✕ to remove an order from this run before fulfilling.")
-                hc = st.columns([2, 2, 5, 1])
+                hc = st.columns([2, 2, 1.3, 4, 1])
                 hc[0].markdown("**Order #**")
                 hc[1].markdown("**Date**")
-                hc[2].markdown("**Items**")
-                hc[3].markdown("**Remove**")
+                hc[2].markdown("**Phone**")
+                hc[3].markdown("**Items**")
+                hc[4].markdown("**Remove**")
 
                 for order in fulfillable:
                     date = order["created_at"][:10] if len(order["created_at"]) >= 10 else order["created_at"]
                     items_str = "  ·  ".join(
                         f"{i['name']} ×{i['quantity']}" for i in order["line_items"]
                     )
-                    rc = st.columns([2, 2, 5, 1])
+                    rc = st.columns([2, 2, 1.3, 4, 1])
                     rc[0].markdown(f"`{order['name']}`")
                     rc[1].markdown(date)
-                    rc[2].markdown(items_str)
-                    if rc[3].button("✕", key=f"rm_{order['name']}"):
+                    if order.get("phone"):
+                        rc[2].markdown("✅")
+                    else:
+                        rc[2].markdown(":red[⚠️ Missing]")
+                    rc[3].markdown(items_str)
+                    if rc[4].button("✕", key=f"rm_{order['name']}"):
                         st.session_state.removed.add(order["name"])
                         st.rerun()
 

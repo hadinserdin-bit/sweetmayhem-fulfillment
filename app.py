@@ -8,9 +8,10 @@ import gspread
 import requests
 from google.oauth2.service_account import Credentials
 from difflib import SequenceMatcher
-from datetime import datetime
+from datetime import datetime, timedelta
 from copy import deepcopy
 import io
+import math
 
 # ─── Page Config ─────────────────────────────────────────────────────────────
 
@@ -293,6 +294,141 @@ def make_report(fulfillable):
     buf.seek(0)
     return buf
 
+# ─── Demand & Reorder ─────────────────────────────────────────────────────────
+
+SNAPSHOT_SHEET_NAME = "InventorySnapshots"
+MIN_TRACKED_DAYS = 5  # minimum days of stock-history before trusting the adjusted rate
+
+def get_snapshot_ws():
+    sh = _gc().open_by_key(SHEET_ID)
+    try:
+        return sh.worksheet(SNAPSHOT_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=SNAPSHOT_SHEET_NAME, rows=1000, cols=5)
+        ws.append_row(["Date", "Product", "Color", "Size", "Qty"])
+        return ws
+
+def record_snapshot_if_needed(inv):
+    """Log today's stock level per variant, once per day."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    ws = get_snapshot_ws()
+    existing_dates = set(ws.col_values(1))
+    if today in existing_dates:
+        return False
+    rows = [[today, v["product"], v["color"], v["size"], v["qty"]] for v in inv.values()]
+    if rows:
+        ws.append_rows(rows)
+    return True
+
+@st.cache_data(ttl=600)
+def load_snapshots():
+    ws = get_snapshot_ws()
+    data = ws.get_all_values()
+    records = []
+    for row in data[1:]:
+        if len(row) < 5:
+            continue
+        date_s, p, c, s, q = row[0].strip(), row[1].strip(), row[2].strip(), row[3].strip(), row[4]
+        try:
+            qty = int(q)
+        except (ValueError, TypeError):
+            continue
+        if not date_s or not p:
+            continue
+        records.append((date_s, p.lower(), c.lower(), s.lower(), qty))
+    return records
+
+def compute_stock_days(records, window_days):
+    """Per variant key: which dates (within window) were tracked, and which had stock > 0."""
+    cutoff = (datetime.now() - timedelta(days=window_days)).strftime("%Y-%m-%d")
+    per_key = {}
+    for date_s, p, c, s, qty in records:
+        if date_s < cutoff:
+            continue
+        key = (p, c, s)
+        d = per_key.setdefault(key, {"tracked": set(), "in_stock": set()})
+        d["tracked"].add(date_s)
+        if qty > 0:
+            d["in_stock"].add(date_s)
+    return per_key
+
+@st.cache_data(ttl=1800)
+def fetch_shopify_sales(days):
+    """All non-cancelled orders created in the last `days` days."""
+    since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"{_SHOPIFY_BASE}/orders.json"
+    params = {
+        "status": "any",
+        "created_at_min": since,
+        "limit": 250,
+        "fields": "id,created_at,cancelled_at,line_items",
+    }
+    orders = []
+    while url:
+        resp = requests.get(url, headers=_SHOPIFY_HEADERS, params=params)
+        resp.raise_for_status()
+        orders.extend(resp.json().get("orders", []))
+        next_url = None
+        for part in resp.headers.get("Link", "").split(","):
+            if 'rel="next"' in part and "<" in part:
+                next_url = part[part.find("<") + 1:part.find(">")]
+        url, params = next_url, None
+    return [o for o in orders if not o.get("cancelled_at")]
+
+def aggregate_sales(orders, inv):
+    """Units sold per inventory key, matched the same way fulfillment matches line items."""
+    sold, unmatched = {}, 0
+    for o in orders:
+        for li in o.get("line_items", []):
+            qty = li.get("quantity", 0)
+            p, c, s = parse_lineitem_name(li.get("name", ""))
+            k = find_key(inv, p, c, s) if p and c and s else None
+            if k is None:
+                unmatched += qty
+                continue
+            sold[k] = sold.get(k, 0) + qty
+    return sold, unmatched
+
+def build_reorder_table(inv, sold, stock_days, window_days, lead_time, coverage_days):
+    rows = []
+    for key, v in inv.items():
+        total_sold = sold.get(key, 0)
+        sd = stock_days.get(key, {"tracked": set(), "in_stock": set()})
+        days_tracked, days_in_stock = len(sd["tracked"]), len(sd["in_stock"])
+        days_oos = days_tracked - days_in_stock
+        cur_qty = max(0, v["qty"])
+
+        adjusted = days_tracked >= MIN_TRACKED_DAYS and days_in_stock > 0
+        if adjusted:
+            daily_demand = total_sold / days_in_stock
+        else:
+            daily_demand = total_sold / window_days
+
+        days_left = (cur_qty / daily_demand) if daily_demand > 0 else float("inf")
+        reorder_qty = max(0, math.ceil(daily_demand * coverage_days) - cur_qty)
+
+        if v["qty"] <= 0:
+            status = "🔴 Out of Stock"
+        elif days_left <= lead_time:
+            status = "🟠 Reorder Now"
+        elif days_left <= lead_time + 7:
+            status = "🟡 Reorder Soon"
+        else:
+            status = "🟢 OK"
+
+        rows.append({
+            "Product": v["product"], "Color": v["color"], "Size": v["size"],
+            "Current Qty": v["qty"],
+            "Units Sold": total_sold,
+            "Days OOS (window)": days_oos,
+            "Daily Demand": round(daily_demand, 2),
+            "Days Left": float("inf") if daily_demand == 0 else round(days_left, 1),
+            "Reorder Qty": reorder_qty,
+            "Status": status,
+            "Confidence": "Adjusted" if adjusted else "Raw (building history)",
+        })
+    return pd.DataFrame(rows)
+
 # ─── Session State ────────────────────────────────────────────────────────────
 
 _defaults = dict(
@@ -566,7 +702,7 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     page = st.radio(
         "Navigate",
-        ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory"],
+        ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder"],
         label_visibility="collapsed",
     )
 
@@ -901,3 +1037,99 @@ elif page == "📋 View Inventory":
 
     except Exception as e:
         st.error(f"Could not load inventory: {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE: DEMAND & REORDER
+# ─────────────────────────────────────────────────────────────────────────────
+
+elif page == "📊 Demand & Reorder":
+    st.subheader("Demand & Reorder Suggestions")
+    st.caption(
+        "Sales velocity is adjusted for the days each item was actually out of stock, "
+        "so a stock-out doesn't make demand look lower than it really is. Stock levels "
+        "are logged automatically each time you open this page — accuracy improves the "
+        "more often it's checked."
+    )
+
+    c1, c2, c3 = st.columns(3)
+    window_days = c1.number_input("Sales window (days)", min_value=14, max_value=365, value=90, step=1)
+    lead_time = c2.slider("Lead time (days)", min_value=5, max_value=21, value=9,
+                           help="Sweet Mayhem's supplier lead time is ~7–10 days.")
+    coverage_days = c3.number_input("Target stock coverage (days)", min_value=5, max_value=90, value=25, step=1,
+                                     help="Reorder quantity tops stock up to cover this many days of demand.")
+
+    try:
+        with st.spinner("Loading inventory & recording today's stock snapshot…"):
+            inv, _ = load_inventory()
+            recorded_today = record_snapshot_if_needed(inv)
+            if recorded_today:
+                load_snapshots.clear()
+
+        with st.spinner("Fetching sales history from Shopify…"):
+            orders = fetch_shopify_sales(days=window_days)
+            sold, unmatched = aggregate_sales(orders, inv)
+
+        records = load_snapshots()
+        stock_days = compute_stock_days(records, window_days)
+
+        tracked_counts = [len(v["tracked"]) for v in stock_days.values()]
+        max_tracked = max(tracked_counts) if tracked_counts else 0
+        if max_tracked < MIN_TRACKED_DAYS:
+            st.info(
+                f"📅 {max_tracked} day(s) of stock-history recorded so far. Demand is shown as a "
+                f"raw average (unadjusted) until {MIN_TRACKED_DAYS} days are tracked — check back "
+                f"as the history builds up."
+            )
+        else:
+            st.info(f"📅 {max_tracked} day(s) of stock-history recorded — adjusted figures below where available.")
+
+        df = build_reorder_table(inv, sold, stock_days, window_days, lead_time, coverage_days)
+
+        s1, s2, s3, s4 = st.columns(4)
+        s1.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="🟠 Reorder Now").sum()}</p><p class="lbl">Reorder Now</p></div>', unsafe_allow_html=True)
+        s2.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="🟡 Reorder Soon").sum()}</p><p class="lbl">Reorder Soon</p></div>', unsafe_allow_html=True)
+        s3.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="🔴 Out of Stock").sum()}</p><p class="lbl">Out of Stock</p></div>', unsafe_allow_html=True)
+        s4.markdown(f'<div class="stat"><p class="num">{int(df["Reorder Qty"].sum())}</p><p class="lbl">Units to Reorder</p></div>', unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        fc1, fc2 = st.columns(2)
+        status_options = df["Status"].unique().tolist()
+        status_filter = fc1.multiselect("Filter by Status", status_options, default=status_options)
+        products = ["All"] + sorted(df["Product"].unique().tolist())
+        prod_filter = fc2.selectbox("Filter by Product", products)
+
+        fdf = df[df["Status"].isin(status_filter)]
+        if prod_filter != "All":
+            fdf = fdf[fdf["Product"] == prod_filter]
+        fdf = fdf.sort_values("Days Left")
+
+        st.dataframe(
+            fdf,
+            use_container_width=True, hide_index=True,
+            column_config={"Days Left": st.column_config.NumberColumn(format="%.1f")},
+        )
+        st.caption(
+            f"{len(fdf)} variant(s) shown  |  Sales window: last {window_days} days  |  "
+            f"Lead time: {lead_time} days  |  Target coverage: {coverage_days} days"
+        )
+
+        if unmatched:
+            st.warning(
+                f"⚠️ {unmatched} sold unit(s) from Shopify orders couldn't be matched to an "
+                f"inventory item (unparseable or unrecognized line item names) and were excluded "
+                f"from demand calculations."
+            )
+
+        buf = io.BytesIO()
+        df.sort_values("Days Left").to_excel(buf, index=False)
+        buf.seek(0)
+        st.download_button(
+            "📥 Download Full Reorder Report",
+            data=buf,
+            file_name=f"reorder_report_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+    except Exception as e:
+        st.error(f"Could not compute demand & reorder data: {e}")

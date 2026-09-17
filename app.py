@@ -338,12 +338,12 @@ def load_snapshots():
         records.append((date_s, p.lower(), c.lower(), s.lower(), qty))
     return records
 
-def compute_stock_days(records, window_days):
-    """Per variant key: which dates (within window) were tracked, and which had stock > 0."""
-    cutoff = (datetime.now() - timedelta(days=window_days)).strftime("%Y-%m-%d")
+def compute_stock_days(records, start_date, end_date):
+    """Per variant key: which dates (within [start_date, end_date]) were tracked, and which had stock > 0."""
+    start_s, end_s = start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
     per_key = {}
     for date_s, p, c, s, qty in records:
-        if date_s < cutoff:
+        if date_s < start_s or date_s > end_s:
             continue
         key = (p, c, s)
         d = per_key.setdefault(key, {"tracked": set(), "in_stock": set()})
@@ -353,13 +353,15 @@ def compute_stock_days(records, window_days):
     return per_key
 
 @st.cache_data(ttl=1800)
-def fetch_shopify_sales(days):
-    """All non-cancelled orders created in the last `days` days."""
-    since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def fetch_shopify_sales(start_date, end_date):
+    """All non-cancelled orders created between start_date and end_date (inclusive)."""
+    since = start_date.strftime("%Y-%m-%dT00:00:00Z")
+    until = end_date.strftime("%Y-%m-%dT23:59:59Z")
     url = f"{_SHOPIFY_BASE}/orders.json"
     params = {
         "status": "any",
         "created_at_min": since,
+        "created_at_max": until,
         "limit": 250,
         "fields": "id,created_at,cancelled_at,line_items",
     }
@@ -389,7 +391,8 @@ def aggregate_sales(orders, inv):
             sold[k] = sold.get(k, 0) + qty
     return sold, unmatched
 
-def build_reorder_table(inv, sold, stock_days, window_days, lead_time, coverage_days):
+def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days):
+    window_days = max(1, (end_date - start_date).days + 1)
     rows = []
     for key, v in inv.items():
         total_sold = sold.get(key, 0)
@@ -1051,12 +1054,22 @@ elif page == "📊 Demand & Reorder":
         "more often it's checked."
     )
 
-    c1, c2, c3 = st.columns(3)
-    window_days = c1.number_input("Sales window (days)", min_value=14, max_value=365, value=90, step=1)
-    lead_time = c2.slider("Lead time (days)", min_value=5, max_value=21, value=9,
+    today = datetime.now().date()
+    d1, d2, d3, d4 = st.columns([1, 1, 1, 1.2])
+    start_date = d1.date_input(
+        "Sales data from", value=today - timedelta(days=90),
+        max_value=today,
+        help="Set this to a product's launch date to exclude the period before it existed.",
+    )
+    end_date = d2.date_input("Sales data to", value=today, max_value=today)
+    lead_time = d3.slider("Lead time (days)", min_value=5, max_value=21, value=9,
                            help="Sweet Mayhem's supplier lead time is ~7–10 days.")
-    coverage_days = c3.number_input("Target stock coverage (days)", min_value=5, max_value=90, value=25, step=1,
+    coverage_days = d4.number_input("Target stock coverage (days)", min_value=5, max_value=90, value=25, step=1,
                                      help="Reorder quantity tops stock up to cover this many days of demand.")
+
+    if start_date > end_date:
+        st.error("'Sales data from' must be on or before 'Sales data to'.")
+        st.stop()
 
     try:
         with st.spinner("Loading inventory & recording today's stock snapshot…"):
@@ -1066,11 +1079,11 @@ elif page == "📊 Demand & Reorder":
                 load_snapshots.clear()
 
         with st.spinner("Fetching sales history from Shopify…"):
-            orders = fetch_shopify_sales(days=window_days)
+            orders = fetch_shopify_sales(start_date=start_date, end_date=end_date)
             sold, unmatched = aggregate_sales(orders, inv)
 
         records = load_snapshots()
-        stock_days = compute_stock_days(records, window_days)
+        stock_days = compute_stock_days(records, start_date, end_date)
 
         tracked_counts = [len(v["tracked"]) for v in stock_days.values()]
         max_tracked = max(tracked_counts) if tracked_counts else 0
@@ -1083,7 +1096,7 @@ elif page == "📊 Demand & Reorder":
         else:
             st.info(f"📅 {max_tracked} day(s) of stock-history recorded — adjusted figures below where available.")
 
-        df = build_reorder_table(inv, sold, stock_days, window_days, lead_time, coverage_days)
+        df = build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days)
 
         s1, s2, s3, s4 = st.columns(4)
         s1.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="🟠 Reorder Now").sum()}</p><p class="lbl">Reorder Now</p></div>', unsafe_allow_html=True)
@@ -1109,8 +1122,9 @@ elif page == "📊 Demand & Reorder":
             column_config={"Days Left": st.column_config.NumberColumn(format="%.1f")},
         )
         st.caption(
-            f"{len(fdf)} variant(s) shown  |  Sales window: last {window_days} days  |  "
-            f"Lead time: {lead_time} days  |  Target coverage: {coverage_days} days"
+            f"{len(fdf)} variant(s) shown  |  Sales data: {start_date.strftime('%b %d, %Y')} – "
+            f"{end_date.strftime('%b %d, %Y')}  |  Lead time: {lead_time} days  |  "
+            f"Target coverage: {coverage_days} days"
         )
 
         if unmatched:

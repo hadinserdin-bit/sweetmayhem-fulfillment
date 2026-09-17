@@ -1080,7 +1080,7 @@ elif page == "📊 Demand & Reorder":
 
         with st.spinner("Fetching sales history from Shopify…"):
             orders = fetch_shopify_sales(start_date=start_date, end_date=end_date)
-            sold, unmatched = aggregate_sales(orders, inv)
+            sold, _unmatched = aggregate_sales(orders, inv)
 
         records = load_snapshots()
         stock_days = compute_stock_days(records, start_date, end_date)
@@ -1127,12 +1127,6 @@ elif page == "📊 Demand & Reorder":
             f"Target coverage: {coverage_days} days"
         )
 
-        if unmatched:
-            st.warning(
-                f"⚠️ {unmatched} sold unit(s) from Shopify orders couldn't be matched to an "
-                f"inventory item (unparseable or unrecognized line item names) and were excluded "
-                f"from demand calculations."
-            )
 
         buf = io.BytesIO()
         df.sort_values("Days Left").to_excel(buf, index=False)

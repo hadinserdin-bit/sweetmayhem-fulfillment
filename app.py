@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from copy import deepcopy
 import io
 import math
+import bcrypt
 
 # ─── Page Config ─────────────────────────────────────────────────────────────
 
@@ -20,34 +21,6 @@ st.set_page_config(
     page_icon="🌸",
     layout="wide",
 )
-
-# ─── Auth ─────────────────────────────────────────────────────────────────────
-
-def check_password():
-    if st.session_state.get("authenticated"):
-        return True
-    st.markdown("""
-    <style>
-    [data-testid="stAppViewContainer"] { background: #faf8f6; }
-    </style>
-    """, unsafe_allow_html=True)
-    col = st.columns([1, 1.2, 1])[1]
-    with col:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown('<p style="font-family:\'Cormorant Garamond\',serif;font-size:2rem;font-weight:300;color:#c2185b;text-align:center;letter-spacing:0.06em">Sweet Mayhem</p>', unsafe_allow_html=True)
-        st.markdown('<p style="font-size:0.7rem;color:#b88fa0;text-align:center;letter-spacing:0.15em;text-transform:uppercase;margin-top:-1rem">Fulfillment Studio</p>', unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-        pwd = st.text_input("Password", type="password", placeholder="Enter password")
-        if st.button("Sign In", type="primary", use_container_width=True):
-            if pwd == st.secrets["auth"]["password"]:
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("Incorrect password.")
-    return False
-
-if not check_password():
-    st.stop()
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -68,6 +41,128 @@ def _gc():
 
 def get_ws():
     return _gc().open_by_key(SHEET_ID).get_worksheet(0)
+
+# ─── Users & Access Control ────────────────────────────────────────────────────
+
+USERS_SHEET_NAME = "Users"
+ALL_PAGES = ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder"]
+ADMIN_PAGE = "👤 Manage Users"
+
+def get_users_ws():
+    sh = _gc().open_by_key(SHEET_ID)
+    try:
+        return sh.worksheet(USERS_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=USERS_SHEET_NAME, rows=100, cols=5)
+        ws.append_row(["Username", "PasswordHash", "Role", "Permissions", "CreatedAt"])
+        return ws
+
+@st.cache_data(ttl=60)
+def load_users():
+    ws = get_users_ws()
+    data = ws.get_all_values()
+    users = {}
+    for i, row in enumerate(data[1:], start=2):
+        if len(row) < 4 or not row[0].strip():
+            continue
+        username = row[0].strip()
+        users[username.lower()] = {
+            "username": username,
+            "password_hash": row[1],
+            "role": row[2].strip().lower(),
+            "permissions": [p.strip() for p in row[3].split(",") if p.strip()],
+            "row": i,
+        }
+    return users
+
+def hash_password(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(password, password_hash):
+    try:
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    except (ValueError, TypeError):
+        return False
+
+def create_user(username, password, role, permissions):
+    ws = get_users_ws()
+    ws.append_row([
+        username, hash_password(password), role, ",".join(permissions),
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+    ])
+    load_users.clear()
+
+def update_user(row, role=None, permissions=None, password=None):
+    ws = get_users_ws()
+    if role is not None:
+        ws.update_cell(row, 3, role)
+    if permissions is not None:
+        ws.update_cell(row, 4, ",".join(permissions))
+    if password is not None:
+        ws.update_cell(row, 2, hash_password(password))
+    load_users.clear()
+
+def delete_user(row):
+    get_users_ws().delete_rows(row)
+    load_users.clear()
+
+def effective_pages(user):
+    if user["role"] == "admin":
+        return ALL_PAGES + [ADMIN_PAGE]
+    return [p for p in user["permissions"] if p in ALL_PAGES]
+
+# ─── Auth ─────────────────────────────────────────────────────────────────────
+
+def login_screen():
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"] { background: #faf8f6; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    users = load_users()
+
+    col = st.columns([1, 1.2, 1])[1]
+    with col:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.markdown('<p style="font-family:\'Cormorant Garamond\',serif;font-size:2rem;font-weight:300;color:#c2185b;text-align:center;letter-spacing:0.06em">Sweet Mayhem</p>', unsafe_allow_html=True)
+        st.markdown('<p style="font-size:0.7rem;color:#b88fa0;text-align:center;letter-spacing:0.15em;text-transform:uppercase;margin-top:-1rem">Fulfillment Studio</p>', unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        if not users:
+            st.info("No accounts exist yet. Create the first admin account to get started.")
+            new_user = st.text_input("Admin username")
+            new_pass = st.text_input("Admin password", type="password")
+            confirm = st.text_input("Confirm password", type="password")
+            if st.button("Create Admin Account", type="primary", use_container_width=True):
+                if not new_user.strip() or not new_pass:
+                    st.error("Username and password are required.")
+                elif new_pass != confirm:
+                    st.error("Passwords don't match.")
+                else:
+                    create_user(new_user.strip(), new_pass, "admin", ALL_PAGES)
+                    st.success("Admin account created — please sign in.")
+                    st.rerun()
+        else:
+            username = st.text_input("Username")
+            pwd = st.text_input("Password", type="password", placeholder="Enter password")
+            if st.button("Sign In", type="primary", use_container_width=True):
+                u = users.get(username.strip().lower())
+                if u and verify_password(pwd, u["password_hash"]):
+                    st.session_state.authenticated = True
+                    st.session_state.username = u["username"]
+                    st.session_state.role = u["role"]
+                    st.session_state.pages = effective_pages(u)
+                    st.rerun()
+                else:
+                    st.error("Incorrect username or password.")
+    return False
+
+if not login_screen():
+    st.stop()
 
 def load_inventory():
     ws = get_ws()
@@ -703,11 +798,20 @@ with st.sidebar:
     <p class="sidebar-brand">Sweet Mayhem</p>
     <p class="sidebar-tagline">Fulfillment Studio</p>
     """, unsafe_allow_html=True)
-    page = st.radio(
-        "Navigate",
-        ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder"],
-        label_visibility="collapsed",
-    )
+
+    my_pages = st.session_state.get("pages", [])
+    if not my_pages:
+        st.warning("Your account has no page access yet. Ask an admin to assign some.")
+        st.stop()
+
+    page = st.radio("Navigate", my_pages, label_visibility="collapsed")
+
+    st.divider()
+    st.caption(f"Signed in as **{st.session_state.username}**  ·  {st.session_state.role}")
+    if st.button("Sign Out", use_container_width=True):
+        for k in ("authenticated", "username", "role", "pages"):
+            st.session_state.pop(k, None)
+        st.rerun()
 
 # ─── Header ───────────────────────────────────────────────────────────────────
 
@@ -1127,7 +1231,6 @@ elif page == "📊 Demand & Reorder":
             f"Target coverage: {coverage_days} days"
         )
 
-
         buf = io.BytesIO()
         df.sort_values("Days Left").to_excel(buf, index=False)
         buf.seek(0)
@@ -1141,3 +1244,94 @@ elif page == "📊 Demand & Reorder":
 
     except Exception as e:
         st.error(f"Could not compute demand & reorder data: {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE: MANAGE USERS (admin only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+elif page == ADMIN_PAGE:
+    if st.session_state.role != "admin":
+        st.error("Admins only.")
+        st.stop()
+
+    st.subheader("Manage Users")
+    st.caption("Create accounts and control which pages each person can see. Only admins can reach this page.")
+
+    users = load_users()
+    admin_count = sum(1 for u in users.values() if u["role"] == "admin")
+
+    st.markdown("### Existing Users")
+    rows = [
+        {
+            "Username": u["username"],
+            "Role": u["role"],
+            "Page Access": "All" if u["role"] == "admin" else (", ".join(u["permissions"]) or "None"),
+        }
+        for u in users.values()
+    ]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.markdown("### Add New User")
+    with st.form("add_user_form", clear_on_submit=True):
+        new_username = st.text_input("Username")
+        new_password = st.text_input("Password", type="password")
+        new_role = st.selectbox("Role", ["user", "admin"])
+        new_perms = st.multiselect(
+            "Page Access", ALL_PAGES,
+            help="Ignored for admins — admins always have access to every page.",
+        )
+        submitted = st.form_submit_button("Create User", type="primary")
+        if submitted:
+            if not new_username.strip() or not new_password:
+                st.error("Username and password are required.")
+            elif new_username.strip().lower() in users:
+                st.error("That username already exists.")
+            else:
+                perms = ALL_PAGES if new_role == "admin" else new_perms
+                create_user(new_username.strip(), new_password, new_role, perms)
+                st.success(f"User '{new_username.strip()}' created.")
+                st.rerun()
+
+    st.divider()
+    st.markdown("### Edit or Remove a User")
+    if not users:
+        st.info("No users yet.")
+    else:
+        usernames = sorted(u["username"] for u in users.values())
+        sel = st.selectbox("Select a user", usernames)
+        u = users[sel.lower()]
+        is_self = sel.lower() == st.session_state.username.lower()
+        is_last_admin = u["role"] == "admin" and admin_count <= 1
+
+        with st.form("edit_user_form"):
+            role_options = ["user", "admin"]
+            edit_role = st.selectbox(
+                "Role", role_options, index=role_options.index(u["role"]) if u["role"] in role_options else 0,
+                disabled=is_last_admin,
+                help="The last remaining admin can't be demoted." if is_last_admin else None,
+            )
+            edit_perms = st.multiselect(
+                "Page Access", ALL_PAGES, default=[p for p in u["permissions"] if p in ALL_PAGES],
+                help="Ignored for admins — admins always have access to every page.",
+            )
+            new_pw = st.text_input("Reset Password (leave blank to keep current)", type="password")
+            save = st.form_submit_button("Save Changes", type="primary")
+            if save:
+                perms = ALL_PAGES if edit_role == "admin" else edit_perms
+                update_user(u["row"], role=edit_role, permissions=perms, password=new_pw or None)
+                if is_self:
+                    st.session_state.role = edit_role
+                    st.session_state.pages = effective_pages({"role": edit_role, "permissions": perms})
+                st.success(f"Updated '{u['username']}'.")
+                st.rerun()
+
+        if is_last_admin:
+            st.caption("Can't delete the last remaining admin.")
+        elif is_self:
+            st.caption("You can't delete your own account while signed in as it.")
+        else:
+            if st.button(f"🗑️ Delete '{u['username']}'", use_container_width=True):
+                delete_user(u["row"])
+                st.success(f"Deleted '{u['username']}'.")
+                st.rerun()

@@ -1,12 +1,13 @@
 <!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#f4f5f7;color:#1f232c}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <title>Cancelled Orders</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   /* Re-themed to match the Sweet Mayhem Fulfillment Studio app it's embedded
-     in (same rose accent, Cormorant Garamond + Inter, fixed light theme —
-     the host app doesn't support dark mode, so neither does this copy,
-     otherwise the two could mismatch on a dark-mode device). */
+     in (same red accent, Inter throughout, fixed light theme — the host app
+     doesn't support dark mode, so neither does this copy, otherwise the two
+     could mismatch on a dark-mode device). Re-sync this whenever the app's
+     own CSS block in app.py changes — it's iterating fast. */
   :root{
     --bg:#F4F5F7;
     --surface:#FFFFFF;
@@ -16,7 +17,7 @@
     --border:#E5E7EB;
     --accent:#E6394F;
     --accent-ink:#FFFFFF;
-    --accent-soft:#FDECEA;
+    --accent-soft:#FBE3E6;
     --good:#227A55;
     --good-soft:#DCEEE3;
     --warn:#966600;
@@ -26,8 +27,8 @@
     --info:#2A5C8A;
     --info-soft:#DCE7F1;
     --whatsapp:#1D8A4E;
-    --shadow: 0 1px 4px rgba(230,57,79,0.06);
-    --shadow-lg: 0 4px 16px rgba(230,57,79,0.14);
+    --shadow: 0 1px 3px rgba(0,0,0,0.04);
+    --shadow-lg: 0 4px 16px rgba(31,35,44,0.12);
     --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%236B6F7B' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
   }
 
@@ -42,24 +43,23 @@
     margin-inline:auto;
     -webkit-font-smoothing:antialiased;
   }
-  h1,h2,h3{font-family:"Cormorant Garamond",serif;font-weight:500;letter-spacing:0.01em;text-wrap:balance;margin:0}
+  h1,h2,h3{font-family:"Inter",sans-serif;font-weight:700;letter-spacing:0;text-wrap:balance;margin:0}
   .mono{font-family:ui-monospace,"SF Mono",monospace}
   .num{font-variant-numeric:tabular-nums}
 
   header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:26px;padding-bottom:20px;border-bottom:1px solid var(--border)}
   .brand{display:flex;align-items:center;gap:12px}
   .brand .mark{
-    width:42px;height:42px;border-radius:8px;flex:none;
-    background:linear-gradient(135deg, #E6394F 0%, #C72E42 100%);
-    color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:21px;
-    box-shadow:0 4px 14px -4px rgba(230,57,79,0.5);
+    width:34px;height:34px;border-radius:999px;flex:none;
+    background:var(--accent);
+    color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:16px;
   }
-  .brand h1{font-size:23px;font-weight:600}
+  .brand h1{font-size:20px;font-weight:700}
   .brand p{margin:2px 0 0;color:var(--muted);font-size:13px}
   .top-actions{display:flex;gap:8px;flex-wrap:wrap}
 
   button, .btn{
-    font:inherit;font-weight:600;font-size:13px;border-radius:9px;border:1px solid var(--border);
+    font:inherit;font-weight:600;font-size:13px;border-radius:6px;border:1px solid var(--border);
     background:var(--surface);color:var(--ink);padding:8px 14px;cursor:pointer;
     transition:border-color .15s ease, background .15s ease, box-shadow .15s ease, transform .1s ease;
   }
@@ -76,7 +76,7 @@
   .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
   .tile{background:var(--surface);border:1px solid var(--border);border-top:3px solid var(--border);border-radius:8px;padding:16px;box-shadow:var(--shadow)}
   .tile .label{font-size:11px;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);font-weight:600}
-  .tile .value{font-family:"Cormorant Garamond",serif;font-size:2.4rem;font-weight:600;margin-top:7px}
+  .tile .value{font-family:"Inter",sans-serif;font-size:2rem;font-weight:700;margin-top:7px}
   .tile .sub{font-size:12px;color:var(--muted);margin-top:3px}
   .tile.accent{border-top-color:var(--accent)}
   .tile.accent .value{color:var(--accent)}
@@ -171,7 +171,7 @@
 
 <header class="top">
   <div class="brand">
-    <div class="mark">🛟</div>
+    <div class="mark">🚫</div>
     <div>
       <h1>Cancelled Orders</h1>
       <p>Roadrunner cancellations → Khawla &amp; Sacha's follow-up queue</p>
@@ -274,7 +274,8 @@
 <script>
 (function(){
   "use strict";
-  var STORE_KEY = "saveDesk_v1";
+  var STORE_KEY = "cancelledOrders_v1";
+  var OLD_STORE_KEY = "saveDesk_v1";
   // The follow-up pipeline: 1st WhatsApp message -> phone call -> WhatsApp
   // coupon offer. At each stage a Yes/No decides "recovered?" — Yes locks
   // the case as recovered; No moves to the next stage; No at the last stage
@@ -306,6 +307,10 @@
     try{
       var raw = localStorage.getItem(STORE_KEY);
       if(raw) return JSON.parse(raw);
+      // One-time carryover from this tool's old name ("Save Desk") so
+      // renaming it doesn't look like every tracked order vanished.
+      var old = localStorage.getItem(OLD_STORE_KEY);
+      if(old) return JSON.parse(old);
     }catch(e){}
     return {orders:{}, settings:defaultSettings()};
   }

@@ -8,11 +8,14 @@ import gspread
 import requests
 from google.oauth2.service_account import Credentials
 from difflib import SequenceMatcher
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from copy import deepcopy
 import io
 import math
+import re
 import bcrypt
+import openpyxl
+from googleapiclient.discovery import build
 
 # ─── Page Config ─────────────────────────────────────────────────────────────
 
@@ -32,12 +35,18 @@ SCOPES = [
 
 # ─── Google Sheets ────────────────────────────────────────────────────────────
 
-@st.cache_resource
-def _gc():
+def _service_account_creds():
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    return gspread.authorize(creds)
+    return Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+
+@st.cache_resource
+def _gc():
+    return gspread.authorize(_service_account_creds())
+
+@st.cache_resource
+def _drive():
+    return build("drive", "v3", credentials=_service_account_creds())
 
 def get_ws():
     return _gc().open_by_key(SHEET_ID).get_worksheet(0)
@@ -45,8 +54,28 @@ def get_ws():
 # ─── Users & Access Control ────────────────────────────────────────────────────
 
 USERS_SHEET_NAME = "Users"
-ALL_PAGES = ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder"]
+ALL_PAGES = [
+    "📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder",
+    "🚢 Shipment Tracker", "🧾 Shipment Details",
+]
 ADMIN_PAGE = "👤 Manage Users"
+
+# Page identity strings above (with emoji) are the stored keys used in existing users'
+# saved Permissions cells — keep them unchanged. This maps each to a real icon + clean
+# label for display only.
+PAGE_ICONS = {
+    "📦 Fulfillment": ":material/local_shipping:",
+    "🔄 Restock": ":material/inventory_2:",
+    "➕ Add Product": ":material/add_box:",
+    "📋 View Inventory": ":material/list_alt:",
+    "📊 Demand & Reorder": ":material/insights:",
+    "🚢 Shipment Tracker": ":material/directions_boat:",
+    "🧾 Shipment Details": ":material/receipt_long:",
+    ADMIN_PAGE: ":material/group:",
+}
+
+def page_label(p):
+    return p.split(" ", 1)[1] if " " in p else p
 
 def get_users_ws():
     sh = _gc().open_by_key(SHEET_ID)
@@ -119,7 +148,7 @@ def login_screen():
 
     st.markdown("""
     <style>
-    [data-testid="stAppViewContainer"] { background: #faf8f6; }
+    [data-testid="stAppViewContainer"] { background: #f4f5f7; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -128,8 +157,14 @@ def login_screen():
     col = st.columns([1, 1.2, 1])[1]
     with col:
         st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown('<p style="font-family:\'Cormorant Garamond\',serif;font-size:2rem;font-weight:300;color:#c2185b;text-align:center;letter-spacing:0.06em">Sweet Mayhem</p>', unsafe_allow_html=True)
-        st.markdown('<p style="font-size:0.7rem;color:#b88fa0;text-align:center;letter-spacing:0.15em;text-transform:uppercase;margin-top:-1rem">Fulfillment Studio</p>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="width:56px;height:56px;border-radius:50%;background:#e6394f;'
+            'display:flex;align-items:center;justify-content:center;margin:0 auto 0.9rem;'
+            'font-family:\'Inter\',sans-serif;font-weight:700;font-size:1.3rem;color:#fff;">SM</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown('<p style="font-family:\'Inter\',sans-serif;font-size:1.5rem;font-weight:700;color:#1f232c;text-align:center;letter-spacing:0">Sweet Mayhem</p>', unsafe_allow_html=True)
+        st.markdown('<p style="font-size:0.7rem;color:#8b8f9b;text-align:center;letter-spacing:0.15em;text-transform:uppercase;margin-top:-1rem">Fulfillment Studio</p>', unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
         if not users:
@@ -536,6 +571,210 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
         })
     return pd.DataFrame(rows)
 
+# ─── Shipment Tracker ───────────────────────────────────────────────────────────
+
+SHIPMENT_TRACKER_SHEET_ID = "1xwLzbuUU_xbE7aetCI5CxSpkpEdRN2AwzsuSkpqeS7g"
+SHIPMENT_TRACKER_TAB = "Shipments Tracker"
+
+def get_shipment_tracker_ws():
+    return _gc().open_by_key(SHIPMENT_TRACKER_SHEET_ID).worksheet(SHIPMENT_TRACKER_TAB)
+
+def _parse_sheet_date(v):
+    """Handles the sheet's mixed date storage: real date cells (serial numbers) and
+    manually-typed text dates like '27/3/2026'."""
+    if v in (None, ""):
+        return None
+    if isinstance(v, (int, float)):
+        try:
+            return date(1899, 12, 30) + timedelta(days=int(v))
+        except (ValueError, OverflowError):
+            return None
+    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(str(v).strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+def _as_number(v):
+    return v if isinstance(v, (int, float)) else None
+
+def _status_display(brand, status):
+    if str(brand).strip().upper() == "CANCELLED":
+        return "❌ Cancelled"
+    s = (status or "").strip()
+    low = s.lower()
+    if not s:
+        return "🕐 In Transit"
+    if "cancel" in low:
+        return "❌ Cancelled"
+    if low in ("recieved", "received"):
+        return "✅ Received"
+    # Anything else that merely mentions "received" (e.g. "Received on stockie",
+    # an intermediate holding point) hasn't actually arrived yet — keep it in transit.
+    return f"🕐 In Transit ({s})"
+
+@st.cache_data(ttl=120)
+def load_shipments():
+    ws = get_shipment_tracker_ws()
+    values = ws.get("A2:R500", value_render_option="UNFORMATTED_VALUE")
+    if not values:
+        return pd.DataFrame()
+    rows = []
+    for row in values[1:]:
+        row = row + [None] * (18 - len(row))
+        batch = row[0]
+        if not batch:
+            continue
+        brand, status = row[1] or "", row[10] or ""
+        rows.append({
+            "Batch #": batch,
+            "Brand": brand,
+            "Date Paid": _parse_sheet_date(row[2]),
+            "Date Shipped": _parse_sheet_date(row[3]),
+            "Shipment Type": row[4] or "",
+            "Shipping Company": row[5] or "",
+            "Warehouse Address": row[6] or "",
+            "Shipping Mark": row[7] or "",
+            "Tracking #": str(row[8]) if row[8] not in (None, "") else "",
+            "Date Received": _parse_sheet_date(row[9]),
+            "Status": _status_display(brand, status),
+            "Total Items": _as_number(row[11]),
+            "Price": _as_number(row[12]),
+            "# of Cartons": _as_number(row[13]),
+            "Notes": row[14] or "",
+            "Items Ordered": row[15] or "",
+            "Img ref.": row[16] or "",
+            "Shopify Inventory Status": row[17] or "",
+        })
+    return pd.DataFrame(rows)
+
+@st.cache_data(ttl=120)
+def load_packaging_tables():
+    ws = get_shipment_tracker_ws()
+    values = ws.get("V2:AB100", value_render_option="UNFORMATTED_VALUE")
+    used, orders = [], []
+    for row in values[1:] if values else []:
+        row = row + [None] * (7 - len(row))
+        if row[0]:
+            used.append({"Batch": row[0], "Small 15×15": _as_number(row[1]), "Big 35×25": _as_number(row[2])})
+        if row[4]:
+            orders.append({"Order": row[4], "Small 15×15": _as_number(row[5]), "Big 35×25": _as_number(row[6])})
+    return pd.DataFrame(used), pd.DataFrame(orders)
+
+# ─── Shipment Details ──────────────────────────────────────────────────────────
+
+SHIPMENT_DETAILS_FOLDER_ID = "1fzGaxnG9fu0dgsUgWIGQYXtKgw0u0_Ex"
+
+def _batch_num(name):
+    m = re.search(r"batch[_\s]*(\d+)", name, re.IGNORECASE)
+    return int(m.group(1)) if m else -1
+
+@st.cache_data(ttl=300)
+def list_shipment_detail_files():
+    """Flat list of real shipment files in the Drive folder (recurses one level into
+    subfolders — some batches, e.g. split shipments, are grouped in their own subfolder).
+    Excel's temporary lock files (~$...) are skipped."""
+    drive = _drive()
+
+    def _list_children(folder_id):
+        res = drive.files().list(
+            q=f"'{folder_id}' in parents and trashed = false",
+            fields="files(id, name, mimeType)",
+            pageSize=200,
+        ).execute()
+        return res.get("files", [])
+
+    files = []
+    for f in _list_children(SHIPMENT_DETAILS_FOLDER_ID):
+        if f["name"].startswith("~$"):
+            continue
+        if f["mimeType"] == "application/vnd.google-apps.folder":
+            files.extend(sub for sub in _list_children(f["id"]) if not sub["name"].startswith("~$"))
+        else:
+            files.append(f)
+
+    files.sort(key=lambda f: (_batch_num(f["name"]), f["name"]), reverse=True)
+    return files
+
+@st.cache_data(ttl=300)
+def fetch_shipment_detail_bytes(file_id):
+    return bytes(_drive().files().get_media(fileId=file_id).execute())
+
+def parse_shipment_detail(file_bytes):
+    """Parses the repeating product-block layout: a product name row, a size-header row,
+    one row per color, a per-product TOTAL row, and a unit-price/subtotal row — repeated
+    per product, ending in a GRAND TOTAL row. Column widths vary per product and per file,
+    so this walks row-by-row using content markers rather than fixed column positions."""
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    ws = wb[wb.sheetnames[0]]
+
+    rows = []
+    for r in range(2, ws.max_row + 1):  # row 1 is always the "Batch N — Date" title
+        row = {c: ws.cell(row=r, column=c).value
+               for c in range(2, ws.max_column + 1)
+               if ws.cell(row=r, column=c).value not in (None, "")}
+        if row:
+            rows.append(row)
+
+    products, grand_total = [], None
+    state, current = "EXPECT_PRODUCT", None
+
+    for row in rows:
+        b = row.get(2)
+        if isinstance(b, str) and b.strip().upper() == "GRAND TOTAL":
+            nums = [v for c, v in row.items() if c != 2 and isinstance(v, (int, float))]
+            grand_total = nums[-1] if nums else None
+            continue
+
+        if state == "EXPECT_PRODUCT":
+            if isinstance(b, str) and len(row) == 1:
+                current = {"name": b.strip(), "size_cols": [], "total_col": None,
+                           "colors": [], "unit_price": None, "subtotal": None, "total_qty": None}
+                state = "EXPECT_SIZE_HEADER"
+            continue
+
+        if state == "EXPECT_SIZE_HEADER":
+            if b is None:
+                entries = [(c, str(v).strip()) for c, v in row.items() if c >= 3]
+                total_col = next((c for c, v in entries if v.upper() == "TOTAL"), None)
+                current["size_cols"] = [(c, v) for c, v in entries if c != total_col]
+                current["total_col"] = total_col
+                state = "IN_COLORS"
+            continue
+
+        if state == "IN_COLORS":
+            if isinstance(b, str) and b.strip().upper() == "TOTAL":
+                current["total_qty"] = row.get(current["total_col"])
+                state = "EXPECT_PRICE"
+            elif isinstance(b, str) and current["total_col"]:
+                qtys = {c: row.get(c) for c, _ in current["size_cols"]}
+                current["colors"].append((b.strip(), qtys))
+            continue
+
+        if state == "EXPECT_PRICE":
+            if current["total_col"]:
+                price_text = row.get(current["total_col"] - 1)
+                if isinstance(price_text, str):
+                    m = re.search(r"[\d.]+", price_text)
+                    if m:
+                        current["unit_price"] = float(m.group())
+                current["subtotal"] = row.get(current["total_col"])
+            products.append(current)
+            current, state = None, "EXPECT_PRODUCT"
+            continue
+
+    return products, grand_total
+
+def product_grid(product):
+    """Wide Color × Size grid, mirroring the original sheet layout, for one product block."""
+    data = {label: [qtys.get(col) or 0 for _, qtys in product["colors"]]
+            for col, label in product["size_cols"]}
+    df = pd.DataFrame(data, index=[c for c, _ in product["colors"]])
+    if not df.empty:
+        df["Total"] = df.sum(axis=1)
+    return df
+
 # ─── Session State ────────────────────────────────────────────────────────────
 
 _defaults = dict(
@@ -552,93 +791,138 @@ for k, v in _defaults.items():
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300&family=Inter:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+    --rr-red: #e6394f;
+    --rr-red-dark: #c72e42;
+    --rr-on-red: #fff;
+    --rr-red-text: #e6394f;
+    --rr-sidebar-bg: #1f232c;
+    --rr-sidebar-text: #aeb2bd;
+    --rr-blue: #1e9fd6;
+    --rr-blue-dark: #1786b8;
+    --rr-bg: #f4f5f7;
+    --rr-border: #e5e7eb;
+}
 
 /* ── Base ── */
 html, body, [data-testid="stAppViewContainer"] {
     font-family: 'Inter', sans-serif;
-    background: #faf8f6;
-    color: #1c1c1c;
+    background: var(--rr-bg);
+    color: #1f232c;
 }
 [data-testid="stAppViewContainer"] > .main {
-    background: #faf8f6;
+    background: var(--rr-bg);
 }
 
 /* ── Sidebar ── */
 [data-testid="stSidebar"] {
-    background: #fff9fb !important;
-    border-right: 1px solid #f2e4ea;
+    background: var(--rr-sidebar-bg) !important;
+    border-right: none;
 }
 [data-testid="stSidebarContent"] {
-    padding: 2rem 1.4rem;
+    padding: 1.6rem 1rem;
 }
 .sidebar-brand {
-    font-family: 'Cormorant Garamond', serif;
-    font-size: 1.35rem;
-    font-weight: 500;
-    color: #a8265e;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-family: 'Inter', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 0;
+    text-transform: none;
     margin-bottom: 0.2rem;
 }
 .sidebar-tagline {
-    font-size: 0.68rem;
-    color: #b88fa0;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    margin-bottom: 1.8rem;
-}
-[data-testid="stSidebar"] .stRadio > label {
-    font-size: 0.78rem;
-    font-weight: 500;
+    font-size: 0.65rem;
+    color: #8b8f9b;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #888;
-    margin-bottom: 0.5rem;
+    margin-bottom: 1.6rem;
 }
-[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label {
-    font-size: 0.82rem !important;
-    font-weight: 400 !important;
-    letter-spacing: 0.04em !important;
-    text-transform: none !important;
-    color: #3a3a3a !important;
-    padding: 0.4rem 0 !important;
-}
-[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:hover {
-    color: #a8265e !important;
+.sidebar-section {
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: #6b6f7b;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin: 0.9rem 0.8rem 0.3rem;
 }
 [data-testid="stSidebar"] hr {
-    border-color: #f2e4ea;
-    margin: 1.2rem 0;
+    border-color: rgba(255,255,255,0.1);
+    margin: 1.1rem 0;
+}
+[data-testid="stSidebar"] p, [data-testid="stSidebar"] .stCaption {
+    color: #8b8f9b !important;
+}
+[data-testid="stSidebar"] .stButton > button {
+    border-color: rgba(255,255,255,0.25) !important;
+    color: #fff !important;
+    background: transparent !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: var(--rr-red) !important;
+    border-color: var(--rr-red) !important;
+}
+
+/* ── Sidebar nav (icon buttons) ── */
+.st-key-sidebar_nav .stButton { margin-bottom: 0.15rem; }
+.st-key-sidebar_nav .stButton > button {
+    border: none !important;
+    background: transparent !important;
+    color: var(--rr-sidebar-text) !important;
+    justify-content: flex-start !important;
+    font-size: 0.85rem !important;
+    font-weight: 500 !important;
+    padding: 0.6rem 0.8rem !important;
+    border-radius: 6px !important;
+    width: 100% !important;
+}
+.st-key-sidebar_nav .stButton > button > div {
+    justify-content: flex-start !important;
+    width: 100% !important;
+}
+.st-key-sidebar_nav .stButton > button:hover {
+    background: rgba(255,255,255,0.06) !important;
+    color: #fff !important;
+    border: none !important;
+}
+.st-key-sidebar_nav .stButton > button[kind="primary"] {
+    background: var(--rr-red) !important;
+    color: var(--rr-on-red) !important;
+    border: none !important;
+}
+.st-key-sidebar_nav .stButton > button[kind="primary"]:hover {
+    background: var(--rr-red-dark) !important;
 }
 
 /* ── Buttons ── */
 .stButton > button {
     font-family: 'Inter', sans-serif !important;
-    font-size: 0.75rem !important;
+    font-size: 0.82rem !important;
     font-weight: 600 !important;
-    letter-spacing: 0.1em !important;
-    text-transform: uppercase !important;
-    border-radius: 4px !important;
-    padding: 0.6rem 1.6rem !important;
-    transition: all 0.2s ease !important;
-    border: 1.5px solid #c2185b !important;
-    color: #c2185b !important;
+    letter-spacing: 0 !important;
+    text-transform: none !important;
+    border-radius: 6px !important;
+    padding: 0.55rem 1.4rem !important;
+    transition: all 0.15s ease !important;
+    border: 1.5px solid var(--rr-blue) !important;
+    color: var(--rr-blue) !important;
     background: transparent !important;
     box-shadow: none !important;
 }
 .stButton > button:hover {
-    background: #c2185b !important;
+    background: var(--rr-blue) !important;
     color: white !important;
 }
 .stButton > button[kind="primary"] {
-    background: #c2185b !important;
+    background: var(--rr-blue) !important;
     color: white !important;
-    border-color: #c2185b !important;
+    border-color: var(--rr-blue) !important;
 }
 .stButton > button[kind="primary"]:hover {
-    background: #a8265e !important;
-    border-color: #a8265e !important;
+    background: var(--rr-blue-dark) !important;
+    border-color: var(--rr-blue-dark) !important;
 }
 
 /* ── Inputs ── */
@@ -647,52 +931,56 @@ html, body, [data-testid="stAppViewContainer"] {
 .stNumberInput input {
     font-family: 'Inter', sans-serif !important;
     font-size: 0.88rem !important;
-    border-radius: 4px !important;
-    border: 1px solid #e0d0d6 !important;
+    border-radius: 6px !important;
+    border: 1px solid var(--rr-border) !important;
     background: #fff !important;
-    color: #1c1c1c !important;
+    color: #1f232c !important;
 }
 .stTextInput input:focus,
 .stTextArea textarea:focus {
-    border-color: #c2185b !important;
-    box-shadow: 0 0 0 2px rgba(194,24,91,0.08) !important;
+    border-color: var(--rr-blue) !important;
+    box-shadow: 0 0 0 2px rgba(30,159,214,0.12) !important;
 }
 .stSelectbox > div > div {
-    border-radius: 4px !important;
-    border: 1px solid #e0d0d6 !important;
+    border-radius: 6px !important;
+    border: 1px solid var(--rr-border) !important;
     font-size: 0.88rem !important;
 }
 label[data-testid="stWidgetLabel"] p {
-    font-size: 0.75rem !important;
+    font-size: 0.72rem !important;
     font-weight: 600 !important;
-    letter-spacing: 0.08em !important;
+    letter-spacing: 0.06em !important;
     text-transform: uppercase !important;
-    color: #888 !important;
+    color: #6b6f7b !important;
 }
 
 /* ── Tabs ── */
 .stTabs [data-testid="stTab"] {
-    font-size: 0.78rem !important;
+    font-size: 0.8rem !important;
     font-weight: 600 !important;
-    letter-spacing: 0.08em !important;
-    text-transform: uppercase !important;
-    color: #888 !important;
+    letter-spacing: 0 !important;
+    text-transform: none !important;
+    color: #6b6f7b !important;
 }
 .stTabs [data-testid="stTab"][aria-selected="true"] {
-    color: #c2185b !important;
-    border-bottom-color: #c2185b !important;
+    color: var(--rr-red-text) !important;
+    border-bottom-color: var(--rr-red-text) !important;
 }
 
 /* ── File uploader ── */
 [data-testid="stFileUploader"] {
-    border: 1.5px dashed #e0d0d6 !important;
+    border: 1.5px dashed var(--rr-border) !important;
     border-radius: 8px !important;
     background: #fff !important;
     padding: 1rem !important;
 }
 
 /* ── Dataframe ── */
-[data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--rr-border) !important;
+    border-radius: 8px !important;
+    overflow: hidden;
+}
 
 /* ── Alerts ── */
 [data-testid="stAlert"] {
@@ -706,96 +994,86 @@ label[data-testid="stWidgetLabel"] p {
     text-transform: none !important;
     letter-spacing: 0 !important;
     font-weight: 400 !important;
-    color: #1c1c1c !important;
+    color: #1f232c !important;
 }
 
 /* ── Divider ── */
-hr { border-color: #f0e4e8 !important; }
+hr { border-color: var(--rr-border) !important; }
 
-/* ── Brand header ── */
+/* ── Brand header (top bar) ── */
 .brand-header {
-    background: linear-gradient(135deg, #c2185b 0%, #880e4f 100%);
-    border-radius: 6px;
-    padding: 2rem 2.4rem 1.8rem;
-    margin-bottom: 2rem;
-    position: relative;
-    overflow: hidden;
-}
-.brand-header::after {
-    content: '';
-    position: absolute;
-    top: -40px; right: -40px;
-    width: 180px; height: 180px;
-    border-radius: 50%;
-    background: rgba(255,255,255,0.04);
+    background: var(--rr-red);
+    border-radius: 8px;
+    padding: 1.1rem 1.6rem;
+    margin-bottom: 1.6rem;
 }
 .brand-header-eyebrow {
     font-family: 'Inter', sans-serif;
     font-size: 0.65rem;
     font-weight: 600;
-    letter-spacing: 0.2em;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: rgba(255,255,255,0.55);
-    margin: 0 0 0.4rem;
+    color: rgba(255,255,255,0.7);
+    margin: 0 0 0.2rem;
 }
 .brand-header h1 {
-    font-family: 'Cormorant Garamond', serif;
-    font-size: 2.4rem;
-    font-weight: 300;
-    color: white;
+    font-family: 'Inter', sans-serif;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--rr-on-red);
     margin: 0;
-    letter-spacing: 0.06em;
-    line-height: 1.1;
+    letter-spacing: 0;
+    line-height: 1.2;
 }
 .brand-header p {
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     font-weight: 400;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: rgba(255,255,255,0.5);
-    margin: 0.6rem 0 0;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    color: rgba(255,255,255,0.75);
+    margin: 0.25rem 0 0;
 }
 
 /* ── Stat cards ── */
 .stat {
     background: #fff;
-    border: 1px solid #f0e4e8;
-    border-radius: 6px;
-    padding: 1.4rem 1.6rem;
-    text-align: center;
-    box-shadow: 0 1px 4px rgba(168,38,94,0.04);
+    border: 1px solid var(--rr-border);
+    border-radius: 8px;
+    padding: 1.2rem 1.4rem;
+    text-align: left;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .stat .num {
-    font-family: 'Cormorant Garamond', serif;
-    font-size: 2.6rem;
-    font-weight: 400;
+    font-family: 'Inter', sans-serif;
+    font-size: 2rem;
+    font-weight: 700;
     line-height: 1;
     margin: 0;
 }
 .stat .lbl {
-    font-size: 0.65rem;
+    font-size: 0.68rem;
     font-weight: 600;
-    color: #b0909e;
+    color: #8b8f9b;
     margin: 0.4rem 0 0;
     text-transform: uppercase;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.08em;
 }
 
 /* ── Subheaders ── */
 h2 {
-    font-family: 'Cormorant Garamond', serif !important;
-    font-weight: 400 !important;
-    font-size: 1.6rem !important;
-    color: #1c1c1c !important;
-    letter-spacing: 0.02em !important;
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 700 !important;
+    font-size: 1.3rem !important;
+    color: #1f232c !important;
+    letter-spacing: 0 !important;
 }
 h3 {
     font-family: 'Inter', sans-serif !important;
     font-size: 0.75rem !important;
     font-weight: 600 !important;
-    letter-spacing: 0.12em !important;
+    letter-spacing: 0.1em !important;
     text-transform: uppercase !important;
-    color: #888 !important;
+    color: #6b6f7b !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -804,7 +1082,12 @@ h3 {
 
 with st.sidebar:
     st.markdown("""
-    <p class="sidebar-brand">Sweet Mayhem</p>
+    <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.2rem;">
+      <div style="width:34px;height:34px;min-width:34px;border-radius:50%;background:#e6394f;
+                  display:flex;align-items:center;justify-content:center;
+                  font-family:'Inter',sans-serif;font-weight:700;font-size:0.8rem;color:#fff;">SM</div>
+      <p class="sidebar-brand" style="margin-bottom:0;">Sweet Mayhem</p>
+    </div>
     <p class="sidebar-tagline">Fulfillment Studio</p>
     """, unsafe_allow_html=True)
 
@@ -813,7 +1096,25 @@ with st.sidebar:
         st.warning("Your account has no page access yet. Ask an admin to assign some.")
         st.stop()
 
-    page = st.radio("Navigate", my_pages, label_visibility="collapsed")
+    if st.session_state.get("page") not in my_pages:
+        st.session_state.page = my_pages[0]
+
+    NAV_SECTIONS = {"🚢 Shipment Tracker": "SHIPMENTS", "🧾 Shipment Details": "SHIPMENTS"}
+    with st.container(key="sidebar_nav"):
+        last_section = None
+        for p in my_pages:
+            section = NAV_SECTIONS.get(p)
+            if section and section != last_section:
+                st.markdown(f'<p class="sidebar-section">{section}</p>', unsafe_allow_html=True)
+                last_section = section
+            if st.button(
+                page_label(p), icon=PAGE_ICONS.get(p, ":material/circle:"),
+                key=f"nav_{p}", use_container_width=True,
+                type="primary" if st.session_state.page == p else "secondary",
+            ):
+                st.session_state.page = p
+                st.rerun()
+    page = st.session_state.page
 
     st.divider()
     st.caption(f"Signed in as **{st.session_state.username}**  ·  {st.session_state.role}")
@@ -1360,3 +1661,151 @@ elif page == ADMIN_PAGE:
                 delete_user(u["row"])
                 st.success(f"Deleted '{u['username']}'.")
                 st.rerun()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE: SHIPMENT TRACKER
+# ─────────────────────────────────────────────────────────────────────────────
+
+elif page == "🚢 Shipment Tracker":
+    st.subheader("Shipment Tracker")
+    st.caption(
+        "Reads live from the shared Shipments Tracker Google Sheet. Edit shipment data "
+        "there — this page always shows what's currently in the Sheet."
+    )
+
+    if st.button("🔄 Refresh", icon=":material/refresh:"):
+        load_shipments.clear()
+        load_packaging_tables.clear()
+        st.rerun()
+
+    try:
+        with st.spinner("Loading shipments…"):
+            df = load_shipments()
+
+        if df.empty:
+            st.info("No shipments found in the Sheet yet.")
+        else:
+            total_shipments = len(df)
+            received = df["Status"].str.startswith("✅").sum()
+            cancelled = df["Status"].str.startswith("❌").sum()
+            total_spent = df["Price"].fillna(0).sum()
+
+            s1, s2, s3, s4 = st.columns(4)
+            s1.markdown(f'<div class="stat"><p class="num">{total_shipments}</p><p class="lbl">Total Shipments</p></div>', unsafe_allow_html=True)
+            s2.markdown(f'<div class="stat"><p class="num">{received}</p><p class="lbl">Received</p></div>', unsafe_allow_html=True)
+            s3.markdown(f'<div class="stat"><p class="num">{total_shipments - received - cancelled}</p><p class="lbl">In Transit</p></div>', unsafe_allow_html=True)
+            s4.markdown(f'<div class="stat"><p class="num">${total_spent:,.0f}</p><p class="lbl">Total Spent</p></div>', unsafe_allow_html=True)
+            st.markdown("")
+
+            fc1, fc2, fc3 = st.columns(3)
+            brands = ["All"] + sorted(df["Brand"].replace("", pd.NA).dropna().unique().tolist())
+            sel_brand = fc1.selectbox("Brand", brands)
+            statuses = ["All"] + sorted(df["Status"].unique().tolist())
+            sel_status = fc2.selectbox("Status", statuses)
+            types = ["All"] + sorted(df["Shipment Type"].replace("", pd.NA).dropna().unique().tolist())
+            sel_type = fc3.selectbox("Shipment Type", types)
+
+            fdf = df.copy()
+            if sel_brand != "All":
+                fdf = fdf[fdf["Brand"] == sel_brand]
+            if sel_status != "All":
+                fdf = fdf[fdf["Status"] == sel_status]
+            if sel_type != "All":
+                fdf = fdf[fdf["Shipment Type"] == sel_type]
+
+            display_cols = [
+                "Batch #", "Brand", "Date Paid", "Date Shipped", "Shipment Type",
+                "Shipping Company", "Tracking #", "Date Received", "Status",
+                "Total Items", "Price", "# of Cartons", "Items Ordered", "Shopify Inventory Status",
+            ]
+            st.dataframe(
+                fdf[display_cols],
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Date Paid": st.column_config.DateColumn(format="MMM D, YYYY"),
+                    "Date Shipped": st.column_config.DateColumn(format="MMM D, YYYY"),
+                    "Date Received": st.column_config.DateColumn(format="MMM D, YYYY"),
+                    "Price": st.column_config.NumberColumn(format="$%.0f"),
+                },
+            )
+            st.caption(f"{len(fdf)} of {total_shipments} shipment(s) shown")
+
+            st.divider()
+            st.markdown("### Shipment Detail Lookup")
+            sel_batch = st.selectbox("Batch #", df["Batch #"].tolist())
+            row = df[df["Batch #"] == sel_batch].iloc[0]
+            d1, d2 = st.columns(2)
+            with d1:
+                st.markdown(f"**Shipping Mark:** {row['Shipping Mark'] or '—'}")
+                st.markdown(f"**Tracking #:** {row['Tracking #'] or '—'}")
+                st.markdown(f"**Notes:** {row['Notes'] or '—'}")
+                st.markdown(f"**Img ref.:** {row['Img ref.'] or '—'}")
+            with d2:
+                st.markdown("**Warehouse Address:**")
+                st.text_area(
+                    "Warehouse Address", value=row["Warehouse Address"] or "—",
+                    height=140, disabled=True, label_visibility="collapsed",
+                )
+
+            used_df, orders_df = load_packaging_tables()
+            with st.expander("📦 Packaging Usage & Stock Orders"):
+                p1, p2 = st.columns(2)
+                with p1:
+                    st.markdown("**Packaging Used (per batch)**")
+                    st.dataframe(used_df, use_container_width=True, hide_index=True)
+                with p2:
+                    st.markdown("**Packaging Stock (orders)**")
+                    st.dataframe(orders_df, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error(f"Could not load shipment data: {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE: SHIPMENT DETAILS
+# ─────────────────────────────────────────────────────────────────────────────
+
+elif page == "🧾 Shipment Details":
+    st.subheader("Shipment Details")
+    st.caption(
+        "Reads directly from the Shipment Details folder in Google Drive — pick a "
+        "shipment to see exactly what was ordered, by product, color, and size."
+    )
+
+    if st.button("🔄 Refresh file list", icon=":material/refresh:"):
+        list_shipment_detail_files.clear()
+        st.rerun()
+
+    try:
+        with st.spinner("Loading file list from Drive…"):
+            files = list_shipment_detail_files()
+
+        if not files:
+            st.info("No shipment detail files found in the folder.")
+        else:
+            names = [f["name"] for f in files]
+            sel_name = st.selectbox("Shipment file", names)
+            sel_file = next(f for f in files if f["name"] == sel_name)
+
+            with st.spinner(f"Loading {sel_name}…"):
+                file_bytes = fetch_shipment_detail_bytes(sel_file["id"])
+                products, grand_total = parse_shipment_detail(file_bytes)
+
+            if not products:
+                st.warning("Couldn't find any recognizable product blocks in this file.")
+            else:
+                for p in products:
+                    st.markdown(f"#### {p['name']}")
+                    st.dataframe(product_grid(p), use_container_width=True)
+                    price_str = f"${p['unit_price']:,.2f}" if p["unit_price"] is not None else "—"
+                    subtotal_str = f"${p['subtotal']:,.2f}" if p["subtotal"] is not None else "—"
+                    st.caption(
+                        f"Total ordered: {p['total_qty']}  |  Unit price: {price_str}  |  "
+                        f"Subtotal: {subtotal_str}"
+                    )
+                    st.markdown("")
+
+                if grand_total is not None:
+                    st.markdown(f"### Grand Total: ${grand_total:,.2f}")
+
+    except Exception as e:
+        st.error(f"Could not load shipment details: {e}")

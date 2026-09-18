@@ -248,6 +248,7 @@ def login_screen():
     st.markdown("""
     <style>
     [data-testid="stAppViewContainer"] { background: #f4f5f7; }
+    [data-testid="stForm"] { border: none !important; padding: 0 !important; background: transparent !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -286,10 +287,6 @@ def login_screen():
                 pwd = st.text_input(
                     "Password", type="password", placeholder="Enter password",
                     autocomplete="current-password",
-                )
-                st.caption(
-                    "Using saved/autofilled password? Tap this field once before Sign In "
-                    "— a current iOS Safari limitation, not specific to this app."
                 )
                 submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
 

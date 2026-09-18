@@ -13,6 +13,7 @@ from datetime import datetime, date, timedelta
 from copy import deepcopy
 from pathlib import Path
 import io
+import json
 import math
 import re
 import bcrypt
@@ -1650,7 +1651,12 @@ elif page == "📊 Demand & Reorder":
 elif page == "🚫 Cancelled Orders":
     cancelled_orders_html = Path(__file__).parent / "cancelled_orders.html"
     if cancelled_orders_html.exists():
-        components.html(cancelled_orders_html.read_text(encoding="utf-8"), height=1400, scrolling=True)
+        html = cancelled_orders_html.read_text(encoding="utf-8")
+        # Tells the embedded tool who's looking at it, so it can hide Upload/Settings
+        # for non-admins — see the APP_ROLE check near the top of its own script.
+        role_script = f"<script>window.APP_ROLE = {json.dumps(st.session_state.role)};</script>"
+        html = html.replace("<body>", "<body>" + role_script, 1)
+        components.html(html, height=1400, scrolling=True)
     else:
         st.error("cancelled_orders.html wasn't found next to app.py — the embed can't load.")
         st.link_button("Open Cancelled Orders ↗", CANCELLED_ORDERS_URL, use_container_width=True)

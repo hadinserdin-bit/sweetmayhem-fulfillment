@@ -892,48 +892,68 @@ html, body, [data-testid="stAppViewContainer"] {
     background: #fff !important;
     box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
 }
-[data-testid="stSidebar"] .stButton > button:hover {
+[data-testid="stSidebar"] .stButton > button:hover:not(.st-key-sidebar_nav *) {
     background: var(--rr-red) !important;
     border-color: var(--rr-red) !important;
     color: #fff !important;
 }
 
-/* ── Sidebar nav (icon buttons) ── */
+/* ── Sidebar nav (icon buttons) ──
+   Every pseudo-state pairs its own background + text/icon color in one rule so
+   there's never a gap where one property is set but not the other (that gap is
+   what caused white-on-white at some interaction states before). Icons render
+   as inline SVG (fill), labels as text (color) — both are set together. */
 .st-key-sidebar_nav .stButton { margin-bottom: 0.5rem; }
 .st-key-sidebar_nav .stButton > button {
     border: 1px solid var(--rr-border) !important;
-    background: #fff !important;
-    color: #1f232c !important;
     font-size: 0.9rem !important;
     font-weight: 500 !important;
     padding: 0.7rem 0.8rem !important;
     border-radius: 10px !important;
     width: 100% !important;
     box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+    outline: none !important;
 }
-.st-key-sidebar_nav .stButton > button * { color: #1f232c !important; }
-.st-key-sidebar_nav .stButton > button:hover {
+
+.st-key-sidebar_nav .stButton > button[kind="secondary"],
+.st-key-sidebar_nav .stButton > button[kind="secondary"]:focus,
+.st-key-sidebar_nav .stButton > button[kind="secondary"]:focus-visible {
+    background: #fff !important;
+    border-color: var(--rr-border) !important;
+}
+.st-key-sidebar_nav .stButton > button[kind="secondary"]:hover {
     background: #f7f8fa !important;
     border-color: #d0d3d9 !important;
 }
-.st-key-sidebar_nav .stButton > button:active {
+.st-key-sidebar_nav .stButton > button[kind="secondary"]:active {
     background: var(--rr-red) !important;
     border-color: var(--rr-red) !important;
 }
-.st-key-sidebar_nav .stButton > button:active * {
-    color: #fff !important;
+.st-key-sidebar_nav .stButton > button[kind="secondary"] *,
+.st-key-sidebar_nav .stButton > button[kind="secondary"]:focus *,
+.st-key-sidebar_nav .stButton > button[kind="secondary"]:hover * {
+    color: #1f232c !important; fill: #1f232c !important;
 }
-.st-key-sidebar_nav .stButton > button[kind="primary"] {
+.st-key-sidebar_nav .stButton > button[kind="secondary"]:active * {
+    color: #fff !important; fill: #fff !important;
+}
+
+.st-key-sidebar_nav .stButton > button[kind="primary"],
+.st-key-sidebar_nav .stButton > button[kind="primary"]:focus,
+.st-key-sidebar_nav .stButton > button[kind="primary"]:focus-visible {
     background: var(--rr-red) !important;
-    border: 1px solid var(--rr-red) !important;
-}
-.st-key-sidebar_nav .stButton > button[kind="primary"] * {
-    color: #fff !important;
+    border-color: var(--rr-red) !important;
 }
 .st-key-sidebar_nav .stButton > button[kind="primary"]:hover,
 .st-key-sidebar_nav .stButton > button[kind="primary"]:active {
     background: var(--rr-red-dark) !important;
     border-color: var(--rr-red-dark) !important;
+}
+.st-key-sidebar_nav .stButton > button[kind="primary"] *,
+.st-key-sidebar_nav .stButton > button[kind="primary"]:focus *,
+.st-key-sidebar_nav .stButton > button[kind="primary"]:hover *,
+.st-key-sidebar_nav .stButton > button[kind="primary"]:active * {
+    color: #fff !important; fill: #fff !important;
 }
 
 /* ── Buttons ── */
@@ -947,9 +967,19 @@ html, body, [data-testid="stAppViewContainer"] {
     padding: 0.55rem 1.4rem !important;
     transition: all 0.15s ease !important;
     border: 1.5px solid var(--rr-red) !important;
-    color: var(--rr-red) !important;
     background: transparent !important;
     box-shadow: none !important;
+    outline: none !important;
+}
+.stButton > button,
+.stButton > button:focus,
+.stButton > button:focus-visible {
+    color: var(--rr-red) !important;
+}
+.stButton > button *,
+.stButton > button:focus *,
+.stButton > button:focus-visible * {
+    color: var(--rr-red) !important; fill: var(--rr-red) !important;
 }
 .stButton > button:hover,
 .stButton > button:active,
@@ -960,7 +990,7 @@ html, body, [data-testid="stAppViewContainer"] {
 .stButton > button:hover *,
 .stButton > button:active *,
 .stButton > button[kind="primary"] * {
-    color: white !important;
+    color: white !important; fill: white !important;
 }
 .stButton > button[kind="primary"]:hover,
 .stButton > button[kind="primary"]:active {
@@ -969,7 +999,7 @@ html, body, [data-testid="stAppViewContainer"] {
 }
 .stButton > button[kind="primary"]:hover *,
 .stButton > button[kind="primary"]:active * {
-    color: white !important;
+    color: white !important; fill: white !important;
 }
 
 /* ── Inputs ── */

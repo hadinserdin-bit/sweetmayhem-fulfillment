@@ -1,18 +1,22 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
-<title>Save Desk</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf8f6;color:#1c1c1c}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Cancelled Orders</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600;700&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
+  /* Re-themed to match the Sweet Mayhem Fulfillment Studio app it's embedded
+     in (same rose accent, Cormorant Garamond + Inter, fixed light theme —
+     the host app doesn't support dark mode, so neither does this copy,
+     otherwise the two could mismatch on a dark-mode device). */
   :root{
-    --bg:#F5F3EE;
+    --bg:#FAF8F6;
     --surface:#FFFFFF;
-    --surface-2:#EFEBE2;
-    --ink:#1B2430;
-    --muted:#5B6472;
-    --border:rgba(27,36,48,0.13);
-    --accent:#D9531E;
-    --accent-ink:#FFF7F2;
-    --accent-soft:#FBE4D7;
+    --surface-2:#FBEEF3;
+    --ink:#1C1C1C;
+    --muted:#8A8A8A;
+    --border:#F0E4E8;
+    --accent:#C2185B;
+    --accent-ink:#FFFFFF;
+    --accent-soft:#FBE4EC;
     --good:#227A55;
     --good-soft:#DCEEE3;
     --warn:#966600;
@@ -22,83 +26,35 @@
     --info:#2A5C8A;
     --info-soft:#DCE7F1;
     --whatsapp:#1D8A4E;
-    --shadow: 0 1px 1px rgba(27,36,48,0.04), 0 6px 20px -10px rgba(27,36,48,0.20);
-    --shadow-lg: 0 2px 4px rgba(27,36,48,0.05), 0 16px 40px -16px rgba(27,36,48,0.28);
-    --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%235B6472' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
-  }
-  @media (prefers-color-scheme: dark){
-    :root:not([data-theme="light"]){
-      --bg:#12161D;
-      --surface:#1A2029;
-      --surface-2:#212836;
-      --ink:#ECEEF2;
-      --muted:#93A0B2;
-      --border:rgba(236,238,242,0.12);
-      --accent:#FF7A45;
-      --accent-ink:#221306;
-      --accent-soft:#3A2416;
-      --good:#5FC79A;
-      --good-soft:#173025;
-      --warn:#E0B94A;
-      --warn-soft:#332A10;
-      --bad:#E08080;
-      --bad-soft:#331A1A;
-      --info:#7FB2E0;
-      --info-soft:#152537;
-      --whatsapp:#3FCB77;
-      --shadow: 0 1px 1px rgba(0,0,0,0.25), 0 6px 20px -10px rgba(0,0,0,0.55);
-      --shadow-lg: 0 2px 4px rgba(0,0,0,0.3), 0 16px 40px -16px rgba(0,0,0,0.65);
-      --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%2393A0B2' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
-    }
-  }
-  :root[data-theme="dark"]{
-    --bg:#12161D;
-    --surface:#1A2029;
-    --surface-2:#212836;
-    --ink:#ECEEF2;
-    --muted:#93A0B2;
-    --border:rgba(236,238,242,0.12);
-    --accent:#FF7A45;
-    --accent-ink:#221306;
-    --accent-soft:#3A2416;
-    --good:#5FC79A;
-    --good-soft:#173025;
-    --warn:#E0B94A;
-    --warn-soft:#332A10;
-    --bad:#E08080;
-    --bad-soft:#331A1A;
-    --info:#7FB2E0;
-    --info-soft:#152537;
-    --whatsapp:#3FCB77;
-    --shadow: 0 1px 1px rgba(0,0,0,0.25), 0 6px 20px -10px rgba(0,0,0,0.55);
-    --shadow-lg: 0 2px 4px rgba(0,0,0,0.3), 0 16px 40px -16px rgba(0,0,0,0.65);
-    --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%2393A0B2' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    --shadow: 0 1px 4px rgba(168,38,94,0.06);
+    --shadow-lg: 0 4px 16px rgba(168,38,94,0.14);
+    --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%238A8A8A' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
   }
 
   *{box-sizing:border-box}
   body{
     background:var(--bg);
     color:var(--ink);
-    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    font-family:"Inter", system-ui, sans-serif;
     padding-inline:16px;
     padding-block:28px 56px;
     max-width:1240px;
     margin-inline:auto;
     -webkit-font-smoothing:antialiased;
   }
-  h1,h2,h3{font-family:"Manrope","IBM Plex Sans",sans-serif;letter-spacing:-0.01em;text-wrap:balance;margin:0}
-  .mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+  h1,h2,h3{font-family:"Cormorant Garamond",serif;font-weight:500;letter-spacing:0.01em;text-wrap:balance;margin:0}
+  .mono{font-family:ui-monospace,"SF Mono",monospace}
   .num{font-variant-numeric:tabular-nums}
 
   header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:26px;padding-bottom:20px;border-bottom:1px solid var(--border)}
   .brand{display:flex;align-items:center;gap:12px}
   .brand .mark{
-    width:42px;height:42px;border-radius:12px;flex:none;
-    background:linear-gradient(155deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #000));
+    width:42px;height:42px;border-radius:8px;flex:none;
+    background:linear-gradient(135deg, #C2185B 0%, #880E4F 100%);
     color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:21px;
-    box-shadow:0 4px 14px -4px color-mix(in srgb, var(--accent) 60%, transparent);
+    box-shadow:0 4px 14px -4px rgba(168,38,94,0.5);
   }
-  .brand h1{font-size:23px;font-weight:800}
+  .brand h1{font-size:23px;font-weight:600}
   .brand p{margin:2px 0 0;color:var(--muted);font-size:13px}
   .top-actions{display:flex;gap:8px;flex-wrap:wrap}
 
@@ -118,9 +74,9 @@
   button:disabled{opacity:0.45;cursor:not-allowed}
 
   .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
-  .tile{background:var(--surface);border:1px solid var(--border);border-top:3px solid var(--border);border-radius:13px;padding:16px;box-shadow:var(--shadow)}
+  .tile{background:var(--surface);border:1px solid var(--border);border-top:3px solid var(--border);border-radius:8px;padding:16px;box-shadow:var(--shadow)}
   .tile .label{font-size:11px;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);font-weight:600}
-  .tile .value{font-family:"Manrope";font-size:28px;font-weight:800;margin-top:7px}
+  .tile .value{font-family:"Cormorant Garamond",serif;font-size:2.4rem;font-weight:600;margin-top:7px}
   .tile .sub{font-size:12px;color:var(--muted);margin-top:3px}
   .tile.accent{border-top-color:var(--accent)}
   .tile.accent .value{color:var(--accent)}
@@ -129,19 +85,19 @@
   .tile.bad{border-top-color:var(--bad)}
   .tile.bad .value{color:var(--bad)}
 
-  section{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:18px;box-shadow:var(--shadow)}
-  section > h2{font-size:15px;font-weight:800;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}
+  section{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;margin-bottom:18px;box-shadow:var(--shadow)}
+  section > h2{font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}
   section > h2 small{font-weight:500;color:var(--muted);font-size:12px}
 
   .dropzone{
-    border:1.5px dashed var(--border);border-radius:13px;padding:26px;text-align:center;color:var(--muted);
+    border:1.5px dashed var(--border);border-radius:8px;padding:26px;text-align:center;color:var(--muted);
     background:var(--surface-2);cursor:pointer;transition:border-color .15s, background .15s;
   }
   .dropzone:hover{border-color:var(--accent)}
   .dropzone.drag{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
   .dropzone strong{color:var(--ink)}
   .dropzone input{display:none}
-  .upload-report{margin-top:10px;font-size:13px;background:var(--surface-2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;color:var(--ink)}
+  .upload-report{margin-top:10px;font-size:13px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;color:var(--ink)}
   .upload-report.error{color:var(--bad)}
 
   .settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 16px}
@@ -158,7 +114,7 @@
   .tab:hover{border-color:var(--accent);color:var(--ink)}
   .tab[aria-selected="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
   .tab[aria-selected="true"]:hover{border-color:var(--ink)}
-  .tab .count{font-family:"IBM Plex Mono";margin-left:4px;opacity:.75}
+  .tab .count{font-family:ui-monospace,"SF Mono",monospace;margin-left:4px;opacity:.75}
 
   .items-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:3px}
   .items-list li{font-size:12px;max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -173,12 +129,12 @@
   tbody tr:last-child td{border-bottom:none}
   tbody tr{transition:background .12s ease}
   tbody tr:hover{background:var(--surface-2)}
-  .order-num{font-family:"IBM Plex Mono";font-weight:600;font-size:13px;color:var(--ink);cursor:default}
+  .order-num{font-family:ui-monospace,"SF Mono",monospace;font-weight:600;font-size:13px;color:var(--ink);cursor:default}
   .cust-name{font-weight:700;border-bottom:1px dashed transparent;cursor:default}
   .cust-name:hover{border-bottom-color:var(--muted)}
   .phone-link{color:var(--info);text-decoration:none;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
   .phone-link:hover{text-decoration:underline}
-  .amount{font-weight:700;font-family:"IBM Plex Mono"}
+  .amount{font-weight:700;font-family:ui-monospace,"SF Mono",monospace}
   .avatar{width:26px;height:26px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;box-shadow:0 0 0 2px var(--surface), 0 0 0 3px var(--border)}
 
   .stage-actions{display:flex;flex-direction:column;gap:6px;min-width:150px}
@@ -207,7 +163,7 @@
   .empty{padding:36px;text-align:center;color:var(--muted);font-size:13px}
 
   details.backup summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)}
-  details.backup textarea{width:100%;height:90px;margin-top:8px;font-family:"IBM Plex Mono";font-size:11px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--ink);padding:8px}
+  details.backup textarea{width:100%;height:90px;margin-top:8px;font-family:ui-monospace,"SF Mono",monospace;font-size:11px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--ink);padding:8px}
   .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;font-weight:600;box-shadow:var(--shadow-lg);z-index:50;opacity:0;pointer-events:none;transition:opacity .2s, transform .2s}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
   footer.note{color:var(--muted);font-size:12px;margin-top:6px;text-align:center}
@@ -217,7 +173,7 @@
   <div class="brand">
     <div class="mark">🛟</div>
     <div>
-      <h1>Save Desk</h1>
+      <h1>Cancelled Orders</h1>
       <p>Roadrunner cancellations → Khawla &amp; Sacha's follow-up queue</p>
     </div>
   </div>

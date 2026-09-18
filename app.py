@@ -177,6 +177,39 @@ def effective_pages(user):
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
+def _autofill_fix_script():
+    """iOS Safari's saved-password autofill sets an input's value without firing the
+    events React listens for, so Streamlit's widget state stays stale — the field
+    looks filled but the app still sees the old (often empty) value, which reads as
+    a wrong password. This is the standard cross-browser fix: a CSS animation that
+    only triggers on :-webkit-autofill, whose animationstart event we use as a hook
+    to force a real 'input' event through React's native value setter."""
+    nonce = f"<!-- {datetime.now().isoformat()} -->"  # forces a fresh iframe reload every render
+    script = nonce + """
+<script>
+try {
+    const doc = window.parent.document;
+    if (!doc.getElementById('__sm_autofill_fix_style__')) {
+        const s = doc.createElement('style');
+        s.id = '__sm_autofill_fix_style__';
+        s.textContent = '@keyframes smAutoFill { from {} to {} } input:-webkit-autofill { animation-name: smAutoFill; }';
+        doc.head.appendChild(s);
+    }
+    const setter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
+    doc.querySelectorAll('[data-testid="stTextInputRootElement"] input').forEach(function (inp) {
+        if (inp.dataset.smAutofillHooked) return;
+        inp.dataset.smAutofillHooked = '1';
+        inp.addEventListener('animationstart', function (e) {
+            if (e.animationName !== 'smAutoFill') return;
+            setter.call(inp, inp.value);
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+    });
+} catch (e) {}
+</script>
+"""
+    components.html(script, height=0)
+
 def login_screen():
     if st.session_state.get("authenticated"):
         return True
@@ -246,6 +279,8 @@ def login_screen():
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")
+
+    _autofill_fix_script()
     return False
 
 if not login_screen():

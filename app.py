@@ -2564,10 +2564,16 @@ elif page == "💸 Refunds":
         st.markdown("")
         st.markdown("### Update a Refund")
         with st.container(border=True, key="rf_update_panel"):
-            sel_refund = st.selectbox(
+            sel_choice = st.selectbox(
                 "Refund", refunds, label_visibility="collapsed",
                 format_func=lambda r: f"{r['order']} — {r['customer']}",
+                key="rf_selected_refund",
             )
+            # Streamlit's selectbox can hand back a stale copy of the chosen
+            # dict across a rerun (it doesn't reliably re-match a mutated
+            # object by value) — re-resolve by row against the just-reloaded
+            # list so the panel below always reflects the latest status.
+            sel_refund = next((r for r in refunds if r["row"] == sel_choice["row"]), sel_choice)
 
             rf_pill_cls = {"Pending": "rr-pill-amber", "Refunded": "rr-pill-green", "Rejected": "rr-pill-red"}[sel_refund["status"]]
             st.markdown(f'<span class="rr-pill {rf_pill_cls}">{sel_refund["status"]}</span>', unsafe_allow_html=True)

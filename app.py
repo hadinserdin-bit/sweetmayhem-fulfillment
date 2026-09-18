@@ -47,7 +47,7 @@ def get_ws():
 # ─── Users & Access Control ────────────────────────────────────────────────────
 
 USERS_SHEET_NAME = "Users"
-ALL_PAGES = ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder", "🛟 Save Desk"]
+ALL_PAGES = ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder", "🚫 Cancelled Orders"]
 ADMIN_PAGE = "👤 Manage Users"
 SAVE_DESK_URL = "https://claude.ai/artifact/1TJ5d5iJuijaHKNTTBSiyZ"
 
@@ -1274,10 +1274,10 @@ elif page == "📊 Demand & Reorder":
         st.error(f"Could not compute demand & reorder data: {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PAGE: SAVE DESK (cancelled-order recovery)
+# PAGE: CANCELLED ORDERS (cancelled-order recovery)
 # ─────────────────────────────────────────────────────────────────────────────
 
-elif page == "🛟 Save Desk":
+elif page == "🚫 Cancelled Orders":
     st.subheader("Cancelled Order Recovery")
     st.caption(
         "Upload the daily Roadrunner cancelled-orders export and it splits automatically "
@@ -1289,12 +1289,12 @@ elif page == "🛟 Save Desk":
         components.html(save_desk_html.read_text(encoding="utf-8"), height=1400, scrolling=True)
         st.caption(
             f"Data is saved in this browser tab, not in this app. If the queue ever looks "
-            f"empty when it shouldn't, use Save Desk's own Settings → Backup panel before "
+            f"empty when it shouldn't, use the tool's own Settings → Backup panel before "
             f"assuming anything was lost — or open it standalone: [{SAVE_DESK_URL}]({SAVE_DESK_URL})"
         )
     else:
         st.error("save_desk.html wasn't found next to app.py — the embed can't load.")
-        st.link_button("🛟 Open Save Desk ↗", SAVE_DESK_URL, use_container_width=True)
+        st.link_button("🚫 Open Cancelled Orders ↗", SAVE_DESK_URL, use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: MANAGE USERS (admin only)

@@ -181,15 +181,21 @@ def effective_pages(user):
     return [p for p in user["permissions"] if p in ALL_PAGES]
 
 # ─── Refunds ──────────────────────────────────────────────────────────────────
-# Lives in the same spreadsheet as Users, one row per refund request — shared
-# across every device, unlike the old localStorage-based tool, so Khawla, Sacha,
-# and admins all see the same list no matter what they're signed in on.
+# Own separate spreadsheet (like Shipment Tracker's), not a tab inside Users' —
+# one row per refund request, shared across every device, unlike the old
+# localStorage-based tool, so Khawla, Sacha, and admins all see the same list
+# no matter what they're signed in on.
 
+REFUNDS_SHEET_ID = "1U24iwNFUgYeSsjaP2j5R1ay5bib_EDvH"
 REFUNDS_SHEET_NAME = "Refunds"
 REFUND_STATUSES = ["Pending", "Refunded", "Rejected"]
 
+@st.cache_resource
+def _refunds_spreadsheet():
+    return _gc().open_by_key(REFUNDS_SHEET_ID)
+
 def get_refunds_ws():
-    sh = _spreadsheet()
+    sh = _refunds_spreadsheet()
     try:
         return sh.worksheet(REFUNDS_SHEET_NAME)
     except gspread.WorksheetNotFound:

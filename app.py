@@ -345,6 +345,12 @@ def co_order_number(order_id, reference_id):
     m = re.search(r"(\d+)\s*$", ref)
     return "1" + (m.group(1) if m else (ref or order_id))
 
+CO_AVATAR_COLORS = ["#D9531E", "#2A5C8A", "#227A55", "#8A5CA8"]
+
+def co_avatar_color(name, employees):
+    idx = employees.index(name) if name in employees else 0
+    return CO_AVATAR_COLORS[idx % len(CO_AVATAR_COLORS)]
+
 # Roadrunner packs items into one note like "(1) Product, Color / S sku: ABC-1.
 # (1) Other Product / M. (1) Third Product sku: XYZ-3." — the sku suffix is
 # inconsistent (some items have it, some don't), so split on each "(qty)"
@@ -1618,6 +1624,49 @@ hr { border-color: var(--rr-border) !important; }
     letter-spacing: 0.08em;
 }
 
+/* ── Pills (status/stage badges — Cancelled Orders, Refunds) ── */
+.rr-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.66rem; font-weight: 700; padding: 4px 10px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
+}
+.rr-pill-amber { background: #fff6e0; color: #966600; }
+.rr-pill-green { background: #eaf7ed; color: #227A55; }
+.rr-pill-red   { background: #fdecea; color: #B03A3A; }
+.rr-pill-blue  { background: #eef2f7; color: #2A5C8A; }
+
+/* ── Avatar circle (assigned employee initial) ── */
+.rr-avatar {
+    width: 30px; height: 30px; border-radius: 999px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; color: #fff; font-family: 'Inter', sans-serif;
+}
+
+/* ── Row cards (Cancelled Orders queue, Refunds' update panel) ── */
+[class*="st-key-co_card_"], .st-key-rf_update_panel {
+    border-radius: 14px !important;
+    transition: box-shadow .15s ease, border-color .15s ease;
+}
+[class*="st-key-co_card_"]:hover {
+    border-color: #d7dae0 !important;
+    box-shadow: 0 4px 16px rgba(31,35,44,0.07) !important;
+}
+
+/* ── WhatsApp-branded link buttons (st.link_button has no default theming) ── */
+.stLinkButton a {
+    font-family: 'Inter', sans-serif !important;
+    font-size: 0.82rem !important;
+    font-weight: 700 !important;
+    border-radius: 6px !important;
+    background: #1D8A4E !important;
+    border: 1.5px solid #1D8A4E !important;
+    color: #fff !important;
+    box-shadow: none !important;
+    transition: filter .15s ease !important;
+}
+.stLinkButton a:hover { filter: brightness(1.08); color: #fff !important; }
+.stLinkButton a p { color: #fff !important; }
+
 /* ── Subheaders ── */
 h2 {
     font-family: 'Inter', sans-serif !important;
@@ -2350,32 +2399,46 @@ elif page == "🚫 Cancelled Orders":
         )
     else:
         for o in co_filtered:
-            with st.container(border=True):
-                cc1, cc2, cc3, cc4 = st.columns([1.3, 2.2, 1.4, 1.8])
+            with st.container(border=True, key=f"co_card_{o['row']}"):
+                cc1, cc2, cc3 = st.columns([1.6, 2.6, 1.4])
                 with cc1:
-                    st.markdown(f"**#{co_order_number(o['order_id'], o['reference_id'])}**")
-                    st.caption(o["assigned_to"] or "—")
+                    co_avatar_bg = co_avatar_color(o["assigned_to"], co_settings["employees"])
+                    co_initial = (o["assigned_to"] or "?").strip()[:1].upper()
+                    st.markdown(
+                        f'<div style="display:flex;align-items:center;gap:9px;margin-bottom:2px">'
+                        f'<div class="rr-avatar" style="background:{co_avatar_bg}">{co_initial}</div>'
+                        f'<div><div style="font-weight:700">#{co_order_number(o["order_id"], o["reference_id"])}</div>'
+                        f'<div style="font-size:0.72rem;color:#8b8f9b">{o["assigned_to"] or "—"}</div></div></div>',
+                        unsafe_allow_html=True,
+                    )
                 with cc2:
                     st.markdown(f"**{o['customer'] or '—'}**")
                     if o["phone"]:
                         co_phone_digits = re.sub(r"[^0-9+]", "", o["phone"])
-                        st.markdown(f"[{o['phone']}](tel:{co_phone_digits})")
+                        st.markdown(f"[:material/call: {o['phone']}](tel:{co_phone_digits})")
                     co_items = co_parse_items(o["note"])
                     if co_items:
                         st.caption(" · ".join(co_items))
                 with cc3:
                     st.markdown(f"**${o['total_usd']:,.2f}**")
                     st.caption(o["payment_status"])
-                with cc4:
                     if o["outcome"]:
+                        co_pill_cls = "rr-pill-green" if o["outcome"] == "recovered" else "rr-pill-red"
                         co_label = "✓ Recovered" if o["outcome"] == "recovered" else "✕ Lost"
-                        st.markdown(f"**{co_label}**")
-                        if st.button("Reopen", key=f"co_reopen_{o['row']}", use_container_width=True):
-                            update_co_order(o["row"], outcome="")
-                            st.rerun()
                     else:
-                        co_stage = o["stage"]
-                        st.caption(CO_STAGE_LABELS[co_stage])
+                        co_pill_cls = "rr-pill-amber"
+                        co_label = CO_STAGE_LABELS[o["stage"]]
+                    st.markdown(f'<span class="rr-pill {co_pill_cls}">{co_label}</span>', unsafe_allow_html=True)
+
+                st.markdown("")
+                if o["outcome"]:
+                    if st.button("Reopen", key=f"co_reopen_{o['row']}"):
+                        update_co_order(o["row"], outcome="")
+                        st.rerun()
+                else:
+                    co_stage = o["stage"]
+                    ac1, ac2, ac3 = st.columns([2.2, 1.3, 1])
+                    with ac1:
                         if o["phone"]:
                             if co_stage == "wa1":
                                 co_text = co_fill_template(co_settings["wa_template_1"], o, co_settings)
@@ -2389,11 +2452,12 @@ elif page == "🚫 Cancelled Orders":
                             st.link_button(co_wa_label, co_wa_link(o["phone"], co_text), use_container_width=True)
                         else:
                             st.caption("No phone")
-                        co_yn1, co_yn2 = st.columns(2)
-                        if co_yn1.button("Recovered", key=f"co_yes_{o['row']}", use_container_width=True):
+                    with ac2:
+                        if st.button("Recovered", key=f"co_yes_{o['row']}", use_container_width=True):
                             update_co_order(o["row"], outcome="recovered")
                             st.rerun()
-                        if co_yn2.button("No", key=f"co_no_{o['row']}", use_container_width=True):
+                    with ac3:
+                        if st.button("No", key=f"co_no_{o['row']}", use_container_width=True):
                             co_idx = CO_STAGE_ORDER.index(co_stage)
                             if co_idx < len(CO_STAGE_ORDER) - 1:
                                 update_co_order(o["row"], stage=CO_STAGE_ORDER[co_idx + 1])
@@ -2487,55 +2551,60 @@ elif page == "💸 Refunds":
             )
             st.caption(f"{len(filtered)} of {len(refunds)} refund(s) shown")
 
-        st.divider()
+        st.markdown("")
         st.markdown("### Update a Refund")
-        sel_refund = st.selectbox(
-            "Refund", refunds, label_visibility="collapsed",
-            format_func=lambda r: f"{r['order']} — {r['customer']}",
-        )
+        with st.container(border=True, key="rf_update_panel"):
+            sel_refund = st.selectbox(
+                "Refund", refunds, label_visibility="collapsed",
+                format_func=lambda r: f"{r['order']} — {r['customer']}",
+            )
 
-        d1, d2 = st.columns(2)
-        with d1:
-            amt_str = f"${sel_refund['amount']:,.2f}" if sel_refund["amount"] is not None else "—"
-            st.markdown(f"**Amount:** {amt_str}")
-            st.markdown(f"**Whish number:** {sel_refund['whish'] or '—'}")
-        with d2:
-            st.markdown(f"**Logged by:** {sel_refund['logged_by'] or '—'}")
-            st.markdown(f"**Date logged:** {sel_refund['date_logged'] or '—'}")
+            rf_pill_cls = {"Pending": "rr-pill-amber", "Refunded": "rr-pill-green", "Rejected": "rr-pill-red"}[sel_refund["status"]]
+            st.markdown(f'<span class="rr-pill {rf_pill_cls}">{sel_refund["status"]}</span>', unsafe_allow_html=True)
+            st.markdown("")
 
-        new_status = st.selectbox(
-            "Status", REFUND_STATUSES,
-            index=REFUND_STATUSES.index(sel_refund["status"]),
-            key=f"status_select_{sel_refund['row']}",
-        )
-        if st.button(
-            "Update Status", type="primary", use_container_width=True,
-            disabled=(new_status == sel_refund["status"]),
-        ):
-            update_refund_status(sel_refund["row"], new_status)
-            st.success(f"Marked {sel_refund['order']} as {new_status}.")
-            st.rerun()
+            d1, d2 = st.columns(2)
+            with d1:
+                amt_str = f"${sel_refund['amount']:,.2f}" if sel_refund["amount"] is not None else "—"
+                st.markdown(f"**Amount:** {amt_str}")
+                st.markdown(f"**Whish number:** {sel_refund['whish'] or '—'}")
+            with d2:
+                st.markdown(f"**Logged by:** {sel_refund['logged_by'] or '—'}")
+                st.markdown(f"**Date logged:** {sel_refund['date_logged'] or '—'}")
 
-        if st.session_state.role == "admin":
-            confirm_key = f"confirm_del_refund_{sel_refund['row']}"
-            if not st.session_state.get(confirm_key):
-                if st.button("Delete this refund", icon=":material/delete:", use_container_width=True):
-                    st.session_state[confirm_key] = True
-                    st.rerun()
-            else:
-                st.warning(
-                    f"Permanently delete the refund for {sel_refund['customer']} "
-                    f"({sel_refund['order']})? This can't be undone."
-                )
-                cc1, cc2 = st.columns(2)
-                if cc1.button("Yes, delete", type="primary", use_container_width=True):
-                    delete_refund(sel_refund["row"])
-                    st.session_state.pop(confirm_key, None)
-                    st.success("Refund deleted.")
-                    st.rerun()
-                if cc2.button("Cancel", use_container_width=True):
-                    st.session_state.pop(confirm_key, None)
-                    st.rerun()
+            new_status = st.selectbox(
+                "Status", REFUND_STATUSES,
+                index=REFUND_STATUSES.index(sel_refund["status"]),
+                key=f"status_select_{sel_refund['row']}",
+            )
+            if st.button(
+                "Update Status", type="primary", use_container_width=True,
+                disabled=(new_status == sel_refund["status"]),
+            ):
+                update_refund_status(sel_refund["row"], new_status)
+                st.success(f"Marked {sel_refund['order']} as {new_status}.")
+                st.rerun()
+
+            if st.session_state.role == "admin":
+                confirm_key = f"confirm_del_refund_{sel_refund['row']}"
+                if not st.session_state.get(confirm_key):
+                    if st.button("Delete this refund", icon=":material/delete:", use_container_width=True):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
+                else:
+                    st.warning(
+                        f"Permanently delete the refund for {sel_refund['customer']} "
+                        f"({sel_refund['order']})? This can't be undone."
+                    )
+                    cc1, cc2 = st.columns(2)
+                    if cc1.button("Yes, delete", type="primary", use_container_width=True):
+                        delete_refund(sel_refund["row"])
+                        st.session_state.pop(confirm_key, None)
+                        st.success("Refund deleted.")
+                        st.rerun()
+                    if cc2.button("Cancel", use_container_width=True):
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: MANAGE USERS (admin only)

@@ -181,9 +181,12 @@ def _autofill_fix_script():
     """iOS Safari's saved-password autofill sets an input's value without firing the
     events React listens for, so Streamlit's widget state stays stale — the field
     looks filled but the app still sees the old (often empty) value, which reads as
-    a wrong password. This is the standard cross-browser fix: a CSS animation that
-    only triggers on :-webkit-autofill, whose animationstart event we use as a hook
-    to force a real 'input' event through React's native value setter."""
+    a wrong password. The animationstart/:-webkit-autofill trick alone isn't reliable
+    enough (Keychain's QuickType-bar fill doesn't always trigger it the same way
+    Safari's own form-fill styling does), so this resyncs on three independent
+    triggers instead of just one: the autofill animation, losing focus, and — as a
+    last-resort net — the moment ANY tap starts anywhere on the page, caught in the
+    capture phase so it runs before Streamlit's own click handling does."""
     nonce = f"<!-- {datetime.now().isoformat()} -->"  # forces a fresh iframe reload every render
     script = nonce + """
 <script>
@@ -196,15 +199,25 @@ try {
         doc.head.appendChild(s);
     }
     const setter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
+    function syncAll() {
+        doc.querySelectorAll('[data-testid="stTextInputRootElement"] input').forEach(function (inp) {
+            setter.call(inp, inp.value);
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+    }
     doc.querySelectorAll('[data-testid="stTextInputRootElement"] input').forEach(function (inp) {
         if (inp.dataset.smAutofillHooked) return;
         inp.dataset.smAutofillHooked = '1';
         inp.addEventListener('animationstart', function (e) {
-            if (e.animationName !== 'smAutoFill') return;
-            setter.call(inp, inp.value);
-            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            if (e.animationName === 'smAutoFill') syncAll();
         });
+        inp.addEventListener('blur', syncAll);
     });
+    if (!doc.__smAutofillCaptureHooked) {
+        doc.__smAutofillCaptureHooked = true;
+        doc.addEventListener('pointerdown', syncAll, true);
+        doc.addEventListener('touchstart', syncAll, true);
+    }
 } catch (e) {}
 </script>
 """

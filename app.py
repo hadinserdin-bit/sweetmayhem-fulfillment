@@ -16,6 +16,7 @@ import io
 import math
 import re
 import secrets
+import uuid
 import hashlib
 import bcrypt
 import openpyxl
@@ -840,12 +841,42 @@ def find_shopify_inventory_item(variant_map, product, color, size):
 def _gid(resource, numeric_id):
     return f"gid://shopify/{resource}/{numeric_id}"
 
+def _current_shopify_onhand(inventory_item_id, location_id):
+    query = """
+    query currentOnHand($itemId: ID!, $locationId: ID!) {
+      inventoryItem(id: $itemId) {
+        inventoryLevel(locationId: $locationId) {
+          quantities(names: ["on_hand"]) { quantity }
+        }
+      }
+    }
+    """
+    variables = {
+        "itemId": _gid("InventoryItem", inventory_item_id),
+        "locationId": _gid("Location", location_id),
+    }
+    resp = requests.post(
+        f"{_SHOPIFY_BASE}/graphql.json",
+        headers=_SHOPIFY_HEADERS,
+        json={"query": query, "variables": variables},
+    )
+    if not resp.ok:
+        raise Exception(f"{resp.status_code} {resp.text}")
+    data = resp.json()
+    if data.get("errors"):
+        raise Exception("; ".join(e["message"] for e in data["errors"]))
+    level = (data.get("data") or {}).get("inventoryItem", {}).get("inventoryLevel")
+    if not level:
+        raise Exception("No inventory level found for this item at this location.")
+    return level["quantities"][0]["quantity"]
+
 def set_shopify_onhand_quantity(inventory_item_id, location_id, quantity):
     """Sets the Shopify 'On hand' quantity (not 'Available') to an absolute value,
     matching the Google Sheet's inventory count for that variant."""
+    current = _current_shopify_onhand(inventory_item_id, location_id)
     query = """
-    mutation setOnHand($input: InventorySetQuantitiesInput!) {
-      inventorySetQuantities(input: $input) {
+    mutation setOnHand($input: InventorySetQuantitiesInput!, $key: String!) {
+      inventorySetQuantities(input: $input) @idempotent(key: $key) {
         userErrors { field message }
       }
     }
@@ -854,13 +885,14 @@ def set_shopify_onhand_quantity(inventory_item_id, location_id, quantity):
         "input": {
             "name": "on_hand",
             "reason": "correction",
-            "ignoreCompareQuantity": True,
             "quantities": [{
                 "inventoryItemId": _gid("InventoryItem", inventory_item_id),
                 "locationId": _gid("Location", location_id),
                 "quantity": quantity,
+                "changeFromQuantity": current,
             }],
-        }
+        },
+        "key": str(uuid.uuid4()),
     }
     resp = requests.post(
         f"{_SHOPIFY_BASE}/graphql.json",

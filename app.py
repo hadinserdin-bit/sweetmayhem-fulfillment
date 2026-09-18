@@ -16,6 +16,8 @@ import io
 import json
 import math
 import re
+import secrets
+import hashlib
 import bcrypt
 import openpyxl
 from googleapiclient.discovery import build
@@ -115,6 +117,7 @@ def load_users():
                 PAGE_KEY_MIGRATIONS.get(p.strip(), p.strip())
                 for p in row[3].split(",") if p.strip()
             ],
+            "remember_hash": row[5] if len(row) > 5 else "",
             "row": i,
         }
     return users
@@ -128,11 +131,26 @@ def verify_password(password, password_hash):
     except (ValueError, TypeError):
         return False
 
+# Remember-me tokens are high-entropy random secrets, not human-chosen passwords —
+# a fast hash (unlike bcrypt) is fine here and lets lookup-by-token stay cheap.
+def _hash_token(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+def issue_remember_token(row):
+    token = secrets.token_urlsafe(32)
+    get_users_ws().update_cell(row, 6, _hash_token(token))
+    load_users.clear()
+    return token
+
+def revoke_remember_token(row):
+    get_users_ws().update_cell(row, 6, "")
+    load_users.clear()
+
 def create_user(username, password, role, permissions):
     ws = get_users_ws()
     ws.append_row([
         username, hash_password(password), role, ",".join(permissions),
-        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        datetime.now().strftime("%Y-%m-%d %H:%M"), "",
     ])
     load_users.clear()
 
@@ -144,6 +162,8 @@ def update_user(row, role=None, permissions=None, password=None):
         ws.update_cell(row, 4, ",".join(permissions))
     if password is not None:
         ws.update_cell(row, 2, hash_password(password))
+        # A password change invalidates any existing remember-me link for this account.
+        ws.update_cell(row, 6, "")
     load_users.clear()
 
 def delete_user(row):
@@ -161,13 +181,29 @@ def login_screen():
     if st.session_state.get("authenticated"):
         return True
 
+    users = load_users()
+
+    # Silent re-auth: session_state alone doesn't survive a real page reload (mobile
+    # browsers in particular tear the whole session down on refresh/background-resume,
+    # unlike a typical desktop soft-reload). A token in the URL does survive a reload,
+    # so a matching one here logs the user back in without asking again.
+    token = st.query_params.get("t")
+    if token:
+        token_hash = _hash_token(token)
+        matched = next((u for u in users.values() if u["remember_hash"] and u["remember_hash"] == token_hash), None)
+        if matched:
+            st.session_state.authenticated = True
+            st.session_state.username = matched["username"]
+            st.session_state.role = matched["role"]
+            st.session_state.pages = effective_pages(matched)
+            return True
+        del st.query_params["t"]  # stale/revoked token — drop it so it stops being tried
+
     st.markdown("""
     <style>
     [data-testid="stAppViewContainer"] { background: #f4f5f7; }
     </style>
     """, unsafe_allow_html=True)
-
-    users = load_users()
 
     col = st.columns([1, 1.2, 1])[1]
     with col:
@@ -206,6 +242,7 @@ def login_screen():
                     st.session_state.username = u["username"]
                     st.session_state.role = u["role"]
                     st.session_state.pages = effective_pages(u)
+                    st.query_params["t"] = issue_remember_token(u["row"])
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")
@@ -1237,6 +1274,10 @@ with st.sidebar:
     st.divider()
     st.caption(f"Signed in as **{st.session_state.username}**  ·  {st.session_state.role}")
     if st.button("Sign Out", use_container_width=True):
+        me = load_users().get(st.session_state.username.lower())
+        if me:
+            revoke_remember_token(me["row"])
+        st.query_params.pop("t", None)
         for k in ("authenticated", "username", "role", "pages"):
             st.session_state.pop(k, None)
         st.rerun()

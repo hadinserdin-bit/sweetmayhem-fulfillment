@@ -294,9 +294,13 @@
     try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){}
   }
 
+  var SEED_FLAG_KEY = "refunds_seeded_v1";
   var state = loadState();
   if(!state.refunds) state.refunds = {};
-  if(Object.keys(state.refunds).length === 0){
+  // Seed a few example rows only on the very first-ever load of this browser —
+  // guarded by a separate flag, not "table is currently empty", so deleting
+  // every real entry later doesn't bring the examples back.
+  if(Object.keys(state.refunds).length === 0 && !localStorage.getItem(SEED_FLAG_KEY)){
     var seed = [
       ["#15238","Lamis Kfoury",69.94,"pending","","Khawla",-1],
       ["#15094","Abeer Hatab",39.95,"refunded","81294910","Sacha",-2],
@@ -312,6 +316,7 @@
     });
     saveState();
   }
+  try{ localStorage.setItem(SEED_FLAG_KEY, "1"); }catch(e){}
 
   var isAdmin = !window.APP_ROLE || window.APP_ROLE === "admin";
   var currentUser = window.APP_USER || "";

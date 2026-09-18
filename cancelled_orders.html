@@ -1125,4 +1125,40 @@
 })();
 </script>
 
+<script>
+  // The host app embeds this via components.html with a fixed height and its
+  // own scrolling turned off (deliberately — an independently-scrollable
+  // iframe fights the outer page's scroll on mobile). That only works if the
+  // iframe is always exactly as tall as this page's real content — with a
+  // 100+-row table that grows daily, a static height clips most of it with
+  // no way to reach the rest (verified: the standard Streamlit
+  // "streamlit:setFrameHeight" postMessage that custom components use is
+  // NOT wired up for plain components.html — it's silently ignored). So
+  // this finds its own <iframe> element in the parent document directly
+  // (same-origin access, same technique the sidebar-close fix elsewhere in
+  // this app already relies on) and sets its height itself. Re-applied on
+  // every layout change (rows added/removed, Settings opened, fonts
+  // finishing load, etc.) via ResizeObserver, since the table's length
+  // changes constantly as orders get uploaded and resolved.
+  (function(){
+    function reportHeight(){
+      var h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+      try{
+        var frames = window.parent.document.querySelectorAll("iframe");
+        for(var i=0;i<frames.length;i++){
+          if(frames[i].contentWindow === window){ frames[i].style.height = h + "px"; break; }
+        }
+      }catch(e){}
+    }
+    if(window.ResizeObserver){
+      new ResizeObserver(reportHeight).observe(document.body);
+    } else {
+      setInterval(reportHeight, 500);
+    }
+    window.addEventListener("load", reportHeight);
+    reportHeight();
+    setTimeout(reportHeight, 300);
+  })();
+</script>
+
 </body></html>

@@ -65,10 +65,11 @@ def get_ws():
 USERS_SHEET_NAME = "Users"
 ALL_PAGES = [
     "📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder",
-    "🚫 Cancelled Orders", "🚢 Shipment Tracker", "🧾 Shipment Details",
+    "🚫 Cancelled Orders", "💸 Refunds", "🚢 Shipment Tracker", "🧾 Shipment Details",
 ]
 ADMIN_PAGE = "👤 Manage Users"
 CANCELLED_ORDERS_URL = "https://claude.ai/artifact/1TJ5d5iJuijaHKNTTBSiyZ"
+REFUNDS_URL = "https://claude.ai/artifact/6bWxZna2m1guseJ2Apb6sk"
 
 # "Save Desk" was this page's old name — some users' saved Permissions cells
 # may still have the old identity string. Translated on load (below) so
@@ -87,6 +88,7 @@ PAGE_ICONS = {
     "📋 View Inventory": ":material/list_alt:",
     "📊 Demand & Reorder": ":material/insights:",
     "🚫 Cancelled Orders": ":material/cancel:",
+    "💸 Refunds": ":material/currency_exchange:",
     "🚢 Shipment Tracker": ":material/directions_boat:",
     "🧾 Shipment Details": ":material/receipt_long:",
     ADMIN_PAGE: ":material/group:",
@@ -1828,6 +1830,26 @@ elif page == "🚫 Cancelled Orders":
     else:
         st.error("cancelled_orders.html wasn't found next to app.py — the embed can't load.")
         st.link_button("Open Cancelled Orders ↗", CANCELLED_ORDERS_URL, use_container_width=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE: REFUNDS
+# ─────────────────────────────────────────────────────────────────────────────
+
+elif page == "💸 Refunds":
+    refunds_html = Path(__file__).parent / "refunds.html"
+    if refunds_html.exists():
+        html = refunds_html.read_text(encoding="utf-8")
+        # Same role/username injection as Cancelled Orders: role gates deleting
+        # entries to admins, username auto-fills "Logged by" on new refunds.
+        role_script = (
+            f"<script>window.APP_ROLE = {json.dumps(st.session_state.role)}; "
+            f"window.APP_USER = {json.dumps(st.session_state.username)};</script>"
+        )
+        html = html.replace("<body>", "<body>" + role_script, 1)
+        components.html(html, height=1800, scrolling=False)
+    else:
+        st.error("refunds.html wasn't found next to app.py — the embed can't load.")
+        st.link_button("Open Refunds ↗", REFUNDS_URL, use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: MANAGE USERS (admin only)

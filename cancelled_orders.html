@@ -166,7 +166,6 @@
   details.backup textarea{width:100%;height:90px;margin-top:8px;font-family:ui-monospace,"SF Mono",monospace;font-size:11px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--ink);padding:8px}
   .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;font-weight:600;box-shadow:var(--shadow-lg);z-index:50;opacity:0;pointer-events:none;transition:opacity .2s, transform .2s}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
-  footer.note{color:var(--muted);font-size:12px;margin-top:6px;text-align:center}
 </style>
 
 <header class="top">
@@ -268,7 +267,6 @@
   <div id="emptyState" class="empty" hidden>No cancellations tracked yet — upload today's Roadrunner export above to get started.</div>
 </section>
 
-<footer class="note">Data stays in this browser only — export the backup JSON now and then so nothing is lost.</footer>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -369,6 +367,15 @@
   }
 
   var activeTab = "all";
+  // Set near the end of this script (once we know who's viewing) when a
+  // non-admin's login matches one of the configured employee names — locks
+  // the whole page (tiles + queue) to just that person's orders, with no
+  // way to switch to "All" or the other employee's tab.
+  var lockedEmployee = null;
+  function visibleOrders(){
+    var all = ordersArray();
+    return lockedEmployee ? all.filter(function(o){ return o.assignedTo===lockedEmployee; }) : all;
+  }
 
   function toast(msg){
     var t = document.getElementById("toast");
@@ -733,7 +740,7 @@
   }
 
   function renderTiles(){
-    var all = ordersArray();
+    var all = visibleOrders();
     var totalUsd = all.reduce(function(s,o){ return s+o.totalUsd; },0);
     var recovered = all.filter(function(o){ return o.outcome==="recovered"; });
     var recoveredUsd = recovered.reduce(function(s,o){ return s+o.totalUsd; },0);
@@ -758,8 +765,9 @@
   }
 
   function renderTabs(){
-    var all = ordersArray();
     var tabsEl = document.getElementById("tabs");
+    if(lockedEmployee){ tabsEl.innerHTML = ""; return; }
+    var all = ordersArray();
     var defs = [{key:"all", label:"All"}];
     state.settings.employees.forEach(function(e){ defs.push({key:e, label:e}); });
     tabsEl.innerHTML = defs.map(function(d){
@@ -777,9 +785,12 @@
   }
 
   function filteredOrders(){
-    var list = ordersArray().filter(function(o){
-      return activeTab==="all" ? true : o.assignedTo===activeTab;
-    });
+    var list = visibleOrders();
+    if(!lockedEmployee){
+      list = list.filter(function(o){
+        return activeTab==="all" ? true : o.assignedTo===activeTab;
+      });
+    }
     list.sort(function(a,b){ return (b.creationDate||"").localeCompare(a.creationDate||""); });
     return list;
   }
@@ -1097,6 +1108,17 @@
     document.getElementById("btnUploadTop").hidden = true;
     document.getElementById("btnSettings").hidden = true;
     document.getElementById("emptyState").textContent = "No cancellations tracked yet — ask an admin to upload today's export.";
+    // Lock the page to just this person's orders if their login name matches
+    // one of the configured employees (Settings → Employee 1/2) — case
+    // insensitive, so "khawla" the Streamlit username matches "Khawla" the
+    // employee name. No match (typo, unconfigured account, etc.) falls back
+    // to showing everything, same as before this existed.
+    if(window.APP_USER){
+      var matchedEmployee = state.settings.employees.filter(function(e){
+        return e.toLowerCase() === String(window.APP_USER).trim().toLowerCase();
+      })[0];
+      if(matchedEmployee) lockedEmployee = matchedEmployee;
+    }
   }
 
   render();

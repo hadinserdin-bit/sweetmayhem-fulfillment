@@ -822,8 +822,8 @@ html, body, [data-testid="stAppViewContainer"] {
 
 /* ── Sidebar ── */
 [data-testid="stSidebar"] {
-    background: var(--rr-sidebar-bg) !important;
-    border-right: none;
+    background: #eef0f4 !important;
+    border-right: 1px solid var(--rr-border);
 }
 [data-testid="stSidebarContent"] {
     padding: 1.6rem 1rem;
@@ -832,14 +832,14 @@ html, body, [data-testid="stAppViewContainer"] {
     font-family: 'Inter', sans-serif;
     font-size: 1.1rem;
     font-weight: 700;
-    color: #fff;
+    color: #1f232c;
     letter-spacing: 0;
     text-transform: none;
     margin-bottom: 0.2rem;
 }
 .sidebar-tagline {
     font-size: 0.65rem;
-    color: #8b8f9b;
+    color: #6b6f7b;
     letter-spacing: 0.1em;
     text-transform: uppercase;
     margin-bottom: 1.6rem;
@@ -853,51 +853,50 @@ html, body, [data-testid="stAppViewContainer"] {
     margin: 0.9rem 0.8rem 0.3rem;
 }
 [data-testid="stSidebar"] hr {
-    border-color: rgba(255,255,255,0.1);
+    border-color: var(--rr-border);
     margin: 1.1rem 0;
 }
 [data-testid="stSidebar"] p, [data-testid="stSidebar"] .stCaption {
-    color: #8b8f9b !important;
+    color: #6b6f7b !important;
 }
 [data-testid="stSidebar"] .stButton > button {
-    border-color: rgba(255,255,255,0.25) !important;
-    color: #fff !important;
-    background: transparent !important;
+    border: 1px solid var(--rr-border) !important;
+    color: #1f232c !important;
+    background: #fff !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
 }
 [data-testid="stSidebar"] .stButton > button:hover {
     background: var(--rr-red) !important;
     border-color: var(--rr-red) !important;
+    color: #fff !important;
 }
 
 /* ── Sidebar nav (icon buttons) ── */
-.st-key-sidebar_nav .stButton { margin-bottom: 0.15rem; }
+.st-key-sidebar_nav .stButton { margin-bottom: 0.5rem; }
 .st-key-sidebar_nav .stButton > button {
-    border: none !important;
-    background: transparent !important;
-    color: var(--rr-sidebar-text) !important;
-    justify-content: flex-start !important;
-    font-size: 0.85rem !important;
+    border: 1px solid var(--rr-border) !important;
+    background: #fff !important;
+    color: #1f232c !important;
+    font-size: 0.9rem !important;
     font-weight: 500 !important;
-    padding: 0.6rem 0.8rem !important;
-    border-radius: 6px !important;
+    padding: 0.7rem 0.8rem !important;
+    border-radius: 10px !important;
     width: 100% !important;
-}
-.st-key-sidebar_nav .stButton > button > div {
-    justify-content: flex-start !important;
-    width: 100% !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
 }
 .st-key-sidebar_nav .stButton > button:hover {
-    background: rgba(255,255,255,0.06) !important;
-    color: #fff !important;
-    border: none !important;
+    background: #f7f8fa !important;
+    border-color: #d0d3d9 !important;
+    color: #1f232c !important;
 }
 .st-key-sidebar_nav .stButton > button[kind="primary"] {
     background: var(--rr-red) !important;
-    color: var(--rr-on-red) !important;
-    border: none !important;
+    color: #fff !important;
+    border: 1px solid var(--rr-red) !important;
 }
 .st-key-sidebar_nav .stButton > button[kind="primary"]:hover {
     background: var(--rr-red-dark) !important;
+    border-color: var(--rr-red-dark) !important;
 }
 
 /* ── Buttons ── */

@@ -812,8 +812,6 @@ st.markdown("""
     --rr-red-text: #e6394f;
     --rr-sidebar-bg: #1f232c;
     --rr-sidebar-text: #aeb2bd;
-    --rr-blue: #1e9fd6;
-    --rr-blue-dark: #1786b8;
     --rr-bg: #f4f5f7;
     --rr-border: #e5e7eb;
 }
@@ -897,14 +895,21 @@ html, body, [data-testid="stAppViewContainer"] {
     border-color: #d0d3d9 !important;
     color: #1f232c !important;
 }
+.st-key-sidebar_nav .stButton > button:active {
+    background: var(--rr-red) !important;
+    border-color: var(--rr-red) !important;
+    color: #fff !important;
+}
 .st-key-sidebar_nav .stButton > button[kind="primary"] {
     background: var(--rr-red) !important;
     color: #fff !important;
     border: 1px solid var(--rr-red) !important;
 }
-.st-key-sidebar_nav .stButton > button[kind="primary"]:hover {
+.st-key-sidebar_nav .stButton > button[kind="primary"]:hover,
+.st-key-sidebar_nav .stButton > button[kind="primary"]:active {
     background: var(--rr-red-dark) !important;
     border-color: var(--rr-red-dark) !important;
+    color: #fff !important;
 }
 
 /* ── Buttons ── */
@@ -917,23 +922,31 @@ html, body, [data-testid="stAppViewContainer"] {
     border-radius: 6px !important;
     padding: 0.55rem 1.4rem !important;
     transition: all 0.15s ease !important;
-    border: 1.5px solid var(--rr-blue) !important;
-    color: var(--rr-blue) !important;
+    border: 1.5px solid var(--rr-red) !important;
+    color: var(--rr-red) !important;
     background: transparent !important;
     box-shadow: none !important;
 }
 .stButton > button:hover {
-    background: var(--rr-blue) !important;
+    background: var(--rr-red) !important;
     color: white !important;
+    border-color: var(--rr-red) !important;
+}
+.stButton > button:active {
+    background: var(--rr-red-dark) !important;
+    color: white !important;
+    border-color: var(--rr-red-dark) !important;
 }
 .stButton > button[kind="primary"] {
-    background: var(--rr-blue) !important;
+    background: var(--rr-red) !important;
     color: white !important;
-    border-color: var(--rr-blue) !important;
+    border-color: var(--rr-red) !important;
 }
-.stButton > button[kind="primary"]:hover {
-    background: var(--rr-blue-dark) !important;
-    border-color: var(--rr-blue-dark) !important;
+.stButton > button[kind="primary"]:hover,
+.stButton > button[kind="primary"]:active {
+    background: var(--rr-red-dark) !important;
+    border-color: var(--rr-red-dark) !important;
+    color: white !important;
 }
 
 /* ── Inputs ── */
@@ -949,8 +962,8 @@ html, body, [data-testid="stAppViewContainer"] {
 }
 .stTextInput input:focus,
 .stTextArea textarea:focus {
-    border-color: var(--rr-blue) !important;
-    box-shadow: 0 0 0 2px rgba(30,159,214,0.12) !important;
+    border-color: var(--rr-red) !important;
+    box-shadow: 0 0 0 2px rgba(230,57,79,0.12) !important;
 }
 .stSelectbox > div > div {
     border-radius: 6px !important;
@@ -1216,10 +1229,10 @@ if page == "📦 Fulfillment":
 
         # Stat cards
         sc1, sc2, sc3, sc4 = st.columns(4)
-        sc1.markdown(f'<div class="stat"><p class="num" style="color:#198754">{len(fulfillable)}</p><p class="lbl">Ready to fulfill</p></div>', unsafe_allow_html=True)
-        sc2.markdown(f'<div class="stat"><p class="num" style="color:#e07b00">{len(skipped)}</p><p class="lbl">Skipped</p></div>', unsafe_allow_html=True)
-        sc3.markdown(f'<div class="stat"><p class="num" style="color:#0d6efd">{len(changes)}</p><p class="lbl">Inventory changes</p></div>', unsafe_allow_html=True)
-        sc4.markdown(f'<div class="stat"><p class="num" style="color:#dc3545">{no_phone_count}</p><p class="lbl">No Phone Number</p></div>', unsafe_allow_html=True)
+        sc1.markdown(f'<div class="stat"><p class="num">{len(fulfillable)}</p><p class="lbl">Ready to fulfill</p></div>', unsafe_allow_html=True)
+        sc2.markdown(f'<div class="stat"><p class="num">{len(skipped)}</p><p class="lbl">Skipped</p></div>', unsafe_allow_html=True)
+        sc3.markdown(f'<div class="stat"><p class="num">{len(changes)}</p><p class="lbl">Inventory changes</p></div>', unsafe_allow_html=True)
+        sc4.markdown(f'<div class="stat"><p class="num" style="color:var(--rr-red)">{no_phone_count}</p><p class="lbl">No Phone Number</p></div>', unsafe_allow_html=True)
         st.markdown("")
 
         tab1, tab2, tab3 = st.tabs(["✅ To Fulfill", "⚠️ Skipped", "📊 Inventory Changes"])

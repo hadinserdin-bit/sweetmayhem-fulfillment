@@ -1,0 +1,560 @@
+<!doctype html><html><head>
+<meta charset="utf-8">
+<title>Refunds</title>
+<meta name="description" content="Track customer refund requests and Whish payouts from request to paid.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#F4F5F7; --surface:#FFFFFF; --surface-2:#EEF0F4;
+    --ink:#1F232C; --muted:#6B6F7B; --border:#E5E7EB;
+    --accent:#E6394F; --accent-ink:#FFFFFF; --accent-soft:#FBE3E6;
+    --good:#227A55; --good-soft:#DCEEE3;
+    --warn:#966600; --warn-soft:#F5E6BF;
+    --bad:#B03A3A; --bad-soft:#F3DEDE;
+    --info:#2A5C8A; --info-soft:#DCE7F1;
+    --shadow: 0 1px 3px rgba(0,0,0,0.04);
+    --shadow-lg: 0 4px 16px rgba(31,35,44,0.12);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#16181D; --surface:#1E2128; --surface-2:#262A32;
+      --ink:#F1F2F4; --muted:#9BA0AC; --border:#333844;
+      --accent:#F14D63; --accent-ink:#1A0507; --accent-soft:#3A1B22;
+      --good:#4CAF82; --good-soft:#173327;
+      --warn:#D9A93E; --warn-soft:#3A2E10;
+      --bad:#E36767; --bad-soft:#3A1B1B;
+      --info:#6FA3D6; --info-soft:#17263A;
+      --shadow: 0 1px 3px rgba(0,0,0,0.3);
+      --shadow-lg: 0 4px 20px rgba(0,0,0,0.45);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#16181D; --surface:#1E2128; --surface-2:#262A32;
+    --ink:#F1F2F4; --muted:#9BA0AC; --border:#333844;
+    --accent:#F14D63; --accent-ink:#1A0507; --accent-soft:#3A1B22;
+    --good:#4CAF82; --good-soft:#173327;
+    --warn:#D9A93E; --warn-soft:#3A2E10;
+    --bad:#E36767; --bad-soft:#3A1B1B;
+    --info:#6FA3D6; --info-soft:#17263A;
+    --shadow: 0 1px 3px rgba(0,0,0,0.3);
+    --shadow-lg: 0 4px 20px rgba(0,0,0,0.45);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    padding:24px 20px 48px; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1180px; margin:0 auto; display:flex; flex-direction:column; gap:18px;}
+
+  header.top{
+    display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  }
+  .brand{display:flex; align-items:center; gap:12px;}
+  .mark{
+    width:40px; height:40px; border-radius:11px; background:var(--accent);
+    display:flex; align-items:center; justify-content:center; flex:none;
+    box-shadow: var(--shadow);
+  }
+  .brand h1{font-size:20px; margin:0; font-weight:800; letter-spacing:-0.01em;}
+  .brand p{margin:2px 0 0; font-size:13px; color:var(--muted);}
+  .topActions{display:flex; gap:10px; flex-wrap:wrap;}
+
+  button{font-family:inherit; cursor:pointer;}
+  .primary{
+    background:var(--accent); color:var(--accent-ink); border:none; border-radius:10px;
+    padding:10px 16px; font-weight:700; font-size:13.5px; box-shadow: var(--shadow);
+  }
+  .primary:hover{filter:brightness(1.05);}
+  .ghost{
+    background:var(--surface); color:var(--ink); border:1px solid var(--border); border-radius:10px;
+    padding:10px 16px; font-weight:600; font-size:13.5px;
+  }
+  .ghost:hover{background:var(--surface-2);}
+  .ghost.danger{color:var(--bad); border-color:var(--bad-soft);}
+
+  .tiles{display:grid; grid-template-columns:repeat(auto-fit, minmax(190px,1fr)); gap:12px;}
+  .tile{
+    background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    padding:16px; box-shadow:var(--shadow); border-top:3px solid var(--border);
+  }
+  .tile .lbl{font-size:11.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--muted);}
+  .tile .num{font-size:26px; font-weight:800; margin-top:6px; font-variant-numeric:tabular-nums;}
+  .tile .sub{font-size:12.5px; color:var(--muted); margin-top:2px;}
+  .tile.pending{border-top-color:var(--warn);}
+  .tile.pending .num{color:var(--warn);}
+  .tile.refunded{border-top-color:var(--good);}
+  .tile.refunded .num{color:var(--good);}
+  .tile.rejected{border-top-color:var(--bad);}
+  .tile.rejected .num{color:var(--bad);}
+
+  section.card{
+    background:var(--surface); border:1px solid var(--border); border-radius:16px;
+    box-shadow:var(--shadow); padding:20px;
+  }
+  section.card h2{font-size:15px; margin:0 0 14px; font-weight:700;}
+
+  .formGrid{display:grid; grid-template-columns:repeat(auto-fit, minmax(160px,1fr)); gap:12px;}
+  label{display:block; font-size:12px; font-weight:600; color:var(--muted); margin-bottom:5px;}
+  input, select{
+    width:100%; padding:9px 10px; border-radius:8px; border:1px solid var(--border);
+    background:var(--bg); color:var(--ink); font-family:inherit; font-size:13.5px;
+  }
+  input:focus, select:focus{outline:2px solid var(--accent); outline-offset:1px;}
+  .formActions{display:flex; align-items:center; justify-content:flex-end; gap:10px; margin-top:14px;}
+  .formError{color:var(--bad); font-size:12.5px; font-weight:600; margin-right:auto;}
+  input.invalid{border-color:var(--bad); background:var(--bad-soft);}
+
+  .toolbar{display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:space-between; margin-bottom:14px;}
+  .search{flex:1; min-width:200px; max-width:320px;}
+  .tabs{display:flex; gap:6px; flex-wrap:wrap;}
+  .tab{
+    border:1px solid var(--border); background:var(--surface); color:var(--muted);
+    border-radius:999px; padding:7px 14px; font-size:12.5px; font-weight:700;
+  }
+  .tab.active{background:var(--accent); color:var(--accent-ink); border-color:var(--accent);}
+
+  .tableWrap{overflow-x:auto; border:1px solid var(--border); border-radius:12px;}
+  table{width:100%; border-collapse:collapse; font-size:13.5px; min-width:860px; table-layout:fixed;}
+  thead th{
+    text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+    color:var(--muted); background:var(--surface-2); padding:10px 12px; border-bottom:1px solid var(--border);
+    white-space:nowrap;
+  }
+  tbody td{padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:middle;}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr:hover{background:var(--surface-2);}
+  td.order{font-weight:700; font-variant-numeric:tabular-nums;}
+  td.amount{font-variant-numeric:tabular-nums; font-weight:600; white-space:nowrap;}
+  td.whish{font-variant-numeric:tabular-nums; color:var(--muted);}
+  td.meta{color:var(--muted); font-size:12.5px; white-space:nowrap;}
+
+  .statusSelect{
+    border:none; border-radius:999px; padding:6px 10px; font-weight:700; font-size:12px;
+    appearance:none; -webkit-appearance:none; background-repeat:no-repeat;
+    background-position:right 8px center; padding-right:24px; cursor:pointer;
+  }
+  .statusSelect.pending{background-color:var(--warn-soft); color:var(--warn);}
+  .statusSelect.refunded{background-color:var(--good-soft); color:var(--good);}
+  .statusSelect.rejected{background-color:var(--bad-soft); color:var(--bad);}
+
+  .editable{
+    border:1px solid transparent; background:transparent; border-radius:6px; padding:5px 6px;
+    width:100%; font-family:inherit; font-size:13.5px; color:inherit;
+  }
+  .editable:hover{border-color:var(--border);}
+  .editable:focus{border-color:var(--accent); background:var(--surface); outline:none;}
+
+  .iconBtn{
+    background:none; border:1px solid transparent; padding:6px; border-radius:8px; color:var(--muted); line-height:0;
+  }
+  .iconBtn:hover{background:var(--bad-soft); color:var(--bad);}
+  .iconBtn.confirming{
+    background:var(--bad-soft); color:var(--bad); border-color:var(--bad);
+    animation: pulseDel 1s ease-in-out infinite;
+  }
+  @keyframes pulseDel{ 0%,100%{opacity:1;} 50%{opacity:.55;} }
+  @media (prefers-reduced-motion: reduce){
+    .iconBtn.confirming{animation:none;}
+  }
+
+  .empty{padding:40px 16px; text-align:center; color:var(--muted); font-size:13.5px;}
+
+  [hidden]{display:none!important;}
+
+  @media (max-width:640px){
+    body{padding:16px 14px 40px;}
+    .toolbar{flex-direction:column; align-items:stretch;}
+    .search{max-width:none;}
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="mark">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.64-6.36"/><path d="M3 3v6h6"/></svg>
+      </div>
+      <div>
+        <h1>Refunds</h1>
+        <p>Customer refund requests → Whish payout tracker</p>
+      </div>
+    </div>
+    <div class="topActions">
+      <button class="primary" id="btnAddTop">+ Add refund</button>
+    </div>
+  </header>
+
+  <div class="tiles">
+    <div class="tile pending">
+      <div class="lbl">Pending</div>
+      <div class="num" id="tilePendingCount">0</div>
+      <div class="sub" id="tilePendingSum">$0.00 owed</div>
+    </div>
+    <div class="tile refunded">
+      <div class="lbl">Refunded</div>
+      <div class="num" id="tileRefundedCount">0</div>
+      <div class="sub" id="tileRefundedSum">$0.00 paid out</div>
+    </div>
+    <div class="tile rejected">
+      <div class="lbl">Rejected</div>
+      <div class="num" id="tileRejectedCount">0</div>
+      <div class="sub">not paid</div>
+    </div>
+  </div>
+
+  <section class="card" id="addSection" hidden>
+    <h2>Log a new refund request</h2>
+    <div class="formGrid">
+      <div>
+        <label for="fOrder">Order # *</label>
+        <input id="fOrder" placeholder="#15238" required>
+      </div>
+      <div>
+        <label for="fName">Customer name *</label>
+        <input id="fName" placeholder="Lamis Kfoury" required>
+      </div>
+      <div>
+        <label for="fAmount">Amount ($) *</label>
+        <input id="fAmount" type="number" step="0.01" min="0" placeholder="29.99" required>
+      </div>
+      <div>
+        <label for="fWhish">Whish number *</label>
+        <input id="fWhish" placeholder="70259046" required>
+      </div>
+    </div>
+    <div class="formActions">
+      <span class="formError" id="formError" hidden>All fields are required.</span>
+      <button class="ghost" id="btnCancelAdd">Cancel</button>
+      <button class="primary" id="btnSaveAdd">Save refund</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="toolbar">
+      <input class="search" id="search" placeholder="Search order # or customer…">
+      <div class="tabs" id="statusTabs">
+        <button class="tab active" data-tab="all">All</button>
+        <button class="tab" data-tab="pending">Pending</button>
+        <button class="tab" data-tab="refunded">Refunded</button>
+        <button class="tab" data-tab="rejected">Rejected</button>
+      </div>
+    </div>
+
+    <div class="tableWrap">
+      <table>
+        <colgroup>
+          <col style="width:100px"><col style="width:170px"><col style="width:100px">
+          <col style="width:120px"><col style="width:140px"><col style="width:110px">
+          <col style="width:80px"><col style="width:40px">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Order #</th>
+            <th>Customer</th>
+            <th>Amount</th>
+            <th>Status</th>
+            <th>Whish number</th>
+            <th>Logged by</th>
+            <th>Date</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="emptyState" hidden>No refund requests logged yet — click "Add refund" to log one.</div>
+  </section>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var STORE_KEY = "refunds_v1";
+  var STATUSES = ["pending","refunded","rejected"];
+  var STATUS_LABEL = {pending:"Pending", refunded:"Refunded", rejected:"Rejected"};
+
+  function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+  function money(n){ n = Number(n)||0; return "$" + n.toFixed(2); }
+  function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
+
+  function loadState(){
+    try{
+      var raw = localStorage.getItem(STORE_KEY);
+      if(raw) return JSON.parse(raw);
+    }catch(e){}
+    return {refunds:{}};
+  }
+  function saveState(){
+    try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){}
+  }
+
+  var state = loadState();
+  if(!state.refunds) state.refunds = {};
+  if(Object.keys(state.refunds).length === 0){
+    var seed = [
+      ["#15238","Lamis Kfoury",69.94,"pending","","Khawla",-1],
+      ["#15094","Abeer Hatab",39.95,"refunded","81294910","Sacha",-2],
+      ["#14550","Rita Matta",null,"pending","","Khawla",-3]
+    ];
+    seed.forEach(function(row){
+      var id = uid();
+      state.refunds[id] = {
+        id:id, orderNumber:row[0], customerName:row[1], amount:row[2],
+        status:row[3], whishNumber:row[4], loggedBy:row[5],
+        dateLogged: new Date(Date.now() + row[6]*86400000).toISOString()
+      };
+    });
+    saveState();
+  }
+
+  var isAdmin = !window.APP_ROLE || window.APP_ROLE === "admin";
+  var currentUser = window.APP_USER || "";
+
+  var activeTab = "all";
+  var searchTerm = "";
+
+  function refundsArray(){
+    return Object.keys(state.refunds).map(function(id){ return state.refunds[id]; })
+      .sort(function(a,b){ return (b.dateLogged||"").localeCompare(a.dateLogged||""); });
+  }
+
+  function filtered(){
+    var list = refundsArray();
+    if(activeTab !== "all") list = list.filter(function(r){ return r.status === activeTab; });
+    if(searchTerm){
+      var q = searchTerm.toLowerCase();
+      list = list.filter(function(r){
+        return (r.orderNumber||"").toLowerCase().indexOf(q) > -1 ||
+               (r.customerName||"").toLowerCase().indexOf(q) > -1;
+      });
+    }
+    return list;
+  }
+
+  function renderTiles(){
+    var all = refundsArray();
+    var pending = all.filter(function(r){ return r.status==="pending"; });
+    var refunded = all.filter(function(r){ return r.status==="refunded"; });
+    var rejected = all.filter(function(r){ return r.status==="rejected"; });
+    document.getElementById("tilePendingCount").textContent = pending.length;
+    document.getElementById("tilePendingSum").textContent = money(pending.reduce(function(s,r){ return s+(Number(r.amount)||0); },0)) + " owed";
+    document.getElementById("tileRefundedCount").textContent = refunded.length;
+    document.getElementById("tileRefundedSum").textContent = money(refunded.reduce(function(s,r){ return s+(Number(r.amount)||0); },0)) + " paid out";
+    document.getElementById("tileRejectedCount").textContent = rejected.length;
+  }
+
+  function fmtDate(iso){
+    if(!iso) return "—";
+    var d = new Date(iso);
+    if(isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString(undefined, {month:"short", day:"numeric"});
+  }
+
+  function renderRows(){
+    var list = filtered();
+    var tbody = document.getElementById("rows");
+    var empty = document.getElementById("emptyState");
+    if(list.length === 0){
+      tbody.innerHTML = "";
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    tbody.innerHTML = list.map(function(r){
+      var delBtn = isAdmin
+        ? '<button class="iconBtn" data-del="'+r.id+'" title="Delete entry"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button>'
+        : '';
+      return '' +
+        '<tr>' +
+          '<td class="order"><input class="editable" data-field="orderNumber" data-id="'+r.id+'" value="'+esc(r.orderNumber)+'"></td>' +
+          '<td><input class="editable" data-field="customerName" data-id="'+r.id+'" value="'+esc(r.customerName)+'"></td>' +
+          '<td class="amount"><input class="editable" data-field="amount" data-id="'+r.id+'" type="number" step="0.01" value="'+esc(r.amount)+'"></td>' +
+          '<td><select class="statusSelect '+r.status+'" data-field="status" data-id="'+r.id+'">' +
+            STATUSES.map(function(s){ return '<option value="'+s+'"'+(s===r.status?' selected':'')+'>'+STATUS_LABEL[s]+'</option>'; }).join("") +
+          '</select></td>' +
+          '<td class="whish"><input class="editable" data-field="whishNumber" data-id="'+r.id+'" value="'+esc(r.whishNumber)+'"></td>' +
+          '<td><input class="editable" data-field="loggedBy" data-id="'+r.id+'" value="'+esc(r.loggedBy)+'"></td>' +
+          '<td class="meta">'+fmtDate(r.dateLogged)+'</td>' +
+          '<td>'+delBtn+'</td>' +
+        '</tr>';
+    }).join("");
+  }
+
+  function render(){
+    renderTiles();
+    renderRows();
+  }
+
+  // ---------- add form ----------
+  var addSection = document.getElementById("addSection");
+  document.getElementById("btnAddTop").addEventListener("click", function(){
+    addSection.hidden = false;
+    document.getElementById("fOrder").focus();
+    scrollParentTo(addSection);
+  });
+  var ADD_FIELD_IDS = ["fOrder","fName","fAmount","fWhish"];
+  var formError = document.getElementById("formError");
+  function resetAddForm(){
+    ADD_FIELD_IDS.forEach(function(id){
+      var el = document.getElementById(id);
+      el.value = "";
+      el.classList.remove("invalid");
+    });
+    formError.hidden = true;
+  }
+  ADD_FIELD_IDS.forEach(function(id){
+    document.getElementById(id).addEventListener("input", function(){
+      this.classList.remove("invalid");
+    });
+  });
+  document.getElementById("btnCancelAdd").addEventListener("click", function(){
+    addSection.hidden = true;
+    resetAddForm();
+  });
+  document.getElementById("btnSaveAdd").addEventListener("click", function(){
+    var orderEl = document.getElementById("fOrder");
+    var nameEl = document.getElementById("fName");
+    var amountEl = document.getElementById("fAmount");
+    var whishEl = document.getElementById("fWhish");
+    var order = orderEl.value.trim();
+    var name = nameEl.value.trim();
+    var amount = amountEl.value;
+    var whish = whishEl.value.trim();
+
+    var fields = [
+      {el: orderEl, ok: !!order},
+      {el: nameEl, ok: !!name},
+      {el: amountEl, ok: amount !== "" && !isNaN(Number(amount))},
+      {el: whishEl, ok: !!whish}
+    ];
+    var firstInvalid = null;
+    fields.forEach(function(f){
+      f.el.classList.toggle("invalid", !f.ok);
+      if(!f.ok && !firstInvalid) firstInvalid = f.el;
+    });
+    if(firstInvalid){
+      formError.hidden = false;
+      firstInvalid.focus();
+      return;
+    }
+    formError.hidden = true;
+
+    var loggedBy = currentUser || (isAdmin ? "Admin" : "");
+    var id = uid();
+    state.refunds[id] = {
+      id: id, orderNumber: order, customerName: name,
+      amount: Number(amount),
+      status: "pending", whishNumber: whish, loggedBy: loggedBy,
+      dateLogged: new Date().toISOString()
+    };
+    saveState();
+    resetAddForm();
+    addSection.hidden = true;
+    render();
+  });
+
+  // ---------- table edits ----------
+  document.getElementById("rows").addEventListener("change", function(e){
+    var el = e.target;
+    var id = el.getAttribute("data-id");
+    var field = el.getAttribute("data-field");
+    if(!id || !field) return;
+    var r = state.refunds[id];
+    if(!r) return;
+    if(field === "amount"){
+      r.amount = el.value === "" ? null : Number(el.value);
+    } else {
+      r[field] = el.value;
+    }
+    saveState();
+    if(field === "status") render(); else renderTiles();
+    if(field === "status"){
+      el.className = "statusSelect " + r.status;
+    }
+  });
+
+  document.getElementById("rows").addEventListener("click", function(e){
+    var btn = e.target.closest("[data-del]");
+    if(!btn) return;
+    var id = btn.getAttribute("data-del");
+    if(!isAdmin) return;
+    if(btn.dataset.confirm === "1"){
+      delete state.refunds[id];
+      saveState();
+      render();
+    } else {
+      btn.dataset.confirm = "1";
+      btn.title = "Click again to confirm delete";
+      btn.classList.add("confirming");
+      setTimeout(function(){
+        btn.dataset.confirm = "0";
+        btn.title = "Delete entry";
+        btn.classList.remove("confirming");
+      }, 5000);
+    }
+  });
+
+  // ---------- search + tabs ----------
+  document.getElementById("search").addEventListener("input", function(e){
+    searchTerm = e.target.value;
+    renderRows();
+  });
+  document.getElementById("statusTabs").addEventListener("click", function(e){
+    var btn = e.target.closest(".tab");
+    if(!btn) return;
+    activeTab = btn.getAttribute("data-tab");
+    document.querySelectorAll("#statusTabs .tab").forEach(function(t){ t.classList.toggle("active", t===btn); });
+    renderRows();
+  });
+
+  // ---------- cross-frame scroll (see cancelled_orders.html for why) ----------
+  function scrollParentTo(targetEl){
+    try{
+      var frames = window.parent.document.querySelectorAll("iframe");
+      var myFrame = null;
+      for(var i=0;i<frames.length;i++){
+        if(frames[i].contentWindow === window){ myFrame = frames[i]; break; }
+      }
+      if(!myFrame) return;
+      var scroller = window.parent.document.querySelector('[data-testid="stMain"]')
+        || window.parent.document.scrollingElement
+        || window.parent.document.documentElement;
+      var scrollerRect = scroller.getBoundingClientRect();
+      var frameRect = myFrame.getBoundingClientRect();
+      var targetTop = scroller.scrollTop + (frameRect.top - scrollerRect.top) + targetEl.getBoundingClientRect().top - 16;
+      scroller.scrollTo({top: targetTop, behavior: "smooth"});
+    }catch(e){}
+  }
+
+  render();
+})();
+</script>
+
+<script>
+  (function(){
+    function reportHeight(){
+      var h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+      try{
+        var frames = window.parent.document.querySelectorAll("iframe");
+        for(var i=0;i<frames.length;i++){
+          if(frames[i].contentWindow === window){ frames[i].style.height = h + "px"; break; }
+        }
+      }catch(e){}
+    }
+    if(window.ResizeObserver){
+      new ResizeObserver(reportHeight).observe(document.body);
+    } else {
+      setInterval(reportHeight, 500);
+    }
+    window.addEventListener("load", reportHeight);
+    reportHeight();
+    setTimeout(reportHeight, 300);
+  })();
+</script>
+</body></html>

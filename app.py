@@ -420,6 +420,99 @@ def shopify_fulfill_order(order_id):
     if not f_resp.ok:
         raise Exception(f"Fulfillment failed: {f_resp.status_code} {f_resp.text}")
 
+@st.cache_resource
+def get_primary_location_id():
+    resp = requests.get(f"{_SHOPIFY_BASE}/locations.json", headers=_SHOPIFY_HEADERS)
+    resp.raise_for_status()
+    locations = resp.json().get("locations", [])
+    if not locations:
+        raise Exception("No Shopify locations found.")
+    return locations[0]["id"]
+
+def _parse_variant_title(title):
+    """Shopify variant titles are formatted 'Color / Size'."""
+    parts = [p.strip() for p in (title or "").split("/")]
+    return (parts[0], parts[1]) if len(parts) == 2 else (None, None)
+
+@st.cache_data(ttl=600)
+def fetch_shopify_variant_map():
+    """(product, color, size) [lowercased] -> inventory_item_id, for restock syncing."""
+    result = {}
+    url = f"{_SHOPIFY_BASE}/products.json"
+    params = {"limit": 250, "fields": "id,title,variants"}
+    while url:
+        resp = requests.get(url, headers=_SHOPIFY_HEADERS, params=params)
+        resp.raise_for_status()
+        for p in resp.json().get("products", []):
+            for v in p.get("variants", []):
+                color, size = _parse_variant_title(v.get("title"))
+                if color is None:
+                    continue
+                key = (p["title"].lower(), color.lower(), size.lower())
+                if key not in result:
+                    result[key] = v["inventory_item_id"]
+        next_url = None
+        for part in resp.headers.get("Link", "").split(","):
+            if 'rel="next"' in part and "<" in part:
+                next_url = part[part.find("<") + 1:part.find(">")]
+        url, params = next_url, None
+    return result
+
+def find_shopify_inventory_item(variant_map, product, color, size):
+    """Same exact-color/size + fuzzy-product-name matching as find_key(), applied to
+    Shopify's variant list instead of the Google Sheet inventory."""
+    exact = (product.lower(), color.lower(), size.lower())
+    if exact in variant_map:
+        return variant_map[exact]
+    best, ratio = None, 0.75
+    for key, item_id in variant_map.items():
+        p, c, s = key
+        if c != color.lower() or s != size.lower():
+            continue
+        r = SequenceMatcher(None, product.lower(), p).ratio()
+        if r > ratio:
+            ratio, best = r, item_id
+    return best
+
+def _gid(resource, numeric_id):
+    return f"gid://shopify/{resource}/{numeric_id}"
+
+def set_shopify_onhand_quantity(inventory_item_id, location_id, quantity):
+    """Sets the Shopify 'On hand' quantity (not 'Available') to an absolute value,
+    matching the Google Sheet's inventory count for that variant."""
+    query = """
+    mutation setOnHand($input: InventorySetQuantitiesInput!) {
+      inventorySetQuantities(input: $input) {
+        userErrors { field message }
+      }
+    }
+    """
+    variables = {
+        "input": {
+            "name": "on_hand",
+            "reason": "correction",
+            "ignoreCompareQuantity": True,
+            "quantities": [{
+                "inventoryItemId": _gid("InventoryItem", inventory_item_id),
+                "locationId": _gid("Location", location_id),
+                "quantity": quantity,
+            }],
+        }
+    }
+    resp = requests.post(
+        f"{_SHOPIFY_BASE}/graphql.json",
+        headers=_SHOPIFY_HEADERS,
+        json={"query": query, "variables": variables},
+    )
+    if not resp.ok:
+        raise Exception(f"{resp.status_code} {resp.text}")
+    data = resp.json()
+    if data.get("errors"):
+        raise Exception("; ".join(e["message"] for e in data["errors"]))
+    errors = data.get("data", {}).get("inventorySetQuantities", {}).get("userErrors", [])
+    if errors:
+        raise Exception("; ".join(e["message"] for e in errors))
+
 # ─── Logic ────────────────────────────────────────────────────────────────────
 
 def parse_lineitem_name(name):
@@ -1610,13 +1703,51 @@ elif page == "🔄 Restock":
                 with st.spinner("Updating Google Sheets…"):
                     try:
                         updates = []
+                        new_qtys = {}
                         for idx in changed.index:
                             key, item = items[idx]
                             new_qty = item["qty"] + int(changed.loc[idx, "Add Qty"])
                             updates.append((item["row"], new_qty))
+                            new_qtys[idx] = new_qty
                         batch_update_qty(ws, updates)
                         st.success(f"{len(updates)} item(s) restocked!", icon=":material/check_circle:")
                         st.balloons()
+                    except Exception as e:
+                        st.error(str(e))
+                        st.stop()
+
+                with st.spinner("Syncing on-hand quantities to Shopify…"):
+                    try:
+                        variant_map = fetch_shopify_variant_map()
+                        location_id = get_primary_location_id()
+                        synced, unmatched, failed = 0, [], []
+                        for idx in changed.index:
+                            _, item = items[idx]
+                            label = f"{item['product']} — {item['color']} / {item['size']}"
+                            inv_item_id = find_shopify_inventory_item(
+                                variant_map, item["product"], item["color"], item["size"]
+                            )
+                            if inv_item_id is None:
+                                unmatched.append(label)
+                                continue
+                            try:
+                                set_shopify_onhand_quantity(inv_item_id, location_id, new_qtys[idx])
+                                synced += 1
+                            except Exception as e:
+                                failed.append(f"{label}: {e}")
+                        if synced:
+                            st.success(f"{synced} item(s) synced to Shopify's on-hand quantity.", icon=":material/sync:")
+                        if unmatched:
+                            st.warning(
+                                "Couldn't match to a Shopify variant (Sheet quantity was still "
+                                "updated) — check these manually in Shopify:\n\n"
+                                + "\n".join(f"- {m}" for m in unmatched)
+                            )
+                        if failed:
+                            st.error(
+                                "Matched in Shopify but the inventory update failed:\n\n"
+                                + "\n".join(f"- {f}" for f in failed)
+                            )
                     except Exception as e:
                         st.error(str(e))
     except Exception as e:

@@ -1317,6 +1317,7 @@ st.markdown("""
 :root {
     --rr-red: #e6394f;
     --rr-red-dark: #c72e42;
+    --rr-red-soft: #fbe3e6;
     --rr-on-red: #fff;
     --rr-red-text: #e6394f;
     --rr-sidebar-bg: #1f232c;
@@ -1469,13 +1470,23 @@ html, body, [data-testid="stAppViewContainer"] {
 .stButton > button:focus-visible * {
     color: var(--rr-red) !important; fill: var(--rr-red) !important;
 }
-.stButton > button:hover,
+/* Hover is a light tint, not a full fill — a secondary button that's merely
+   sitting under the cursor (e.g. right after a click triggers a rerun and
+   the mouse hasn't moved) shouldn't look identical to something actually
+   selected/pressed. Only :active (an actual mouse-down) and primary buttons
+   get the bold solid fill. */
+.stButton > button:hover {
+    background: var(--rr-red-soft) !important;
+    border-color: var(--rr-red) !important;
+}
+.stButton > button:hover * {
+    color: var(--rr-red) !important; fill: var(--rr-red) !important;
+}
 .stButton > button:active,
 .stButton > button[kind="primary"] {
     background: var(--rr-red) !important;
     border-color: var(--rr-red) !important;
 }
-.stButton > button:hover *,
 .stButton > button:active *,
 .stButton > button[kind="primary"] * {
     color: white !important; fill: white !important;
@@ -2421,7 +2432,6 @@ elif page == "🚫 Cancelled Orders":
                         st.caption(" · ".join(co_items))
                 with cc3:
                     st.markdown(f"**${o['total_usd']:,.2f}**")
-                    st.caption(o["payment_status"])
                     if o["outcome"]:
                         co_pill_cls = "rr-pill-green" if o["outcome"] == "recovered" else "rr-pill-red"
                         co_label = "✓ Recovered" if o["outcome"] == "recovered" else "✕ Lost"

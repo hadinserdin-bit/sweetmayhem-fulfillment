@@ -1087,6 +1087,18 @@
     toast("Copied " + list.length + " row(s) — paste into your sheet");
   });
 
+  // Host app (Sweet Mayhem Fulfillment Studio) injects window.APP_ROLE before
+  // this script runs. Missing entirely means standalone use (opened directly,
+  // not embedded) — full access. Only "admin" gets the upload/settings tools;
+  // everyone else just works their assigned queue.
+  var isAdmin = !window.APP_ROLE || window.APP_ROLE === "admin";
+  if(!isAdmin){
+    document.getElementById("uploadSection").hidden = true;
+    document.getElementById("btnUploadTop").hidden = true;
+    document.getElementById("btnSettings").hidden = true;
+    document.getElementById("emptyState").textContent = "No cancellations tracked yet — ask an admin to upload today's export.";
+  }
+
   render();
 })();
 </script>

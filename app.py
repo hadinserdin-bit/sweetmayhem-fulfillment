@@ -1602,20 +1602,9 @@ elif page == "📊 Demand & Reorder":
 # ─────────────────────────────────────────────────────────────────────────────
 
 elif page == "🚫 Cancelled Orders":
-    st.subheader("Cancelled Order Recovery")
-    st.caption(
-        "Upload the daily Roadrunner cancelled-orders export and it splits automatically "
-        "between Khawla and Sacha, with a guided WhatsApp → call → coupon follow-up for "
-        "each case, right through to Recovered or Lost."
-    )
     cancelled_orders_html = Path(__file__).parent / "cancelled_orders.html"
     if cancelled_orders_html.exists():
         components.html(cancelled_orders_html.read_text(encoding="utf-8"), height=1400, scrolling=True)
-        st.caption(
-            f"Data is saved in this browser tab, not in this app. If the queue ever looks "
-            f"empty when it shouldn't, use the tool's own Settings → Backup panel before "
-            f"assuming anything was lost — or open it standalone: [{CANCELLED_ORDERS_URL}]({CANCELLED_ORDERS_URL})"
-        )
     else:
         st.error("cancelled_orders.html wasn't found next to app.py — the embed can't load.")
         st.link_button("Open Cancelled Orders ↗", CANCELLED_ORDERS_URL, use_container_width=True)

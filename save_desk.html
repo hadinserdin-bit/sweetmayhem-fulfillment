@@ -1,0 +1,1133 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Save Desk</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root{
+    --bg:#F5F3EE;
+    --surface:#FFFFFF;
+    --surface-2:#EFEBE2;
+    --ink:#1B2430;
+    --muted:#5B6472;
+    --border:rgba(27,36,48,0.13);
+    --accent:#D9531E;
+    --accent-ink:#FFF7F2;
+    --accent-soft:#FBE4D7;
+    --good:#227A55;
+    --good-soft:#DCEEE3;
+    --warn:#966600;
+    --warn-soft:#F5E6BF;
+    --bad:#B03A3A;
+    --bad-soft:#F3DEDE;
+    --info:#2A5C8A;
+    --info-soft:#DCE7F1;
+    --whatsapp:#1D8A4E;
+    --shadow: 0 1px 1px rgba(27,36,48,0.04), 0 6px 20px -10px rgba(27,36,48,0.20);
+    --shadow-lg: 0 2px 4px rgba(27,36,48,0.05), 0 16px 40px -16px rgba(27,36,48,0.28);
+    --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%235B6472' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#12161D;
+      --surface:#1A2029;
+      --surface-2:#212836;
+      --ink:#ECEEF2;
+      --muted:#93A0B2;
+      --border:rgba(236,238,242,0.12);
+      --accent:#FF7A45;
+      --accent-ink:#221306;
+      --accent-soft:#3A2416;
+      --good:#5FC79A;
+      --good-soft:#173025;
+      --warn:#E0B94A;
+      --warn-soft:#332A10;
+      --bad:#E08080;
+      --bad-soft:#331A1A;
+      --info:#7FB2E0;
+      --info-soft:#152537;
+      --whatsapp:#3FCB77;
+      --shadow: 0 1px 1px rgba(0,0,0,0.25), 0 6px 20px -10px rgba(0,0,0,0.55);
+      --shadow-lg: 0 2px 4px rgba(0,0,0,0.3), 0 16px 40px -16px rgba(0,0,0,0.65);
+      --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%2393A0B2' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#12161D;
+    --surface:#1A2029;
+    --surface-2:#212836;
+    --ink:#ECEEF2;
+    --muted:#93A0B2;
+    --border:rgba(236,238,242,0.12);
+    --accent:#FF7A45;
+    --accent-ink:#221306;
+    --accent-soft:#3A2416;
+    --good:#5FC79A;
+    --good-soft:#173025;
+    --warn:#E0B94A;
+    --warn-soft:#332A10;
+    --bad:#E08080;
+    --bad-soft:#331A1A;
+    --info:#7FB2E0;
+    --info-soft:#152537;
+    --whatsapp:#3FCB77;
+    --shadow: 0 1px 1px rgba(0,0,0,0.25), 0 6px 20px -10px rgba(0,0,0,0.55);
+    --shadow-lg: 0 2px 4px rgba(0,0,0,0.3), 0 16px 40px -16px rgba(0,0,0,0.65);
+    --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%2393A0B2' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    padding-inline:16px;
+    padding-block:28px 56px;
+    max-width:1240px;
+    margin-inline:auto;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3{font-family:"Manrope","IBM Plex Sans",sans-serif;letter-spacing:-0.01em;text-wrap:balance;margin:0}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+  .num{font-variant-numeric:tabular-nums}
+
+  header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:26px;padding-bottom:20px;border-bottom:1px solid var(--border)}
+  .brand{display:flex;align-items:center;gap:12px}
+  .brand .mark{
+    width:42px;height:42px;border-radius:12px;flex:none;
+    background:linear-gradient(155deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #000));
+    color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:21px;
+    box-shadow:0 4px 14px -4px color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+  .brand h1{font-size:23px;font-weight:800}
+  .brand p{margin:2px 0 0;color:var(--muted);font-size:13px}
+  .top-actions{display:flex;gap:8px;flex-wrap:wrap}
+
+  button, .btn{
+    font:inherit;font-weight:600;font-size:13px;border-radius:9px;border:1px solid var(--border);
+    background:var(--surface);color:var(--ink);padding:8px 14px;cursor:pointer;
+    transition:border-color .15s ease, background .15s ease, box-shadow .15s ease, transform .1s ease;
+  }
+  button:hover{border-color:var(--accent);box-shadow:var(--shadow)}
+  button:active{transform:translateY(1px)}
+  button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);box-shadow:0 4px 14px -4px color-mix(in srgb, var(--accent) 55%, transparent)}
+  button.primary:hover{box-shadow:0 6px 18px -4px color-mix(in srgb, var(--accent) 65%, transparent)}
+  button.danger{color:var(--bad);border-color:var(--bad)}
+  button.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+  button.ghost:hover{background:var(--surface-2);box-shadow:none}
+  button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  button:disabled{opacity:0.45;cursor:not-allowed}
+
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+  .tile{background:var(--surface);border:1px solid var(--border);border-top:3px solid var(--border);border-radius:13px;padding:16px;box-shadow:var(--shadow)}
+  .tile .label{font-size:11px;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);font-weight:600}
+  .tile .value{font-family:"Manrope";font-size:28px;font-weight:800;margin-top:7px}
+  .tile .sub{font-size:12px;color:var(--muted);margin-top:3px}
+  .tile.accent{border-top-color:var(--accent)}
+  .tile.accent .value{color:var(--accent)}
+  .tile.good{border-top-color:var(--good)}
+  .tile.good .value{color:var(--good)}
+  .tile.bad{border-top-color:var(--bad)}
+  .tile.bad .value{color:var(--bad)}
+
+  section{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:18px;box-shadow:var(--shadow)}
+  section > h2{font-size:15px;font-weight:800;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}
+  section > h2 small{font-weight:500;color:var(--muted);font-size:12px}
+
+  .dropzone{
+    border:1.5px dashed var(--border);border-radius:13px;padding:26px;text-align:center;color:var(--muted);
+    background:var(--surface-2);cursor:pointer;transition:border-color .15s, background .15s;
+  }
+  .dropzone:hover{border-color:var(--accent)}
+  .dropzone.drag{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+  .dropzone strong{color:var(--ink)}
+  .dropzone input{display:none}
+  .upload-report{margin-top:10px;font-size:13px;background:var(--surface-2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;color:var(--ink)}
+  .upload-report.error{color:var(--bad)}
+
+  .settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 16px}
+  label.field{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);font-weight:600}
+  label.field input, label.field textarea{
+    font:inherit;font-size:13px;color:var(--ink);background:var(--surface-2);border:1px solid var(--border);
+    border-radius:8px;padding:7px 9px;transition:border-color .15s;
+  }
+  label.field input:hover, label.field textarea:hover{border-color:var(--accent)}
+  .settings-foot{display:flex;justify-content:space-between;gap:8px;margin-top:12px;flex-wrap:wrap}
+
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .tab{border:1px solid var(--border);background:var(--surface-2);border-radius:999px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;color:var(--muted);transition:all .15s ease}
+  .tab:hover{border-color:var(--accent);color:var(--ink)}
+  .tab[aria-selected="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+  .tab[aria-selected="true"]:hover{border-color:var(--ink)}
+  .tab .count{font-family:"IBM Plex Mono";margin-left:4px;opacity:.75}
+
+  .items-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:3px}
+  .items-list li{font-size:12px;max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px}
+  table{border-collapse:collapse;width:100%;min-width:920px;font-size:13px}
+  thead th{
+    text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+    padding:11px 12px;border-bottom:1px solid var(--border);background:var(--surface-2);white-space:nowrap;position:sticky;top:0;
+  }
+  tbody td{padding:12px;border-bottom:1px solid var(--border);vertical-align:top}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr{transition:background .12s ease}
+  tbody tr:hover{background:var(--surface-2)}
+  .order-num{font-family:"IBM Plex Mono";font-weight:600;font-size:13px;color:var(--ink);cursor:default}
+  .cust-name{font-weight:700;border-bottom:1px dashed transparent;cursor:default}
+  .cust-name:hover{border-bottom-color:var(--muted)}
+  .phone-link{color:var(--info);text-decoration:none;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .phone-link:hover{text-decoration:underline}
+  .amount{font-weight:700;font-family:"IBM Plex Mono"}
+  .avatar{width:26px;height:26px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;box-shadow:0 0 0 2px var(--surface), 0 0 0 3px var(--border)}
+
+  .stage-actions{display:flex;flex-direction:column;gap:6px;min-width:150px}
+  .stage-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
+  .wa-btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:5px;
+    font-size:12px;font-weight:700;text-decoration:none;border-radius:8px;padding:7px 10px;
+    background:var(--whatsapp);color:#fff;border:1px solid var(--whatsapp);
+    transition:filter .15s ease;
+  }
+  .wa-btn:hover{filter:brightness(1.08)}
+  .yn-row{display:flex;gap:6px}
+  .yn-btn{flex:1;font-size:11px;font-weight:700;padding:5px 6px;border-radius:7px;background:var(--surface)}
+  .yn-btn.yes{border-color:var(--good);color:var(--good)}
+  .yn-btn.yes:hover{background:var(--good-soft);border-color:var(--good)}
+  .yn-btn.no{border-color:var(--bad);color:var(--bad)}
+  .yn-btn.no:hover{background:var(--bad-soft);border-color:var(--bad)}
+  .locked-wrap{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .locked-badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;padding:6px 11px;border-radius:999px;white-space:nowrap}
+  .locked-badge.recovered{background:var(--good-soft);color:var(--good)}
+  .locked-badge.lost{background:var(--bad-soft);color:var(--bad)}
+  .reopen-btn{background:transparent;border:none;color:var(--muted);font-size:11px;cursor:pointer;text-decoration:underline;padding:2px;box-shadow:none}
+  .reopen-btn:hover{color:var(--ink);box-shadow:none;border-color:transparent}
+  input.notes{width:170px;font:inherit;font-size:12px;border:1px solid var(--border);background:var(--surface-2);color:var(--ink);border-radius:8px;padding:7px 9px;transition:border-color .15s}
+  input.notes:hover{border-color:var(--accent)}
+  .empty{padding:36px;text-align:center;color:var(--muted);font-size:13px}
+
+  details.backup summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)}
+  details.backup textarea{width:100%;height:90px;margin-top:8px;font-family:"IBM Plex Mono";font-size:11px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--ink);padding:8px}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;font-weight:600;box-shadow:var(--shadow-lg);z-index:50;opacity:0;pointer-events:none;transition:opacity .2s, transform .2s}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
+  footer.note{color:var(--muted);font-size:12px;margin-top:6px;text-align:center}
+</style>
+
+<header class="top">
+  <div class="brand">
+    <div class="mark">🛟</div>
+    <div>
+      <h1>Save Desk</h1>
+      <p>Roadrunner cancellations → Khawla &amp; Sacha's follow-up queue</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <button id="btnSettings" class="ghost">⚙ Settings</button>
+    <button id="btnUploadTop" class="primary">＋ Upload export</button>
+  </div>
+</header>
+
+<div class="tiles" id="tiles"></div>
+
+<section id="uploadSection">
+  <h2>Upload today's Roadrunner export <small>.xlsx or .csv — the "Orders" export from the dashboard</small></h2>
+  <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload Roadrunner export">
+    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
+    <div>Drop the file here, or <strong>click to choose</strong></div>
+    <div style="font-size:12px;margin-top:4px">Already-tracked orders are skipped automatically — only new cancellations get added and assigned.</div>
+  </div>
+  <div id="uploadReport"></div>
+</section>
+
+<section id="settingsSection" hidden>
+  <h2>Settings</h2>
+  <div class="settings-grid">
+    <label class="field">Employee 1
+      <input id="emp1" type="text" value="Khawla">
+    </label>
+    <label class="field">Employee 1 workload share
+      <input id="emp1Weight" type="number" min="0" step="0.5" value="1">
+    </label>
+    <label class="field">Employee 2
+      <input id="emp2" type="text" value="Sacha">
+    </label>
+    <label class="field">Employee 2 workload share
+      <input id="emp2Weight" type="number" min="0" step="0.5" value="2">
+    </label>
+    <label class="field">Reusable coupon code
+      <input id="couponCode" type="text" placeholder="e.g. COMEBACK15">
+    </label>
+    <label class="field">Discount %
+      <input id="couponPercent" type="number" min="0" max="100" value="15">
+    </label>
+  </div>
+  <div style="font-size:12px;color:var(--muted);margin-top:8px">New cancellations are split by these shares — 1 and 2 means Employee 2 gets roughly double Employee 1's volume, interleaved evenly rather than in batches. Changing the shares only affects orders added after that — use "Rebalance" below to fix the split on cases nobody has contacted yet.</div>
+
+  <div style="margin-top:16px;display:flex;flex-direction:column;gap:10px">
+    <label class="field">1st WhatsApp message template
+      <textarea id="waTemplate1" rows="2" style="width:100%;resize:vertical"></textarea>
+    </label>
+    <label class="field">Coupon WhatsApp message template
+      <textarea id="waTemplateCoupon" rows="2" style="width:100%;resize:vertical"></textarea>
+    </label>
+    <div style="font-size:12px;color:var(--muted)">Tokens get filled in per order: <span class="mono">{firstname}</span> <span class="mono">{name}</span> <span class="mono">{employee}</span> <span class="mono">{items}</span> <span class="mono">{total}</span> <span class="mono">{code}</span> <span class="mono">{percent}</span></div>
+  </div>
+
+  <div class="settings-foot">
+    <button id="btnRebalance">↻ Rebalance untouched orders</button>
+    <details class="backup">
+      <summary>Backup / restore local data</summary>
+      <div style="font-size:12px;color:var(--muted);margin-top:6px">Everything here lives only in this browser. Copy this JSON somewhere safe now and then, or paste an older backup back in.</div>
+      <textarea id="backupOut" readonly onclick="this.select()"></textarea>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button id="btnRefreshBackup">Refresh JSON above</button>
+        <button id="btnRestore">Restore from pasted JSON</button>
+      </div>
+      <textarea id="backupIn" placeholder="Paste backup JSON here to restore…" style="margin-top:8px"></textarea>
+    </details>
+    <button id="btnReset" class="danger">Reset all local data</button>
+  </div>
+</section>
+
+<section>
+  <h2>Follow-up queue <button id="btnCopyList" class="ghost" style="font-weight:600">⧉ Copy this list</button></h2>
+  <div class="tabs" id="tabs"></div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Assigned</th>
+          <th>Order #</th>
+          <th>Customer</th>
+          <th>Phone</th>
+          <th>Amount</th>
+          <th>Items</th>
+          <th>Follow-up</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+  <div id="emptyState" class="empty" hidden>No cancellations tracked yet — upload today's Roadrunner export above to get started.</div>
+</section>
+
+<footer class="note">Data stays in this browser only — export the backup JSON now and then so nothing is lost.</footer>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  "use strict";
+  var STORE_KEY = "saveDesk_v1";
+  // The follow-up pipeline: 1st WhatsApp message -> phone call -> WhatsApp
+  // coupon offer. At each stage a Yes/No decides "recovered?" — Yes locks
+  // the case as recovered; No moves to the next stage; No at the last stage
+  // locks it as lost. Only "stage" + "outcome" describe where a case is —
+  // there's no separate free-form status anymore.
+  var STAGE_ORDER = ["wa1","call","coupon"];
+  var STAGE_META = {
+    wa1: {label:"1st WhatsApp"},
+    call: {label:"WhatsApp call"},
+    coupon: {label:"Coupon WhatsApp"}
+  };
+  var OLD_DEFAULTS_1 = [
+    "Hi {name}, we noticed your order for {items} (total {total}) was cancelled. Would you like us to arrange the delivery again?",
+    "Hi {firstname}, this is {employee} 👋 Your order for {items} (total {total}) was cancelled — can you tell me what's the problem?"
+  ];
+  var OLD_DEFAULTS_COUPON = [
+    "Hi {name}, just checking in about your order for {items} (total {total}). Use code {code} for {percent}% off if you'd like us to send it again!",
+    "Hi {firstname}, this is {employee} 👋 Following up on your order for {items} (total {total}). Use code {code} for {percent}% off — the code is valid for 72 hours!",
+    "Hi {firstname}, this is {employee} 👋 Use code {code} for {percent}% off, the code is valid for 72 hours!"
+  ];
+  var DEFAULT_TEMPLATE_1 = "Hi {firstname}, this is {employee} 👋 I noticed that you cancelled your order for {items} (total {total}) — can you tell me what's the problem?";
+  var DEFAULT_TEMPLATE_COUPON = "Hi {firstname}, this is {employee} 👋 Use code \"{code}\" for {percent}% off, the code is valid for 72 hours!";
+  var AVATAR_COLORS = ["#D9531E","#2A5C8A","#227A55","#8A5CA8"];
+
+  function defaultSettings(){
+    return {employees:["Khawla","Sacha"], couponCode:"Comeback15", couponPercent:15, weights:[1,2], rrState:[0,0], waTemplate1:DEFAULT_TEMPLATE_1, waTemplateCoupon:DEFAULT_TEMPLATE_COUPON};
+  }
+  function loadState(){
+    try{
+      var raw = localStorage.getItem(STORE_KEY);
+      if(raw) return JSON.parse(raw);
+    }catch(e){}
+    return {orders:{}, settings:defaultSettings()};
+  }
+  function saveState(){
+    try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){
+      toast("Couldn't save locally — storage may be full or blocked.");
+    }
+  }
+  function normalizeSettings(){
+    if(!state.settings) state.settings = defaultSettings();
+    if(!state.settings.employees || state.settings.employees.length<1) state.settings.employees = ["Khawla","Sacha"];
+    if(!Array.isArray(state.settings.weights) || state.settings.weights.length!==state.settings.employees.length){
+      state.settings.weights = state.settings.employees.map(function(_,i){ return i===0 ? 1 : 2; });
+    }
+    if(!Array.isArray(state.settings.rrState) || state.settings.rrState.length!==state.settings.employees.length){
+      state.settings.rrState = state.settings.employees.map(function(){ return 0; });
+    }
+    if(typeof state.settings.waTemplate1 !== "string" || OLD_DEFAULTS_1.indexOf(state.settings.waTemplate1)>-1) state.settings.waTemplate1 = DEFAULT_TEMPLATE_1;
+    if(typeof state.settings.waTemplateCoupon !== "string" || OLD_DEFAULTS_COUPON.indexOf(state.settings.waTemplateCoupon)>-1) state.settings.waTemplateCoupon = DEFAULT_TEMPLATE_COUPON;
+    if(!state.settings.couponCode || !state.settings.couponCode.trim()) state.settings.couponCode = "Comeback15";
+  }
+  var state = loadState();
+  normalizeSettings();
+  // Migrate orders from the old free-form status dropdown to stage+outcome.
+  Object.keys(state.orders).forEach(function(id){
+    var o = state.orders[id];
+    if(o.stage) return;
+    var s = o.status;
+    if(s==="recovered"){ o.stage="coupon"; o.outcome="recovered"; }
+    else if(s==="lost"){ o.stage="coupon"; o.outcome="lost"; }
+    else if(s==="noanswer"){ o.stage="call"; o.outcome=null; }
+    else if(s==="followup2" || s==="recreated" || s==="offered"){ o.stage="coupon"; o.outcome=null; }
+    else { o.stage="wa1"; o.outcome=null; }
+    delete o.status;
+  });
+  // Both migrations above only touch the in-memory object — write it back
+  // immediately, or a session that never triggers another saveState() (no
+  // clicks, just opened and looked) leaves the on-disk copy in the old shape.
+  saveState();
+  // Weighted round-robin (nginx/LVS "smooth" algorithm): each pick bumps every
+  // employee's running weight by their share, hands the order to whoever's
+  // highest, then knocks the total back off them — gives an evenly interleaved
+  // sequence (e.g. 1:2 → S,K,S,S,K,S…) instead of clumping one person's share.
+  function nextAssignee(){
+    var emps = state.settings.employees;
+    var weights = state.settings.weights;
+    var rr = state.settings.rrState;
+    var total = weights.reduce(function(a,b){ return a+b; }, 0) || emps.length;
+    var best = 0;
+    for(var i=0;i<emps.length;i++){
+      rr[i] += weights[i] || 0;
+      if(rr[i] > rr[best]) best = i;
+    }
+    rr[best] -= total;
+    return emps[best];
+  }
+
+  var activeTab = "all";
+
+  function toast(msg){
+    var t = document.getElementById("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(toast._h);
+    toast._h = setTimeout(function(){ t.classList.remove("show"); }, 2600);
+  }
+
+  function orderNumber(o){
+    var ref = String(o.referenceId||"").trim();
+    var m = ref.match(/(\d+)\s*$/);
+    return "1" + (m ? m[1] : (ref || o.orderId));
+  }
+  function fmtMoney(n){
+    n = Number(n)||0;
+    return "$" + n.toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+  function initials(name){
+    return (name||"?").trim().slice(0,1).toUpperCase();
+  }
+  function colorFor(name){
+    var list = state.settings.employees;
+    var idx = list.indexOf(name);
+    if(idx<0) idx = 0;
+    return AVATAR_COLORS[idx % AVATAR_COLORS.length];
+  }
+  // Roadrunner packs items into one note like "(1) Product, Color / S sku: ABC-1.
+  // (1) Other Product / M. (1) Third Product sku: XYZ-3." — the sku suffix is
+  // inconsistent (some items have it, some don't), so split on each "(qty)"
+  // marker rather than anchoring the match on "sku:", or items without a sku
+  // silently vanish instead of falling back.
+  function parseItems(note){
+    var text = String(note||"").trim();
+    if(!text) return [];
+    var starts = [];
+    var re = /\(\d+\)/g;
+    var m;
+    while((m = re.exec(text))) starts.push(m.index);
+    if(starts.length===0) return [text];
+    var items = [];
+    for(var i=0;i<starts.length;i++){
+      var segEnd = (i+1<starts.length) ? starts[i+1] : text.length;
+      var seg = text.slice(starts[i], segEnd).trim();
+      var qm = seg.match(/^\((\d+)\)\s*/);
+      var qty = qm ? qm[1] : "1";
+      var desc = qm ? seg.slice(qm[0].length) : seg;
+      desc = desc.replace(/\s*sku:\s*\S+\s*$/i, "");
+      desc = desc.replace(/[.\s]+$/,"").trim();
+      if(desc) items.push(qty + "× " + desc);
+    }
+    return items.length ? items : [text];
+  }
+  function firstName(name){
+    return String(name||"").trim().split(/\s+/)[0] || "there";
+  }
+  function fillTemplate(tpl, o){
+    var items = parseItems(o.note).join(", ");
+    var code = (state.settings.couponCode||"").trim() || "the code";
+    var pct = state.settings.couponPercent||0;
+    return String(tpl||"")
+      .replace(/\{name\}/g, o.customerName||"there")
+      .replace(/\{firstname\}/g, firstName(o.customerName))
+      .replace(/\{employee\}/g, o.assignedTo||"")
+      .replace(/\{items\}/g, items)
+      .replace(/\{total\}/g, fmtMoney(o.totalUsd))
+      .replace(/\{code\}/g, code)
+      .replace(/\{percent\}/g, pct);
+  }
+  // api.whatsapp.com is WhatsApp's own click-to-chat endpoint. The wa.me
+  // shortlink 302-redirects through it and lands with a
+  // "#no_universal_links" fragment tacked on by WhatsApp's redirector —
+  // linking straight to api.whatsapp.com skips that hop entirely.
+  function waLink(phone, text){
+    var digits = String(phone||"").replace(/\D/g,"");
+    var url = "https://api.whatsapp.com/send?phone=" + digits;
+    if(text) url += "&text=" + encodeURIComponent(text);
+    return url;
+  }
+
+  // ---------- parsing ----------
+  function findHeaderRow(rows){
+    for(var i=0;i<Math.min(rows.length,10);i++){
+      var r = rows[i]||[];
+      for(var j=0;j<r.length;j++){
+        if(String(r[j]||"").trim().toLowerCase()==="order id") return i;
+      }
+    }
+    return -1;
+  }
+  function colIndex(headerRow, name){
+    for(var i=0;i<headerRow.length;i++){
+      if(String(headerRow[i]||"").trim().toLowerCase()===name.toLowerCase()) return i;
+    }
+    return -1;
+  }
+  function parseStatus(raw){
+    raw = String(raw||"").trim();
+    var isCancelled = /cancel/i.test(raw);
+    var payment = /^paid/i.test(raw) ? "Paid" : "Unpaid (COD)";
+    return {isCancelled:isCancelled, payment:payment};
+  }
+
+  // Roadrunner's export XML uses irregular attribute spacing that trips up
+  // library XML shredders (tested against a real export — cells came back
+  // empty with no error). The browser's own DOMParser handles it fine, so
+  // we unzip with JSZip and read the OOXML ourselves instead of relying on
+  // a third-party spreadsheet library for the .xlsx path.
+  function colLettersToIndex(letters){
+    var n = 0;
+    for(var i=0;i<letters.length;i++){ n = n*26 + (letters.charCodeAt(i)-64); }
+    return n-1;
+  }
+  function textOfAll(parent, tag){
+    var els = parent.getElementsByTagName(tag);
+    var out = [];
+    for(var i=0;i<els.length;i++) out.push(els[i].textContent);
+    return out.join("");
+  }
+  function parseSharedStrings(xmlText){
+    if(!xmlText) return [];
+    var doc = new DOMParser().parseFromString(xmlText, "application/xml");
+    var siList = doc.getElementsByTagName("si");
+    var out = [];
+    for(var i=0;i<siList.length;i++) out.push(textOfAll(siList[i], "t"));
+    return out;
+  }
+  function parseSheetXML(xmlText, sharedStrings){
+    var doc = new DOMParser().parseFromString(xmlText, "application/xml");
+    if(doc.getElementsByTagName("parsererror").length) throw new Error("malformed worksheet XML");
+    var rowEls = doc.getElementsByTagName("row");
+    var rows = [];
+    for(var i=0;i<rowEls.length;i++){
+      var rowEl = rowEls[i];
+      var rAttr = parseInt(rowEl.getAttribute("r"),10);
+      var rowIdx = (isNaN(rAttr) ? i+1 : rAttr) - 1;
+      var cellEls = rowEl.getElementsByTagName("c");
+      var rowArr = rows[rowIdx] || [];
+      for(var j=0;j<cellEls.length;j++){
+        var c = cellEls[j];
+        var ref = c.getAttribute("r") || "";
+        var m = ref.match(/^([A-Z]+)(\d+)$/);
+        var colIdx = m ? colLettersToIndex(m[1]) : j;
+        var t = c.getAttribute("t");
+        var val = "";
+        if(t==="inlineStr"){
+          var isEl = c.getElementsByTagName("is")[0];
+          if(isEl) val = textOfAll(isEl, "t");
+        } else if(t==="s"){
+          var vEl = c.getElementsByTagName("v")[0];
+          if(vEl){ var idx = parseInt(vEl.textContent,10); val = sharedStrings[idx] || ""; }
+        } else {
+          var vEl2 = c.getElementsByTagName("v")[0];
+          val = vEl2 ? vEl2.textContent : "";
+        }
+        rowArr[colIdx] = val;
+      }
+      rows[rowIdx] = rowArr;
+    }
+    var maxLen = 0;
+    for(var k=0;k<rows.length;k++){ if(rows[k]) maxLen = Math.max(maxLen, rows[k].length); }
+    for(var r=0;r<rows.length;r++){
+      if(!rows[r]) rows[r] = [];
+      for(var c2=0;c2<maxLen;c2++) if(rows[r][c2]===undefined) rows[r][c2] = "";
+    }
+    return rows;
+  }
+  function parseCSVText(text){
+    var rows = [];
+    var row = [];
+    var field = "";
+    var inQuotes = false;
+    text = text.replace(/\r\n/g,"\n");
+    for(var i=0;i<text.length;i++){
+      var ch = text[i];
+      if(inQuotes){
+        if(ch === '"'){
+          if(text[i+1] === '"'){ field += '"'; i++; }
+          else inQuotes = false;
+        } else field += ch;
+      } else {
+        if(ch === '"') inQuotes = true;
+        else if(ch === ","){ row.push(field); field = ""; }
+        else if(ch === "\n"){ row.push(field); rows.push(row); row = []; field = ""; }
+        else field += ch;
+      }
+    }
+    row.push(field);
+    rows.push(row);
+    return rows;
+  }
+
+  function handleFile(file){
+    var name = (file.name||"").toLowerCase();
+    if(name.endsWith(".csv")){
+      file.text().then(function(text){
+        processRows(parseCSVText(text));
+      }).catch(function(err){
+        reportUpload("Couldn't read that file — " + err.message, true);
+      });
+      return;
+    }
+    if(typeof JSZip === "undefined"){
+      reportUpload("The file reader didn't load — check your connection and reload the page.", true);
+      return;
+    }
+    JSZip.loadAsync(file).then(function(zip){
+      var sheetPath = "xl/worksheets/sheet1.xml";
+      var wbFile = zip.file("xl/workbook.xml");
+      var relsFile = zip.file("xl/_rels/workbook.xml.rels");
+      var resolveSheet = (wbFile && relsFile) ? Promise.all([wbFile.async("string"), relsFile.async("string")]).then(function(res){
+        try{
+          var wbDoc = new DOMParser().parseFromString(res[0], "application/xml");
+          var relsDoc = new DOMParser().parseFromString(res[1], "application/xml");
+          var sheetEl = wbDoc.getElementsByTagName("sheet")[0];
+          var rId = sheetEl && (sheetEl.getAttribute("r:id") || sheetEl.getAttribute("relId"));
+          if(rId){
+            var relEls = relsDoc.getElementsByTagName("Relationship");
+            for(var i=0;i<relEls.length;i++){
+              if(relEls[i].getAttribute("Id")===rId){
+                sheetPath = "xl/" + relEls[i].getAttribute("Target").replace(/^\/?xl\//,"");
+                break;
+              }
+            }
+          }
+        }catch(e){}
+      }) : Promise.resolve();
+
+      resolveSheet.then(function(){
+        var sheetFile = zip.file(sheetPath) || zip.file("xl/worksheets/sheet1.xml");
+        if(!sheetFile){ reportUpload("Couldn't find a worksheet inside that file — is it a real .xlsx export?", true); return; }
+        var sharedFile = zip.file("xl/sharedStrings.xml");
+        Promise.all([
+          sheetFile.async("string"),
+          sharedFile ? sharedFile.async("string") : Promise.resolve(null)
+        ]).then(function(res){
+          try{
+            var sharedStrings = parseSharedStrings(res[1]);
+            var rows = parseSheetXML(res[0], sharedStrings);
+            processRows(rows);
+          }catch(err){
+            reportUpload("Couldn't read that file — " + err.message, true);
+          }
+        });
+      });
+    }).catch(function(err){
+      reportUpload("Couldn't open that file — is it a real .xlsx export? (" + err.message + ")", true);
+    });
+  }
+
+  function processRows(rows){
+    var hIdx = findHeaderRow(rows);
+    if(hIdx===-1){
+      reportUpload("Couldn't find an \"Order ID\" column — is this the right export?", true);
+      return;
+    }
+    var header = rows[hIdx];
+    var col = {
+      orderId: colIndex(header,"Order ID"),
+      refId: colIndex(header,"Reference ID"),
+      usdPrice: colIndex(header,"USD Price"),
+      deliveryUsd: colIndex(header,"Delivery USD"),
+      totalUsd: colIndex(header,"Total USD"),
+      status: colIndex(header,"Status"),
+      created: colIndex(header,"Creation Date"),
+      customer: colIndex(header,"Customer Name"),
+      phone: colIndex(header,"Phone"),
+      address: colIndex(header,"Address"),
+      note: colIndex(header,"Note")
+    };
+    if(col.orderId===-1){
+      reportUpload("Couldn't find an \"Order ID\" column — is this the right export?", true);
+      return;
+    }
+
+    var newCount=0, existingCount=0, skippedCount=0;
+    var newlyAdded = [];
+    for(var r=hIdx+1; r<rows.length; r++){
+      var row = rows[r];
+      if(!row || row.length===0) continue;
+      var orderId = String(row[col.orderId]||"").trim();
+      if(!orderId) continue;
+
+      var statusInfo = parseStatus(col.status>-1 ? row[col.status] : "");
+      if(!statusInfo.isCancelled){ skippedCount++; continue; }
+
+      var record = {
+        orderId: orderId,
+        referenceId: col.refId>-1 ? String(row[col.refId]||"").trim() : "",
+        customerName: col.customer>-1 ? String(row[col.customer]||"").trim() : "",
+        phone: col.phone>-1 ? String(row[col.phone]||"").trim() : "",
+        address: col.address>-1 ? String(row[col.address]||"").trim() : "",
+        note: col.note>-1 ? String(row[col.note]||"").trim() : "",
+        usdPrice: col.usdPrice>-1 ? parseFloat(row[col.usdPrice])||0 : 0,
+        deliveryUsd: col.deliveryUsd>-1 ? parseFloat(row[col.deliveryUsd])||0 : 0,
+        totalUsd: col.totalUsd>-1 ? parseFloat(row[col.totalUsd])||0 : 0,
+        paymentStatus: statusInfo.payment,
+        creationDate: col.created>-1 ? String(row[col.created]||"").trim() : ""
+      };
+
+      if(state.orders[orderId]){
+        var existing = state.orders[orderId];
+        existing.referenceId = record.referenceId;
+        existing.customerName = record.customerName;
+        existing.phone = record.phone;
+        existing.address = record.address;
+        existing.note = record.note;
+        existing.usdPrice = record.usdPrice;
+        existing.deliveryUsd = record.deliveryUsd;
+        existing.totalUsd = record.totalUsd;
+        existing.paymentStatus = record.paymentStatus;
+        existing.creationDate = record.creationDate;
+        existingCount++;
+      } else {
+        newlyAdded.push(record);
+      }
+    }
+
+    newlyAdded.sort(function(a,b){ return (a.creationDate||"").localeCompare(b.creationDate||""); });
+    var perEmp = {};
+    newlyAdded.forEach(function(rec){
+      var emp = nextAssignee();
+      rec.assignedTo = emp;
+      rec.stage = "wa1";
+      rec.outcome = null;
+      rec.notes = "";
+      rec.dateAdded = new Date().toISOString().slice(0,10);
+      state.orders[rec.orderId] = rec;
+      perEmp[emp] = (perEmp[emp]||0)+1;
+      newCount++;
+    });
+
+    saveState();
+    render();
+
+    var msg = "Parsed " + (rows.length-hIdx-1) + " row(s) → " + newCount + " new order(s) added";
+    if(newCount>0){
+      var bits = [];
+      for(var k in perEmp) bits.push(perEmp[k] + " to " + k);
+      msg += " (" + bits.join(", ") + ")";
+    }
+    msg += ", " + existingCount + " already tracked";
+    if(skippedCount>0) msg += ", " + skippedCount + " skipped (not cancelled)";
+    reportUpload(msg, false);
+  }
+
+  function reportUpload(msg, isError){
+    var el = document.getElementById("uploadReport");
+    el.textContent = msg;
+    el.className = "upload-report" + (isError?" error":"");
+  }
+
+  // ---------- dashboard ----------
+  function render(){
+    renderTiles();
+    renderTabs();
+    renderTable();
+  }
+
+  function ordersArray(){
+    return Object.keys(state.orders).map(function(k){ return state.orders[k]; });
+  }
+
+  function renderTiles(){
+    var all = ordersArray();
+    var totalUsd = all.reduce(function(s,o){ return s+o.totalUsd; },0);
+    var recovered = all.filter(function(o){ return o.outcome==="recovered"; });
+    var recoveredUsd = recovered.reduce(function(s,o){ return s+o.totalUsd; },0);
+    var lost = all.filter(function(o){ return o.outcome==="lost"; });
+    var lostUsd = lost.reduce(function(s,o){ return s+o.totalUsd; },0);
+    var open = all.filter(function(o){ return !o.outcome; });
+    var today = new Date().toISOString().slice(0,10);
+    var addedToday = all.filter(function(o){ return o.dateAdded===today; });
+    var rate = all.length ? Math.round(recovered.length/all.length*100) : 0;
+
+    var tiles = [
+      {label:"Added today", value: addedToday.length, sub: fmtMoney(addedToday.reduce(function(s,o){return s+o.totalUsd;},0)) + " at risk", cls:""},
+      {label:"Tracked total", value: all.length, sub: fmtMoney(totalUsd) + " cumulative", cls:""},
+      {label:"Open / in progress", value: open.length, sub: "needs follow-up", cls:"accent"},
+      {label:"Recovered", value: recovered.length, sub: fmtMoney(recoveredUsd) + " · " + rate + "% save rate", cls:"good"},
+      {label:"Lost", value: lost.length, sub: fmtMoney(lostUsd) + " gone", cls:"bad"}
+    ];
+    var html = tiles.map(function(t){
+      return '<div class="tile '+t.cls+'"><div class="label">'+t.label+'</div><div class="value num">'+t.value+'</div><div class="sub">'+t.sub+'</div></div>';
+    }).join("");
+    document.getElementById("tiles").innerHTML = html;
+  }
+
+  function renderTabs(){
+    var all = ordersArray();
+    var tabsEl = document.getElementById("tabs");
+    var defs = [{key:"all", label:"All"}];
+    state.settings.employees.forEach(function(e){ defs.push({key:e, label:e}); });
+    tabsEl.innerHTML = defs.map(function(d){
+      var count = d.key==="all" ? all.length : all.filter(function(o){return o.assignedTo===d.key;}).length;
+      var sel = activeTab===d.key;
+      return '<button class="tab" data-tab="'+esc(d.key)+'" aria-selected="'+sel+'">'+esc(d.label)+' <span class="count">'+count+'</span></button>';
+    }).join("");
+    Array.prototype.forEach.call(tabsEl.querySelectorAll(".tab"), function(btn){
+      btn.addEventListener("click", function(){
+        activeTab = btn.getAttribute("data-tab");
+        renderTabs();
+        renderTable();
+      });
+    });
+  }
+
+  function filteredOrders(){
+    var list = ordersArray().filter(function(o){
+      return activeTab==="all" ? true : o.assignedTo===activeTab;
+    });
+    list.sort(function(a,b){ return (b.creationDate||"").localeCompare(a.creationDate||""); });
+    return list;
+  }
+
+  function renderTable(){
+    var all = filteredOrders();
+
+    var tbody = document.getElementById("tbody");
+    var empty = document.getElementById("emptyState");
+    if(all.length===0){
+      tbody.innerHTML = "";
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+
+    tbody.innerHTML = all.map(function(o){
+      var phoneHref = (o.phone||"").replace(/[^\d+]/g,"");
+      var itemsHtml = parseItems(o.note).map(function(it){
+        return '<li title="'+esc(it)+'">'+esc(it)+'</li>';
+      }).join("");
+      return '' +
+        '<tr data-id="'+encodeURIComponent(o.orderId)+'">' +
+          '<td><span class="avatar" style="background:'+colorFor(o.assignedTo)+'" title="'+esc(o.assignedTo)+'">'+esc(initials(o.assignedTo))+'</span></td>' +
+          '<td><span class="order-num" title="Ref '+esc(o.referenceId||"—")+' · ID '+esc(o.orderId)+'">#'+esc(orderNumber(o))+'</span></td>' +
+          '<td><div class="cust-name" title="'+esc(o.address||"")+'">'+esc(o.customerName||"—")+'</div></td>' +
+          '<td>'+(o.phone ? '<a class="phone-link" href="tel:'+esc(phoneHref)+'">'+esc(o.phone)+'</a>' : '—')+'</td>' +
+          '<td><div class="amount">'+fmtMoney(o.totalUsd)+'</div></td>' +
+          '<td><ul class="items-list">'+itemsHtml+'</ul></td>' +
+          '<td>'+renderFollowupCell(o, phoneHref)+'</td>' +
+          '<td><input class="notes" type="text" value="'+esc(o.notes||"")+'" placeholder="Call notes…"></td>' +
+        '</tr>';
+    }).join("");
+
+    Array.prototype.forEach.call(tbody.querySelectorAll('[data-action="yes"]'), function(btn){
+      btn.addEventListener("click", function(){
+        var id = decodeURIComponent(btn.closest("tr").getAttribute("data-id"));
+        state.orders[id].outcome = "recovered";
+        saveState();
+        render();
+      });
+    });
+    Array.prototype.forEach.call(tbody.querySelectorAll('[data-action="no"]'), function(btn){
+      btn.addEventListener("click", function(){
+        var id = decodeURIComponent(btn.closest("tr").getAttribute("data-id"));
+        var o = state.orders[id];
+        var idx = STAGE_ORDER.indexOf(o.stage||"wa1");
+        if(idx < STAGE_ORDER.length-1) o.stage = STAGE_ORDER[idx+1];
+        else o.outcome = "lost";
+        saveState();
+        render();
+      });
+    });
+    Array.prototype.forEach.call(tbody.querySelectorAll('[data-action="reopen"]'), function(btn){
+      btn.addEventListener("click", function(){
+        var id = decodeURIComponent(btn.closest("tr").getAttribute("data-id"));
+        state.orders[id].outcome = null;
+        saveState();
+        render();
+      });
+    });
+    Array.prototype.forEach.call(tbody.querySelectorAll(".wa-btn[data-copy]"), function(btn){
+      btn.addEventListener("click", function(){
+        copyText(btn.getAttribute("data-copy"));
+        toast("Message copied — paste it into WhatsApp");
+      });
+    });
+    Array.prototype.forEach.call(tbody.querySelectorAll("input.notes"), function(inp){
+      inp.addEventListener("input", function(){
+        var id = decodeURIComponent(inp.closest("tr").getAttribute("data-id"));
+        state.orders[id].notes = inp.value;
+        saveState();
+      });
+    });
+  }
+
+  function renderFollowupCell(o, phoneHref){
+    if(o.outcome){
+      var cls = o.outcome==="recovered" ? "recovered" : "lost";
+      var label = o.outcome==="recovered" ? "✓ Recovered" : "✕ Lost";
+      return '<div class="locked-wrap"><span class="locked-badge '+cls+'">'+label+'</span><button class="reopen-btn" type="button" data-action="reopen">reopen</button></div>';
+    }
+    var stage = o.stage || "wa1";
+    var actionHtml;
+    // Dropping text= to dodge the "#no_universal_links" bug broke something
+    // more important: without it, some WhatsApp versions don't reliably jump
+    // to the specific contact's chat at all — they just open WhatsApp
+    // generally. So the link keeps the prefilled text (reaching the right
+    // customer matters more), and the message is also copied to the
+    // clipboard as a one-paste fix if WhatsApp still appends anything odd.
+    if(stage==="wa1"){
+      var text1 = fillTemplate(state.settings.waTemplate1, o);
+      actionHtml = o.phone
+        ? '<a class="wa-btn" target="_blank" rel="noopener" data-copy="'+esc(text1)+'" href="'+esc(waLink(phoneHref,text1))+'">💬 Send WhatsApp</a>'
+        : '<span class="clip small">No phone</span>';
+    } else if(stage==="call"){
+      var textCall = fillTemplate("Hi {firstname}, this is {employee} 👋", o);
+      actionHtml = o.phone
+        ? '<a class="wa-btn" target="_blank" rel="noopener" data-copy="'+esc(textCall)+'" href="'+esc(waLink(phoneHref,textCall))+'">📞 Call on WhatsApp</a>'
+        : '<span class="clip small">No phone</span>';
+    } else {
+      var text2 = fillTemplate(state.settings.waTemplateCoupon, o);
+      actionHtml = o.phone
+        ? '<a class="wa-btn" target="_blank" rel="noopener" data-copy="'+esc(text2)+'" href="'+esc(waLink(phoneHref,text2))+'">💬 Send coupon</a>'
+        : '<span class="clip small">No phone</span>';
+    }
+    return '' +
+      '<div class="stage-actions">' +
+        '<div class="stage-label">'+esc(STAGE_META[stage].label)+'</div>' +
+        actionHtml +
+        '<div class="yn-row">' +
+          '<button class="yn-btn yes" type="button" data-action="yes">Recovered</button>' +
+          '<button class="yn-btn no" type="button" data-action="no">No</button>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function esc(s){
+    return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  function copyText(text){
+    try{
+      navigator.clipboard.writeText(text);
+    }catch(e){
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try{ document.execCommand("copy"); }catch(e2){}
+      document.body.removeChild(ta);
+    }
+  }
+
+  function buildTSV(list){
+    var headers = ["Order ID","Customer","Phone","Amount USD","Payment","Cancelled","Address","Items","Follow-up","Coupon","Notes"];
+    var code = (state.settings.couponCode||"").trim();
+    var lines = [headers.join("\t")];
+    list.forEach(function(o){
+      var followup = o.outcome==="recovered" ? "Recovered"
+        : o.outcome==="lost" ? "Lost"
+        : STAGE_META[o.stage||"wa1"].label;
+      lines.push([
+        o.orderId, o.customerName, o.phone, o.totalUsd.toFixed(2), o.paymentStatus,
+        (o.creationDate||"").split(" ")[0], o.address, parseItems(o.note).join("; "),
+        followup, code, o.notes||""
+      ].map(function(v){ return String(v==null?"":v).replace(/\t/g," ").replace(/\n/g," "); }).join("\t"));
+    });
+    return lines.join("\n");
+  }
+
+  // ---------- upload wiring ----------
+  var dropzone = document.getElementById("dropzone");
+  var fileInput = document.getElementById("fileInput");
+  fileInput.addEventListener("change", function(){
+    if(fileInput.files && fileInput.files[0]) handleFile(fileInput.files[0]);
+  });
+  ["dragover"].forEach(function(evt){
+    dropzone.addEventListener(evt, function(e){ e.preventDefault(); dropzone.classList.add("drag"); });
+  });
+  ["dragleave","drop"].forEach(function(evt){
+    dropzone.addEventListener(evt, function(e){ e.preventDefault(); dropzone.classList.remove("drag"); });
+  });
+  dropzone.addEventListener("drop", function(e){
+    var f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if(f) handleFile(f);
+  });
+  dropzone.addEventListener("click", function(){ fileInput.click(); });
+  dropzone.addEventListener("keydown", function(e){
+    if(e.key==="Enter" || e.key===" "){ e.preventDefault(); fileInput.click(); }
+  });
+  document.getElementById("btnUploadTop").addEventListener("click", function(){
+    document.getElementById("uploadSection").scrollIntoView({behavior:"smooth", block:"start"});
+    fileInput.click();
+  });
+
+  // ---------- settings ----------
+  var settingsSection = document.getElementById("settingsSection");
+  document.getElementById("btnSettings").addEventListener("click", function(){
+    settingsSection.hidden = !settingsSection.hidden;
+    if(!settingsSection.hidden) refreshBackup();
+  });
+  var emp1 = document.getElementById("emp1"), emp2 = document.getElementById("emp2");
+  var emp1Weight = document.getElementById("emp1Weight"), emp2Weight = document.getElementById("emp2Weight");
+  var couponCode = document.getElementById("couponCode"), couponPercent = document.getElementById("couponPercent");
+  var waTemplate1El = document.getElementById("waTemplate1"), waTemplateCouponEl = document.getElementById("waTemplateCoupon");
+  function syncSettingsUI(){
+    emp1.value = state.settings.employees[0]||"Khawla";
+    emp2.value = state.settings.employees[1]||"Sacha";
+    emp1Weight.value = state.settings.weights[0];
+    emp2Weight.value = state.settings.weights[1];
+    couponCode.value = state.settings.couponCode||"";
+    couponPercent.value = state.settings.couponPercent||15;
+    waTemplate1El.value = state.settings.waTemplate1;
+    waTemplateCouponEl.value = state.settings.waTemplateCoupon;
+  }
+  syncSettingsUI();
+  waTemplate1El.addEventListener("input", function(){ state.settings.waTemplate1 = waTemplate1El.value; saveState(); renderTable(); });
+  waTemplateCouponEl.addEventListener("input", function(){ state.settings.waTemplateCoupon = waTemplateCouponEl.value; saveState(); renderTable(); });
+
+  function persistEmployeeRename(oldNames, newNames){
+    ordersArray().forEach(function(o){
+      var idx = oldNames.indexOf(o.assignedTo);
+      if(idx>-1) o.assignedTo = newNames[idx];
+    });
+  }
+  [emp1,emp2].forEach(function(inp, i){
+    inp.addEventListener("change", function(){
+      var oldNames = state.settings.employees.slice();
+      var newNames = [emp1.value.trim()||"Employee 1", emp2.value.trim()||"Employee 2"];
+      persistEmployeeRename(oldNames, newNames);
+      state.settings.employees = newNames;
+      saveState();
+      render();
+    });
+  });
+  [emp1Weight,emp2Weight].forEach(function(inp){
+    inp.addEventListener("change", function(){
+      state.settings.weights = [parseFloat(emp1Weight.value)||0, parseFloat(emp2Weight.value)||0];
+      state.settings.rrState = [0,0];
+      saveState();
+      toast("Workload split updated");
+    });
+  });
+  couponCode.addEventListener("input", function(){ state.settings.couponCode = couponCode.value; saveState(); renderTable(); });
+  couponPercent.addEventListener("input", function(){ state.settings.couponPercent = parseFloat(couponPercent.value)||0; saveState(); renderTable(); });
+
+  // Published artifacts run in a sandboxed iframe, where native confirm()
+  // dialogs are silently blocked (the click does nothing, with no error) —
+  // so a destructive action needs its own two-step, in-page confirmation
+  // instead of relying on the browser's dialog.
+  var btnReset = document.getElementById("btnReset");
+  var resetArmed = false, resetTimer = null;
+  function disarmReset(){
+    resetArmed = false;
+    clearTimeout(resetTimer);
+    btnReset.textContent = "Reset all local data";
+  }
+  btnReset.addEventListener("click", function(){
+    if(!resetArmed){
+      resetArmed = true;
+      btnReset.textContent = "Click again to confirm — this can't be undone";
+      resetTimer = setTimeout(disarmReset, 4000);
+      return;
+    }
+    disarmReset();
+    state = {orders:{}, settings:defaultSettings()};
+    saveState();
+    syncSettingsUI();
+    render();
+    toast("Local data reset");
+  });
+
+  function refreshBackup(){
+    document.getElementById("backupOut").value = JSON.stringify(state, null, 2);
+  }
+  document.getElementById("btnRefreshBackup").addEventListener("click", refreshBackup);
+  document.getElementById("btnRestore").addEventListener("click", function(){
+    var raw = document.getElementById("backupIn").value.trim();
+    if(!raw){ toast("Paste backup JSON first"); return; }
+    try{
+      var parsed = JSON.parse(raw);
+      if(!parsed.orders || !parsed.settings) throw new Error("missing orders/settings");
+      state = parsed;
+      normalizeSettings();
+      Object.keys(state.orders).forEach(function(id){
+        var o = state.orders[id];
+        if(!o.stage){ o.stage="wa1"; o.outcome=null; }
+      });
+      saveState();
+      syncSettingsUI();
+      render();
+      refreshBackup();
+      toast("Backup restored");
+    }catch(err){
+      toast("That doesn't look like a valid backup file");
+    }
+  });
+
+  // Reassigning the whole queue would erase real work already invested in a
+  // case (a WhatsApp already sent, a call already made). Rebalancing only
+  // touches orders still at the very first stage with no outcome yet —
+  // nobody has done anything on them, so redistributing is safe.
+  document.getElementById("btnRebalance").addEventListener("click", function(){
+    var untouched = ordersArray().filter(function(o){ return !o.outcome && (o.stage||"wa1")==="wa1"; });
+    if(untouched.length===0){ toast("Nothing untouched to rebalance"); return; }
+    untouched.sort(function(a,b){ return (a.creationDate||"").localeCompare(b.creationDate||""); });
+    state.settings.rrState = state.settings.employees.map(function(){ return 0; });
+    var perEmp = {};
+    untouched.forEach(function(o){
+      var emp = nextAssignee();
+      o.assignedTo = emp;
+      perEmp[emp] = (perEmp[emp]||0)+1;
+    });
+    saveState();
+    render();
+    var bits = [];
+    for(var k in perEmp) bits.push(perEmp[k] + " to " + k);
+    toast("Rebalanced " + untouched.length + " untouched order(s): " + bits.join(", "));
+  });
+
+  // ---------- copy-per-tab ----------
+  document.getElementById("btnCopyList").addEventListener("click", function(){
+    var list = filteredOrders();
+    if(list.length===0){ toast("Nothing to copy in this list"); return; }
+    copyText(buildTSV(list));
+    toast("Copied " + list.length + " row(s) — paste into your sheet");
+  });
+
+  render();
+})();
+</script>
+
+</body></html>

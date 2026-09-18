@@ -3,6 +3,7 @@ Sweet Mayhem — Order Fulfillment Web App
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import gspread
 import requests
@@ -10,6 +11,7 @@ from google.oauth2.service_account import Credentials
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from copy import deepcopy
+from pathlib import Path
 import io
 import math
 import bcrypt
@@ -1282,13 +1284,17 @@ elif page == "🛟 Save Desk":
         "between Khawla and Sacha, with a guided WhatsApp → call → coupon follow-up for "
         "each case, right through to Recovered or Lost."
     )
-    st.link_button("🛟 Open Save Desk ↗", SAVE_DESK_URL, use_container_width=True)
-    st.info(
-        "Opens in a new browser tab. Save Desk keeps its data in that browser only (not "
-        "this app), so use the same browser and device each day to keep the follow-up "
-        "queue continuous.",
-        icon="ℹ️",
-    )
+    save_desk_html = Path(__file__).parent / "save_desk.html"
+    if save_desk_html.exists():
+        components.html(save_desk_html.read_text(encoding="utf-8"), height=1400, scrolling=True)
+        st.caption(
+            f"Data is saved in this browser tab, not in this app. If the queue ever looks "
+            f"empty when it shouldn't, use Save Desk's own Settings → Backup panel before "
+            f"assuming anything was lost — or open it standalone: [{SAVE_DESK_URL}]({SAVE_DESK_URL})"
+        )
+    else:
+        st.error("save_desk.html wasn't found next to app.py — the embed can't load.")
+        st.link_button("🛟 Open Save Desk ↗", SAVE_DESK_URL, use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: MANAGE USERS (admin only)

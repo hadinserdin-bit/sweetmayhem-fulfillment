@@ -1196,14 +1196,19 @@ with st.sidebar:
     page = st.session_state.page
 
     if st.session_state.pop("_close_sidebar_on_nav", False):
+        # The <!-- nonce --> makes this HTML string unique every render. Without it,
+        # an identical srcdoc on a later rerun doesn't reload the iframe, so the
+        # <script> only ever fires the very first time this appears — which is why
+        # closing worked once after login and then silently stopped.
         components.html(
-            """
+            f"""
+            <!-- {datetime.now().isoformat()} -->
             <script>
-            try {
+            try {{
                 const el = window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"] button')
                         || window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"]');
                 if (el) el.click();
-            } catch (e) {}
+            }} catch (e) {{}}
             </script>
             """,
             height=0,

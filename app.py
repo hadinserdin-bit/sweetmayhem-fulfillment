@@ -58,35 +58,34 @@ def get_ws():
 USERS_SHEET_NAME = "Users"
 ALL_PAGES = [
     "📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder",
-    "🛟 Save Desk", "🚢 Shipment Tracker", "🧾 Shipment Details",
+    "🚫 Cancelled Orders", "🚢 Shipment Tracker", "🧾 Shipment Details",
 ]
 ADMIN_PAGE = "👤 Manage Users"
-SAVE_DESK_URL = "https://claude.ai/artifact/1TJ5d5iJuijaHKNTTBSiyZ"
+CANCELLED_ORDERS_URL = "https://claude.ai/artifact/1TJ5d5iJuijaHKNTTBSiyZ"
+
+# "Save Desk" was this page's old name — some users' saved Permissions cells
+# may still have the old identity string. Translated on load (below) so
+# nobody's page access silently breaks; never written back automatically.
+PAGE_KEY_MIGRATIONS = {
+    "🛟 Save Desk": "🚫 Cancelled Orders",
+}
 
 # Page identity strings above (with emoji) are the stored keys used in existing users'
-# saved Permissions cells — keep them unchanged. This maps each to a real icon + clean
-# label for display only.
+# saved Permissions cells — keep them unchanged. This maps each to a real icon for
+# display only.
 PAGE_ICONS = {
     "📦 Fulfillment": ":material/local_shipping:",
     "🔄 Restock": ":material/inventory_2:",
     "➕ Add Product": ":material/add_box:",
     "📋 View Inventory": ":material/list_alt:",
     "📊 Demand & Reorder": ":material/insights:",
-    "🛟 Save Desk": ":material/cancel:",
+    "🚫 Cancelled Orders": ":material/cancel:",
     "🚢 Shipment Tracker": ":material/directions_boat:",
     "🧾 Shipment Details": ":material/receipt_long:",
     ADMIN_PAGE: ":material/group:",
 }
 
-# Display text only — same reasoning as PAGE_ICONS above, the stored "🛟 Save Desk"
-# key stays put so nobody's saved page access silently breaks.
-PAGE_LABELS = {
-    "🛟 Save Desk": "Cancelled Orders",
-}
-
 def page_label(p):
-    if p in PAGE_LABELS:
-        return PAGE_LABELS[p]
     return p.split(" ", 1)[1] if " " in p else p
 
 def get_users_ws():
@@ -111,7 +110,10 @@ def load_users():
             "username": username,
             "password_hash": row[1],
             "role": row[2].strip().lower(),
-            "permissions": [p.strip() for p in row[3].split(",") if p.strip()],
+            "permissions": [
+                PAGE_KEY_MIGRATIONS.get(p.strip(), p.strip())
+                for p in row[3].split(",") if p.strip()
+            ],
             "row": i,
         }
     return users
@@ -1596,27 +1598,27 @@ elif page == "📊 Demand & Reorder":
         st.error(f"Could not compute demand & reorder data: {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PAGE: CANCELLED ORDERS (stored page key stays "🛟 Save Desk" — see PAGE_LABELS)
+# PAGE: CANCELLED ORDERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-elif page == "🛟 Save Desk":
+elif page == "🚫 Cancelled Orders":
     st.subheader("Cancelled Order Recovery")
     st.caption(
         "Upload the daily Roadrunner cancelled-orders export and it splits automatically "
         "between Khawla and Sacha, with a guided WhatsApp → call → coupon follow-up for "
         "each case, right through to Recovered or Lost."
     )
-    save_desk_html = Path(__file__).parent / "save_desk.html"
-    if save_desk_html.exists():
-        components.html(save_desk_html.read_text(encoding="utf-8"), height=1400, scrolling=True)
+    cancelled_orders_html = Path(__file__).parent / "cancelled_orders.html"
+    if cancelled_orders_html.exists():
+        components.html(cancelled_orders_html.read_text(encoding="utf-8"), height=1400, scrolling=True)
         st.caption(
             f"Data is saved in this browser tab, not in this app. If the queue ever looks "
             f"empty when it shouldn't, use the tool's own Settings → Backup panel before "
-            f"assuming anything was lost — or open it standalone: [{SAVE_DESK_URL}]({SAVE_DESK_URL})"
+            f"assuming anything was lost — or open it standalone: [{CANCELLED_ORDERS_URL}]({CANCELLED_ORDERS_URL})"
         )
     else:
-        st.error("save_desk.html wasn't found next to app.py — the embed can't load.")
-        st.link_button("Open Cancelled Orders ↗", SAVE_DESK_URL, use_container_width=True)
+        st.error("cancelled_orders.html wasn't found next to app.py — the embed can't load.")
+        st.link_button("Open Cancelled Orders ↗", CANCELLED_ORDERS_URL, use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: MANAGE USERS (admin only)

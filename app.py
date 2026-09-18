@@ -53,8 +53,12 @@ def _gc():
 def _drive():
     return build("drive", "v3", credentials=_service_account_creds())
 
+@st.cache_resource
+def _spreadsheet():
+    return _gc().open_by_key(SHEET_ID)
+
 def get_ws():
-    return _gc().open_by_key(SHEET_ID).get_worksheet(0)
+    return _spreadsheet().get_worksheet(0)
 
 # ─── Users & Access Control ────────────────────────────────────────────────────
 
@@ -92,7 +96,7 @@ def page_label(p):
     return p.split(" ", 1)[1] if " " in p else p
 
 def get_users_ws():
-    sh = _gc().open_by_key(SHEET_ID)
+    sh = _spreadsheet()
     try:
         return sh.worksheet(USERS_SHEET_NAME)
     except gspread.WorksheetNotFound:
@@ -308,6 +312,7 @@ def login_screen():
 if not login_screen():
     st.stop()
 
+@st.cache_data(ttl=60)
 def load_inventory():
     ws = get_ws()
     data = ws.get_all_values()
@@ -325,13 +330,14 @@ def load_inventory():
         key = (p.lower(), c.lower(), s.lower())
         if key not in inv:
             inv[key] = {"product": p, "color": c, "size": s, "qty": qty, "row": i}
-    return inv, ws
+    return inv
 
 def batch_update_qty(ws, updates):
     ws.batch_update([
         {"range": f"D{row}", "values": [[qty]]}
         for row, qty in updates
     ])
+    load_inventory.clear()
 
 # ─── Shopify ──────────────────────────────────────────────────────────────────
 
@@ -567,7 +573,7 @@ SNAPSHOT_SHEET_NAME = "InventorySnapshots"
 MIN_TRACKED_DAYS = 5  # minimum days of stock-history before trusting the adjusted rate
 
 def get_snapshot_ws():
-    sh = _gc().open_by_key(SHEET_ID)
+    sh = _spreadsheet()
     try:
         return sh.worksheet(SNAPSHOT_SHEET_NAME)
     except gspread.WorksheetNotFound:
@@ -704,8 +710,12 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
 SHIPMENT_TRACKER_SHEET_ID = "1xwLzbuUU_xbE7aetCI5CxSpkpEdRN2AwzsuSkpqeS7g"
 SHIPMENT_TRACKER_TAB = "Shipments Tracker"
 
+@st.cache_resource
+def _shipment_tracker_spreadsheet():
+    return _gc().open_by_key(SHIPMENT_TRACKER_SHEET_ID)
+
 def get_shipment_tracker_ws():
-    return _gc().open_by_key(SHIPMENT_TRACKER_SHEET_ID).worksheet(SHIPMENT_TRACKER_TAB)
+    return _shipment_tracker_spreadsheet().worksheet(SHIPMENT_TRACKER_TAB)
 
 def _parse_sheet_date(v):
     """Handles the sheet's mixed date storage: real date cells (serial numbers) and
@@ -1370,7 +1380,7 @@ if page == "📦 Fulfillment":
     if fetch_btn:
         with st.spinner("Fetching unfulfilled orders from Shopify…"):
             try:
-                inv, ws  = load_inventory()
+                inv, ws  = load_inventory(), get_ws()
                 orders   = fetch_shopify_orders()
                 if not orders:
                     st.warning("No unfulfilled orders found in Shopify.")
@@ -1393,7 +1403,7 @@ if page == "📦 Fulfillment":
             st.stop()
         with st.spinner(f"Fetching order #{order_input.strip().lstrip('#')} from Shopify…"):
             try:
-                inv, ws  = load_inventory()
+                inv, ws  = load_inventory(), get_ws()
                 orders   = fetch_shopify_order_by_name(order_input)
                 fulfillable, skipped, new_inv = determine_fulfillable(orders, inv)
                 st.session_state.update(
@@ -1562,7 +1572,7 @@ elif page == "🔄 Restock":
 
     try:
         with st.spinner("Loading inventory…"):
-            inv, ws = load_inventory()
+            inv, ws = load_inventory(), get_ws()
 
         items = list(inv.items())
         df = pd.DataFrame([
@@ -1642,16 +1652,13 @@ elif page == "➕ Add Product":
         with st.spinner("Adding to Google Sheets…"):
             try:
                 ws = get_ws()
-                existing = ws.get_all_values()
-                existing_keys = set(
-                    (r[0].strip().lower(), r[1].strip().lower(), r[2].strip().lower())
-                    for r in existing[1:] if len(r) >= 3 and r[0]
-                )
+                existing_keys = set(load_inventory().keys())
                 to_add = [v for v in variants
                           if (v[0].lower(), v[1].lower(), v[2].lower()) not in existing_keys]
                 skipped_count = len(variants) - len(to_add)
                 if to_add:
                     ws.append_rows([[p, c, s, q] for p, c, s, q in to_add])
+                    load_inventory.clear()
                 msg = f"{len(to_add)} variant(s) added to inventory."
                 if skipped_count:
                     msg += f" ({skipped_count} skipped — already existed.)"
@@ -1668,7 +1675,7 @@ elif page == "📋 View Inventory":
 
     try:
         with st.spinner("Loading…"):
-            inv, _ = load_inventory()
+            inv = load_inventory()
 
         df = pd.DataFrame([
             {"Product": v["product"], "Color": v["color"],
@@ -1724,7 +1731,7 @@ elif page == "📊 Demand & Reorder":
 
     try:
         with st.spinner("Loading inventory & recording today's stock snapshot…"):
-            inv, _ = load_inventory()
+            inv = load_inventory()
             recorded_today = record_snapshot_if_needed(inv)
             if recorded_today:
                 load_snapshots.clear()

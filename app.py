@@ -1707,9 +1707,13 @@ elif page == "🚫 Cancelled Orders":
     cancelled_orders_html = Path(__file__).parent / "cancelled_orders.html"
     if cancelled_orders_html.exists():
         html = cancelled_orders_html.read_text(encoding="utf-8")
-        # Tells the embedded tool who's looking at it, so it can hide Upload/Settings
-        # for non-admins — see the APP_ROLE check near the top of its own script.
-        role_script = f"<script>window.APP_ROLE = {json.dumps(st.session_state.role)};</script>"
+        # Tells the embedded tool who's looking at it: role gates Upload/Settings,
+        # username locks a non-admin to their own assigned orders when it matches
+        # one of the configured employee names (Settings → Employee 1/2).
+        role_script = (
+            f"<script>window.APP_ROLE = {json.dumps(st.session_state.role)}; "
+            f"window.APP_USER = {json.dumps(st.session_state.username)};</script>"
+        )
         html = html.replace("<body>", "<body>" + role_script, 1)
         # scrolling=False on purpose: a scrollable iframe creates its own independent
         # touch-scroll region, which on mobile fights the outer page's scroll and makes

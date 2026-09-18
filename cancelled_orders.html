@@ -166,7 +166,6 @@
   details.backup textarea{width:100%;height:90px;margin-top:8px;font-family:ui-monospace,"SF Mono",monospace;font-size:11px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--ink);padding:8px}
   .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;font-weight:600;box-shadow:var(--shadow-lg);z-index:50;opacity:0;pointer-events:none;transition:opacity .2s, transform .2s}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
-  footer.note{color:var(--muted);font-size:12px;margin-top:6px;text-align:center}
 </style>
 
 <header class="top">
@@ -268,7 +267,6 @@
   <div id="emptyState" class="empty" hidden>No cancellations tracked yet — upload today's Roadrunner export above to get started.</div>
 </section>
 
-<footer class="note">Data stays in this browser only — export the backup JSON now and then so nothing is lost.</footer>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -369,6 +367,15 @@
   }
 
   var activeTab = "all";
+  // Set near the end of this script (once we know who's viewing) when a
+  // non-admin's login matches one of the configured employee names — locks
+  // the whole page (tiles + queue) to just that person's orders, with no
+  // way to switch to "All" or the other employee's tab.
+  var lockedEmployee = null;
+  function visibleOrders(){
+    var all = ordersArray();
+    return lockedEmployee ? all.filter(function(o){ return o.assignedTo===lockedEmployee; }) : all;
+  }
 
   function toast(msg){
     var t = document.getElementById("toast");
@@ -733,7 +740,7 @@
   }
 
   function renderTiles(){
-    var all = ordersArray();
+    var all = visibleOrders();
     var totalUsd = all.reduce(function(s,o){ return s+o.totalUsd; },0);
     var recovered = all.filter(function(o){ return o.outcome==="recovered"; });
     var recoveredUsd = recovered.reduce(function(s,o){ return s+o.totalUsd; },0);
@@ -758,8 +765,9 @@
   }
 
   function renderTabs(){
-    var all = ordersArray();
     var tabsEl = document.getElementById("tabs");
+    if(lockedEmployee){ tabsEl.innerHTML = ""; return; }
+    var all = ordersArray();
     var defs = [{key:"all", label:"All"}];
     state.settings.employees.forEach(function(e){ defs.push({key:e, label:e}); });
     tabsEl.innerHTML = defs.map(function(d){
@@ -777,9 +785,12 @@
   }
 
   function filteredOrders(){
-    var list = ordersArray().filter(function(o){
-      return activeTab==="all" ? true : o.assignedTo===activeTab;
-    });
+    var list = visibleOrders();
+    if(!lockedEmployee){
+      list = list.filter(function(o){
+        return activeTab==="all" ? true : o.assignedTo===activeTab;
+      });
+    }
     list.sort(function(a,b){ return (b.creationDate||"").localeCompare(a.creationDate||""); });
     return list;
   }
@@ -949,16 +960,41 @@
   dropzone.addEventListener("keydown", function(e){
     if(e.key==="Enter" || e.key===" "){ e.preventDefault(); fileInput.click(); }
   });
+  // scrollIntoView only scrolls within this iframe's own document, which has
+  // no scrollbar of its own (see the auto-resize script at the end of this
+  // file) — the actual scrolling happens on the Streamlit page around us, so
+  // reach into it the same same-origin way the auto-resize script does.
+  function scrollParentTo(targetEl){
+    try{
+      var frames = window.parent.document.querySelectorAll("iframe");
+      var myFrame = null;
+      for(var i=0;i<frames.length;i++){
+        if(frames[i].contentWindow === window){ myFrame = frames[i]; break; }
+      }
+      if(!myFrame) return;
+      var scroller = window.parent.document.querySelector('[data-testid="stMain"]')
+        || window.parent.document.scrollingElement
+        || window.parent.document.documentElement;
+      var scrollerRect = scroller.getBoundingClientRect();
+      var frameRect = myFrame.getBoundingClientRect();
+      var targetTop = scroller.scrollTop + (frameRect.top - scrollerRect.top) + targetEl.getBoundingClientRect().top - 16;
+      scroller.scrollTo({top: targetTop, behavior: "smooth"});
+    }catch(e){}
+  }
+
   document.getElementById("btnUploadTop").addEventListener("click", function(){
-    document.getElementById("uploadSection").scrollIntoView({behavior:"smooth", block:"start"});
     fileInput.click();
+    setTimeout(function(){ scrollParentTo(document.getElementById("uploadSection")); }, 60);
   });
 
   // ---------- settings ----------
   var settingsSection = document.getElementById("settingsSection");
   document.getElementById("btnSettings").addEventListener("click", function(){
     settingsSection.hidden = !settingsSection.hidden;
-    if(!settingsSection.hidden) refreshBackup();
+    if(!settingsSection.hidden){
+      refreshBackup();
+      setTimeout(function(){ scrollParentTo(settingsSection); }, 60);
+    }
   });
   var emp1 = document.getElementById("emp1"), emp2 = document.getElementById("emp2");
   var emp1Weight = document.getElementById("emp1Weight"), emp2Weight = document.getElementById("emp2Weight");
@@ -1097,10 +1133,57 @@
     document.getElementById("btnUploadTop").hidden = true;
     document.getElementById("btnSettings").hidden = true;
     document.getElementById("emptyState").textContent = "No cancellations tracked yet — ask an admin to upload today's export.";
+    // Lock the page to just this person's orders if their login name matches
+    // one of the configured employees (Settings → Employee 1/2) — case
+    // insensitive, so "khawla" the Streamlit username matches "Khawla" the
+    // employee name. No match (typo, unconfigured account, etc.) falls back
+    // to showing everything, same as before this existed.
+    if(window.APP_USER){
+      var matchedEmployee = state.settings.employees.filter(function(e){
+        return e.toLowerCase() === String(window.APP_USER).trim().toLowerCase();
+      })[0];
+      if(matchedEmployee) lockedEmployee = matchedEmployee;
+    }
   }
 
   render();
 })();
+</script>
+
+<script>
+  // The host app embeds this via components.html with a fixed height and its
+  // own scrolling turned off (deliberately — an independently-scrollable
+  // iframe fights the outer page's scroll on mobile). That only works if the
+  // iframe is always exactly as tall as this page's real content — with a
+  // 100+-row table that grows daily, a static height clips most of it with
+  // no way to reach the rest (verified: the standard Streamlit
+  // "streamlit:setFrameHeight" postMessage that custom components use is
+  // NOT wired up for plain components.html — it's silently ignored). So
+  // this finds its own <iframe> element in the parent document directly
+  // (same-origin access, same technique the sidebar-close fix elsewhere in
+  // this app already relies on) and sets its height itself. Re-applied on
+  // every layout change (rows added/removed, Settings opened, fonts
+  // finishing load, etc.) via ResizeObserver, since the table's length
+  // changes constantly as orders get uploaded and resolved.
+  (function(){
+    function reportHeight(){
+      var h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+      try{
+        var frames = window.parent.document.querySelectorAll("iframe");
+        for(var i=0;i<frames.length;i++){
+          if(frames[i].contentWindow === window){ frames[i].style.height = h + "px"; break; }
+        }
+      }catch(e){}
+    }
+    if(window.ResizeObserver){
+      new ResizeObserver(reportHeight).observe(document.body);
+    } else {
+      setInterval(reportHeight, 500);
+    }
+    window.addEventListener("load", reportHeight);
+    reportHeight();
+    setTimeout(reportHeight, 300);
+  })();
 </script>
 
 </body></html>

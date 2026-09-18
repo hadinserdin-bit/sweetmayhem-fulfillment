@@ -279,8 +279,11 @@ def login_screen():
                     st.success("Admin account created — please sign in.")
                     st.rerun()
         else:
-            username = st.text_input("Username")
-            pwd = st.text_input("Password", type="password", placeholder="Enter password")
+            username = st.text_input("Username", autocomplete="username")
+            pwd = st.text_input(
+                "Password", type="password", placeholder="Enter password",
+                autocomplete="current-password",
+            )
             if st.button("Sign In", type="primary", use_container_width=True):
                 u = users.get(username.strip().lower())
                 if u and verify_password(pwd, u["password_hash"]):

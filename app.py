@@ -11,9 +11,8 @@ from google.oauth2.service_account import Credentials
 from difflib import SequenceMatcher
 from datetime import datetime, date, timedelta
 from copy import deepcopy
-from pathlib import Path
+from urllib.parse import quote as url_quote
 import io
-import json
 import math
 import re
 import secrets
@@ -68,7 +67,6 @@ ALL_PAGES = [
     "🚫 Cancelled Orders", "💸 Refunds", "🚢 Shipment Tracker", "🧾 Shipment Details",
 ]
 ADMIN_PAGE = "👤 Manage Users"
-CANCELLED_ORDERS_URL = "https://claude.ai/artifact/1TJ5d5iJuijaHKNTTBSiyZ"
 
 # "Save Desk" was this page's old name — some users' saved Permissions cells
 # may still have the old identity string. Translated on load (below) so
@@ -242,6 +240,292 @@ def update_refund_status(row, status):
 def delete_refund(row):
     get_refunds_ws().delete_rows(row)
     load_refunds.clear()
+
+# ─── Cancelled Orders ───────────────────────────────────────────────────────────
+# Own separate spreadsheet, same reasoning as Refunds: the old tool kept
+# everything in browser localStorage, so an admin's upload and an employee's
+# WhatsApp/call/coupon progress were only ever visible on whichever single
+# device did the work. One shared Sheet fixes that the same way.
+
+CANCELLED_ORDERS_SHEET_ID = "14avUX9udcZ4CYDGOUTI8omKpAOlBeotfV_ONCToO-Pk"
+CANCELLED_ORDERS_TAB = "Cancelled Orders"
+CANCELLED_ORDERS_SETTINGS_TAB = "Settings"
+CO_STAGE_ORDER = ["wa1", "call", "coupon"]
+CO_STAGE_LABELS = {"wa1": "1st WhatsApp", "call": "WhatsApp call", "coupon": "Coupon WhatsApp"}
+CO_DEFAULT_TEMPLATE_1 = "Hi {firstname}, this is {employee} 👋 I noticed that you cancelled your order for {items} (total {total}) — can you tell me what's the problem?"
+CO_DEFAULT_TEMPLATE_COUPON = "Hi {firstname}, this is {employee} 👋 Use code \"{code}\" for {percent}% off, the code is valid for 72 hours!"
+CO_COLUMNS = [
+    "Order ID", "Reference ID", "Customer Name", "Phone", "Address", "Note",
+    "USD Price", "Delivery USD", "Total USD", "Payment Status", "Creation Date",
+    "Assigned To", "Stage", "Outcome", "Notes", "Date Added",
+]
+CO_SETTINGS_COLUMNS = [
+    "Employee1", "Employee1Weight", "Employee2", "Employee2Weight",
+    "RRState1", "RRState2", "CouponCode", "CouponPercent",
+    "WaTemplate1", "WaTemplateCoupon",
+]
+
+@st.cache_resource
+def _cancelled_orders_spreadsheet():
+    return _gc().open_by_key(CANCELLED_ORDERS_SHEET_ID)
+
+def get_co_ws():
+    sh = _cancelled_orders_spreadsheet()
+    try:
+        return sh.worksheet(CANCELLED_ORDERS_TAB)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=CANCELLED_ORDERS_TAB, rows=1000, cols=len(CO_COLUMNS))
+        ws.append_row(CO_COLUMNS)
+        return ws
+
+def get_co_settings_ws():
+    sh = _cancelled_orders_spreadsheet()
+    try:
+        return sh.worksheet(CANCELLED_ORDERS_SETTINGS_TAB)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=CANCELLED_ORDERS_SETTINGS_TAB, rows=2, cols=len(CO_SETTINGS_COLUMNS))
+        ws.append_row(CO_SETTINGS_COLUMNS)
+        ws.append_row(["Khawla", "1", "Sacha", "2", "0", "0", "Comeback15", "15", CO_DEFAULT_TEMPLATE_1, CO_DEFAULT_TEMPLATE_COUPON])
+        return ws
+
+@st.cache_data(ttl=30)
+def load_co_settings():
+    ws = get_co_settings_ws()
+    data = ws.get_all_values()
+    if len(data) < 2:
+        return {
+            "employees": ["Khawla", "Sacha"], "weights": [1.0, 2.0], "rr_state": [0.0, 0.0],
+            "coupon_code": "Comeback15", "coupon_percent": 15.0,
+            "wa_template_1": CO_DEFAULT_TEMPLATE_1, "wa_template_coupon": CO_DEFAULT_TEMPLATE_COUPON,
+        }
+    row = data[1]
+    def _f(idx, default=0.0):
+        try:
+            return float(row[idx])
+        except (IndexError, ValueError):
+            return default
+    return {
+        "employees": [row[0].strip() or "Khawla", row[2].strip() or "Sacha"] if len(row) > 2 else ["Khawla", "Sacha"],
+        "weights": [_f(1, 1.0), _f(3, 2.0)],
+        "rr_state": [_f(4, 0.0), _f(5, 0.0)],
+        "coupon_code": (row[6].strip() if len(row) > 6 and row[6].strip() else "Comeback15"),
+        "coupon_percent": _f(7, 15.0),
+        "wa_template_1": (row[8] if len(row) > 8 and row[8].strip() else CO_DEFAULT_TEMPLATE_1),
+        "wa_template_coupon": (row[9] if len(row) > 9 and row[9].strip() else CO_DEFAULT_TEMPLATE_COUPON),
+    }
+
+def save_co_settings(settings):
+    ws = get_co_settings_ws()
+    ws.update([[
+        settings["employees"][0], settings["weights"][0],
+        settings["employees"][1], settings["weights"][1],
+        settings["rr_state"][0], settings["rr_state"][1],
+        settings["coupon_code"], settings["coupon_percent"],
+        settings["wa_template_1"], settings["wa_template_coupon"],
+    ]], range_name="A2:J2")
+    load_co_settings.clear()
+
+# Weighted round-robin (nginx/LVS "smooth" algorithm): each pick bumps every
+# employee's running weight by their share, hands the order to whoever's
+# highest, then knocks the total back off them — evenly interleaves a 1:2
+# split (S,K,S,S,K,S…) instead of clumping one person's share in batches.
+def co_next_assignee(settings):
+    emps, weights, rr = settings["employees"], settings["weights"], settings["rr_state"]
+    total = sum(weights) or len(emps)
+    best = 0
+    for i in range(len(emps)):
+        rr[i] += weights[i] or 0
+        if rr[i] > rr[best]:
+            best = i
+    rr[best] -= total
+    return emps[best]
+
+def co_order_number(order_id, reference_id):
+    ref = str(reference_id or "").strip()
+    m = re.search(r"(\d+)\s*$", ref)
+    return "1" + (m.group(1) if m else (ref or order_id))
+
+# Roadrunner packs items into one note like "(1) Product, Color / S sku: ABC-1.
+# (1) Other Product / M. (1) Third Product sku: XYZ-3." — the sku suffix is
+# inconsistent (some items have it, some don't), so split on each "(qty)"
+# marker rather than anchoring the match on "sku:", or items without a sku
+# silently vanish instead of falling back.
+def co_parse_items(note):
+    text = str(note or "").strip()
+    if not text:
+        return []
+    starts = [m.start() for m in re.finditer(r"\(\d+\)", text)]
+    if not starts:
+        return [text]
+    items = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(text)
+        seg = text[start:end].strip()
+        qm = re.match(r"^\((\d+)\)\s*", seg)
+        qty = qm.group(1) if qm else "1"
+        desc = seg[qm.end():] if qm else seg
+        desc = re.sub(r"\s*sku:\s*\S+\s*$", "", desc, flags=re.IGNORECASE)
+        desc = re.sub(r"[.\s]+$", "", desc).strip()
+        if desc:
+            items.append(f"{qty}× {desc}")
+    return items if items else [text]
+
+def co_first_name(name):
+    parts = str(name or "").strip().split()
+    return parts[0] if parts else "there"
+
+def co_fill_template(tpl, order, settings):
+    items = ", ".join(co_parse_items(order["note"]))
+    code = (settings["coupon_code"] or "").strip() or "the code"
+    pct = settings["coupon_percent"]
+    pct_str = str(int(pct)) if float(pct).is_integer() else str(pct)
+    return (
+        str(tpl or "")
+        .replace("{name}", order["customer"] or "there")
+        .replace("{firstname}", co_first_name(order["customer"]))
+        .replace("{employee}", order["assigned_to"] or "")
+        .replace("{items}", items)
+        .replace("{total}", f"${order['total_usd']:,.2f}")
+        .replace("{code}", code)
+        .replace("{percent}", pct_str)
+    )
+
+# api.whatsapp.com is WhatsApp's own click-to-chat endpoint. The wa.me
+# shortlink 302-redirects through it and lands with a "#no_universal_links"
+# fragment tacked on by WhatsApp's redirector — linking straight to
+# api.whatsapp.com skips that hop entirely.
+def co_wa_link(phone, text):
+    digits = re.sub(r"\D", "", str(phone or ""))
+    url = f"https://api.whatsapp.com/send?phone={digits}"
+    if text:
+        url += "&text=" + url_quote(text, safe="")
+    return url
+
+@st.cache_data(ttl=30)
+def load_cancelled_orders():
+    ws = get_co_ws()
+    data = ws.get_all_values()
+    orders = []
+    for i, row in enumerate(data[1:], start=2):
+        if len(row) < 1 or not row[0].strip():
+            continue
+        def _g(idx, default=""):
+            return row[idx].strip() if len(row) > idx else default
+        stage = _g(12, "wa1")
+        orders.append({
+            "row": i,
+            "order_id": _g(0),
+            "reference_id": _g(1),
+            "customer": _g(2),
+            "phone": _g(3),
+            "address": _g(4),
+            "note": _g(5),
+            "usd_price": _parse_amount(_g(6)) or 0.0,
+            "delivery_usd": _parse_amount(_g(7)) or 0.0,
+            "total_usd": _parse_amount(_g(8)) or 0.0,
+            "payment_status": _g(9),
+            "creation_date": _g(10),
+            "assigned_to": _g(11),
+            "stage": stage if stage in CO_STAGE_ORDER else "wa1",
+            "outcome": _g(13) or None,
+            "notes": _g(14),
+            "date_added": _g(15),
+        })
+    return orders
+
+def co_status_is_cancelled(raw):
+    return bool(re.search("cancel", str(raw or ""), re.IGNORECASE))
+
+def co_payment_status(raw):
+    return "Paid" if re.match(r"^paid", str(raw or "").strip(), re.IGNORECASE) else "Unpaid (COD)"
+
+# Roadrunner's daily export — parses .xlsx (via pandas/openpyxl) or .csv, finds
+# the header row (it isn't always row 0), maps columns by name, and returns
+# only rows whose Status contains "cancel". Cancelled-but-already-tracked
+# orders are filtered out by the caller against load_cancelled_orders().
+def parse_roadrunner_export(file):
+    if file.name.lower().endswith(".csv"):
+        raw = pd.read_csv(file, header=None, dtype=str, keep_default_na=False)
+    else:
+        raw = pd.read_excel(file, header=None, dtype=str, keep_default_na=False)
+
+    header_idx = None
+    for i in range(min(10, len(raw))):
+        row_vals = [str(v).strip().lower() for v in raw.iloc[i].tolist()]
+        if "order id" in row_vals:
+            header_idx = i
+            break
+    if header_idx is None:
+        raise ValueError('Couldn\'t find an "Order ID" column — is this the right export?')
+
+    header = [str(v).strip() for v in raw.iloc[header_idx].tolist()]
+    body = raw.iloc[header_idx + 1:].reset_index(drop=True)
+    body.columns = header
+
+    def col(name):
+        return name if name in body.columns else None
+
+    c_order = col("Order ID")
+    if not c_order:
+        raise ValueError('Couldn\'t find an "Order ID" column — is this the right export?')
+    c_ref, c_usd, c_delivery, c_total, c_status, c_created, c_customer, c_phone, c_address, c_note = (
+        col("Reference ID"), col("USD Price"), col("Delivery USD"), col("Total USD"),
+        col("Status"), col("Creation Date"), col("Customer Name"), col("Phone"),
+        col("Address"), col("Note"),
+    )
+
+    records, skipped = [], 0
+    for _, r in body.iterrows():
+        order_id = str(r.get(c_order, "")).strip()
+        if not order_id:
+            continue
+        status_raw = r.get(c_status, "") if c_status else ""
+        if not co_status_is_cancelled(status_raw):
+            skipped += 1
+            continue
+        records.append({
+            "order_id": order_id,
+            "reference_id": str(r.get(c_ref, "")).strip() if c_ref else "",
+            "customer": str(r.get(c_customer, "")).strip() if c_customer else "",
+            "phone": str(r.get(c_phone, "")).strip() if c_phone else "",
+            "address": str(r.get(c_address, "")).strip() if c_address else "",
+            "note": str(r.get(c_note, "")).strip() if c_note else "",
+            "usd_price": _parse_amount(r.get(c_usd, "")) or 0.0 if c_usd else 0.0,
+            "delivery_usd": _parse_amount(r.get(c_delivery, "")) or 0.0 if c_delivery else 0.0,
+            "total_usd": _parse_amount(r.get(c_total, "")) or 0.0 if c_total else 0.0,
+            "payment_status": co_payment_status(status_raw),
+            "creation_date": str(r.get(c_created, "")).strip() if c_created else "",
+        })
+    return records, len(body), skipped
+
+def add_cancelled_orders_batch(records, settings):
+    ws = get_co_ws()
+    rows, per_emp = [], {}
+    today = datetime.now().strftime("%Y-%m-%d")
+    for rec in sorted(records, key=lambda r: r["creation_date"]):
+        emp = co_next_assignee(settings)
+        per_emp[emp] = per_emp.get(emp, 0) + 1
+        rows.append([
+            rec["order_id"], rec["reference_id"], rec["customer"], rec["phone"],
+            rec["address"], rec["note"], rec["usd_price"], rec["delivery_usd"],
+            rec["total_usd"], rec["payment_status"], rec["creation_date"],
+            emp, "wa1", "", "", today,
+        ])
+    if rows:
+        ws.append_rows(rows)
+    save_co_settings(settings)
+    load_cancelled_orders.clear()
+    return per_emp
+
+def update_co_order(row, **fields):
+    ws = get_co_ws()
+    col_map = {"assigned_to": 12, "stage": 13, "outcome": 14, "notes": 15}
+    updates = []
+    for key, value in fields.items():
+        updates.append({"range": gspread.utils.rowcol_to_a1(row, col_map[key]), "values": [[value]]})
+    if updates:
+        ws.batch_update(updates)
+    load_cancelled_orders.clear()
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -1873,25 +2157,223 @@ elif page == "📊 Demand & Reorder":
 # ─────────────────────────────────────────────────────────────────────────────
 
 elif page == "🚫 Cancelled Orders":
-    cancelled_orders_html = Path(__file__).parent / "cancelled_orders.html"
-    if cancelled_orders_html.exists():
-        html = cancelled_orders_html.read_text(encoding="utf-8")
-        # Tells the embedded tool who's looking at it: role gates Upload/Settings,
-        # username locks a non-admin to their own assigned orders when it matches
-        # one of the configured employee names (Settings → Employee 1/2).
-        role_script = (
-            f"<script>window.APP_ROLE = {json.dumps(st.session_state.role)}; "
-            f"window.APP_USER = {json.dumps(st.session_state.username)};</script>"
-        )
-        html = html.replace("<body>", "<body>" + role_script, 1)
-        # scrolling=False on purpose: a scrollable iframe creates its own independent
-        # touch-scroll region, which on mobile fights the outer page's scroll and makes
-        # it feel like it "sticks" mid-swipe. Flat, non-scrolling content lets the page
-        # scroll past it normally instead.
-        components.html(html, height=1800, scrolling=False)
+    st.subheader("Cancelled Orders")
+    st.caption("Roadrunner cancellations → Khawla & Sacha's follow-up queue. Shared across every device.")
+
+    is_admin = st.session_state.role == "admin"
+
+    if st.button("Refresh", icon=":material/refresh:"):
+        load_cancelled_orders.clear()
+        load_co_settings.clear()
+        st.rerun()
+
+    try:
+        with st.spinner("Loading…"):
+            co_settings = load_co_settings()
+            co_orders = load_cancelled_orders()
+    except Exception as e:
+        st.error(f"Could not load cancelled orders: {e}")
+        st.stop()
+
+    co_locked_employee = None
+    if not is_admin and st.session_state.username:
+        for emp in co_settings["employees"]:
+            if emp.lower() == st.session_state.username.strip().lower():
+                co_locked_employee = emp
+                break
+
+    co_visible = [o for o in co_orders if (not co_locked_employee or o["assigned_to"] == co_locked_employee)]
+
+    co_total_usd = sum(o["total_usd"] for o in co_visible)
+    co_recovered = [o for o in co_visible if o["outcome"] == "recovered"]
+    co_lost = [o for o in co_visible if o["outcome"] == "lost"]
+    co_open = [o for o in co_visible if not o["outcome"]]
+    co_today = datetime.now().strftime("%Y-%m-%d")
+    co_added_today = [o for o in co_visible if o["date_added"] == co_today]
+    co_rate = round(len(co_recovered) / len(co_visible) * 100) if co_visible else 0
+
+    ct1, ct2, ct3, ct4, ct5 = st.columns(5)
+    ct1.markdown(f'<div class="stat"><p class="num">{len(co_added_today)}</p><p class="lbl">Added today · ${sum(o["total_usd"] for o in co_added_today):,.2f} at risk</p></div>', unsafe_allow_html=True)
+    ct2.markdown(f'<div class="stat"><p class="num">{len(co_visible)}</p><p class="lbl">Tracked total · ${co_total_usd:,.2f} cumulative</p></div>', unsafe_allow_html=True)
+    ct3.markdown(f'<div class="stat"><p class="num" style="color:var(--rr-red)">{len(co_open)}</p><p class="lbl">Open / in progress</p></div>', unsafe_allow_html=True)
+    ct4.markdown(f'<div class="stat"><p class="num" style="color:#227A55">{len(co_recovered)}</p><p class="lbl">Recovered · {co_rate}% save rate</p></div>', unsafe_allow_html=True)
+    ct5.markdown(f'<div class="stat"><p class="num" style="color:#B03A3A">{len(co_lost)}</p><p class="lbl">Lost · ${sum(o["total_usd"] for o in co_lost):,.2f} gone</p></div>', unsafe_allow_html=True)
+
+    st.markdown("")
+
+    if is_admin:
+        with st.expander("Upload today's Roadrunner export", icon=":material/upload:"):
+            st.caption('.xlsx or .csv — the "Orders" export from the dashboard. Already-tracked orders are skipped automatically.')
+            co_file = st.file_uploader("Roadrunner export", type=["xlsx", "xls", "csv"], label_visibility="collapsed")
+            if co_file is not None:
+                try:
+                    with st.spinner("Parsing…"):
+                        co_records, co_total_rows, co_skipped = parse_roadrunner_export(co_file)
+                    co_existing_ids = {o["order_id"] for o in co_orders}
+                    co_new_records = [r for r in co_records if r["order_id"] not in co_existing_ids]
+                    co_existing_count = len(co_records) - len(co_new_records)
+                    if co_new_records:
+                        with st.spinner("Assigning and saving…"):
+                            co_per_emp = add_cancelled_orders_batch(co_new_records, co_settings)
+                        co_bits = ", ".join(f"{n} to {e}" for e, n in co_per_emp.items())
+                        co_msg = f"Parsed {co_total_rows} row(s) → {len(co_new_records)} new order(s) added ({co_bits}), {co_existing_count} already tracked"
+                    else:
+                        co_msg = f"Parsed {co_total_rows} row(s) → 0 new order(s) added, {co_existing_count} already tracked"
+                    if co_skipped:
+                        co_msg += f", {co_skipped} skipped (not cancelled)"
+                    st.success(co_msg, icon=":material/check_circle:")
+                except Exception as e:
+                    st.error(f"Couldn't read that file — {e}")
+
+        with st.expander("Settings", icon=":material/settings:"):
+            with st.form("co_settings_form"):
+                cs1, cs2 = st.columns(2)
+                co_emp1 = cs1.text_input("Employee 1", value=co_settings["employees"][0])
+                co_emp1_w = cs1.number_input("Employee 1 workload share", min_value=0.0, step=0.5, value=float(co_settings["weights"][0]))
+                co_emp2 = cs2.text_input("Employee 2", value=co_settings["employees"][1])
+                co_emp2_w = cs2.number_input("Employee 2 workload share", min_value=0.0, step=0.5, value=float(co_settings["weights"][1]))
+                cs3, cs4 = st.columns(2)
+                co_coupon_code = cs3.text_input("Reusable coupon code", value=co_settings["coupon_code"])
+                co_coupon_pct = cs4.number_input("Discount %", min_value=0.0, max_value=100.0, value=float(co_settings["coupon_percent"]))
+                st.caption("New cancellations are split by these shares — changing them only affects orders added after that; use Rebalance below for untouched orders.")
+                co_tpl1 = st.text_area("1st WhatsApp message template", value=co_settings["wa_template_1"])
+                co_tpl_coupon = st.text_area("Coupon WhatsApp message template", value=co_settings["wa_template_coupon"])
+                st.caption("Tokens: {firstname} {name} {employee} {items} {total} {code} {percent}")
+                if st.form_submit_button("Save settings", type="primary", use_container_width=True):
+                    co_old_names = co_settings["employees"]
+                    co_new_names = [co_emp1.strip() or "Employee 1", co_emp2.strip() or "Employee 2"]
+                    if co_old_names != co_new_names:
+                        co_rename_map = {old: new for old, new in zip(co_old_names, co_new_names) if old != new}
+                        if co_rename_map:
+                            co_ws = get_co_ws()
+                            co_rename_updates = [
+                                {"range": gspread.utils.rowcol_to_a1(o["row"], 12), "values": [[co_rename_map[o["assigned_to"]]]]}
+                                for o in co_orders if o["assigned_to"] in co_rename_map
+                            ]
+                            if co_rename_updates:
+                                co_ws.batch_update(co_rename_updates)
+                    co_new_weights = [co_emp1_w, co_emp2_w]
+                    co_rr_state = [0.0, 0.0] if co_new_weights != co_settings["weights"] else co_settings["rr_state"]
+                    save_co_settings({
+                        "employees": co_new_names, "weights": co_new_weights, "rr_state": co_rr_state,
+                        "coupon_code": co_coupon_code, "coupon_percent": co_coupon_pct,
+                        "wa_template_1": co_tpl1, "wa_template_coupon": co_tpl_coupon,
+                    })
+                    load_cancelled_orders.clear()
+                    st.success("Settings saved.")
+                    st.rerun()
+
+            if st.button("↻ Rebalance untouched orders", use_container_width=True):
+                co_untouched = [o for o in co_orders if not o["outcome"] and o["stage"] == "wa1"]
+                if not co_untouched:
+                    st.info("Nothing untouched to rebalance.")
+                else:
+                    co_untouched.sort(key=lambda o: o["creation_date"])
+                    co_settings["rr_state"] = [0.0, 0.0]
+                    co_ws = get_co_ws()
+                    co_rb_updates, co_per_emp = [], {}
+                    for o in co_untouched:
+                        emp = co_next_assignee(co_settings)
+                        co_per_emp[emp] = co_per_emp.get(emp, 0) + 1
+                        co_rb_updates.append({"range": gspread.utils.rowcol_to_a1(o["row"], 12), "values": [[emp]]})
+                    co_ws.batch_update(co_rb_updates)
+                    save_co_settings(co_settings)
+                    co_bits = ", ".join(f"{n} to {e}" for e, n in co_per_emp.items())
+                    st.success(f"Rebalanced {len(co_untouched)} untouched order(s): {co_bits}")
+                    st.rerun()
+
+    st.markdown("")
+
+    if not co_locked_employee:
+        co_tab_defs = ["All"] + co_settings["employees"]
+        co_active_tab = st.radio("Assigned to", co_tab_defs, horizontal=True, label_visibility="collapsed")
     else:
-        st.error("cancelled_orders.html wasn't found next to app.py — the embed can't load.")
-        st.link_button("Open Cancelled Orders ↗", CANCELLED_ORDERS_URL, use_container_width=True)
+        co_active_tab = "All"
+
+    co_filtered = co_visible
+    if not co_locked_employee and co_active_tab != "All":
+        co_filtered = [o for o in co_filtered if o["assigned_to"] == co_active_tab]
+    co_filtered.sort(key=lambda o: o["creation_date"], reverse=True)
+
+    if co_filtered:
+        co_tsv = ["Order ID\tCustomer\tPhone\tAmount USD\tPayment\tCreated\tAddress\tItems\tFollow-up\tCoupon\tNotes"]
+        for o in co_filtered:
+            co_followup = "Recovered" if o["outcome"] == "recovered" else "Lost" if o["outcome"] == "lost" else CO_STAGE_LABELS[o["stage"]]
+            co_tsv.append("\t".join(str(v).replace("\t", " ").replace("\n", " ") for v in [
+                o["order_id"], o["customer"], o["phone"], f"{o['total_usd']:.2f}", o["payment_status"],
+                (o["creation_date"] or "").split(" ")[0], o["address"], "; ".join(co_parse_items(o["note"])),
+                co_followup, co_settings["coupon_code"], o["notes"],
+            ]))
+        st.download_button(
+            "Download this list", "\n".join(co_tsv),
+            file_name=f"cancelled_orders_{datetime.now().strftime('%Y-%m-%d')}.tsv",
+            mime="text/tab-separated-values", icon=":material/download:",
+        )
+
+    if not co_filtered:
+        st.info(
+            "No cancellations tracked yet — upload today's Roadrunner export above to get started."
+            if is_admin else
+            "No cancellations tracked yet — ask an admin to upload today's export."
+        )
+    else:
+        for o in co_filtered:
+            with st.container(border=True):
+                cc1, cc2, cc3, cc4 = st.columns([1.3, 2.2, 1.4, 1.8])
+                with cc1:
+                    st.markdown(f"**#{co_order_number(o['order_id'], o['reference_id'])}**")
+                    st.caption(o["assigned_to"] or "—")
+                with cc2:
+                    st.markdown(f"**{o['customer'] or '—'}**")
+                    if o["phone"]:
+                        co_phone_digits = re.sub(r"[^0-9+]", "", o["phone"])
+                        st.markdown(f"[{o['phone']}](tel:{co_phone_digits})")
+                    co_items = co_parse_items(o["note"])
+                    if co_items:
+                        st.caption(" · ".join(co_items))
+                with cc3:
+                    st.markdown(f"**${o['total_usd']:,.2f}**")
+                    st.caption(o["payment_status"])
+                with cc4:
+                    if o["outcome"]:
+                        co_label = "✓ Recovered" if o["outcome"] == "recovered" else "✕ Lost"
+                        st.markdown(f"**{co_label}**")
+                        if st.button("Reopen", key=f"co_reopen_{o['row']}", use_container_width=True):
+                            update_co_order(o["row"], outcome="")
+                            st.rerun()
+                    else:
+                        co_stage = o["stage"]
+                        st.caption(CO_STAGE_LABELS[co_stage])
+                        if o["phone"]:
+                            if co_stage == "wa1":
+                                co_text = co_fill_template(co_settings["wa_template_1"], o, co_settings)
+                                co_wa_label = "💬 Send WhatsApp"
+                            elif co_stage == "call":
+                                co_text = co_fill_template("Hi {firstname}, this is {employee} 👋", o, co_settings)
+                                co_wa_label = "📞 Call on WhatsApp"
+                            else:
+                                co_text = co_fill_template(co_settings["wa_template_coupon"], o, co_settings)
+                                co_wa_label = "💬 Send coupon"
+                            st.link_button(co_wa_label, co_wa_link(o["phone"], co_text), use_container_width=True)
+                        else:
+                            st.caption("No phone")
+                        co_yn1, co_yn2 = st.columns(2)
+                        if co_yn1.button("Recovered", key=f"co_yes_{o['row']}", use_container_width=True):
+                            update_co_order(o["row"], outcome="recovered")
+                            st.rerun()
+                        if co_yn2.button("No", key=f"co_no_{o['row']}", use_container_width=True):
+                            co_idx = CO_STAGE_ORDER.index(co_stage)
+                            if co_idx < len(CO_STAGE_ORDER) - 1:
+                                update_co_order(o["row"], stage=CO_STAGE_ORDER[co_idx + 1])
+                            else:
+                                update_co_order(o["row"], outcome="lost")
+                            st.rerun()
+                co_notes = st.text_input(
+                    "Notes", value=o["notes"], key=f"co_notes_{o['row']}",
+                    label_visibility="collapsed", placeholder="Call notes…",
+                )
+                if co_notes != o["notes"]:
+                    update_co_order(o["row"], notes=co_notes)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: REFUNDS

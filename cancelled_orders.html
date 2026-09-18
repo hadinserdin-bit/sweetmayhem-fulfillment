@@ -171,7 +171,7 @@
 
 <header class="top">
   <div class="brand">
-    <div class="mark">🛟</div>
+    <div class="mark">🚫</div>
     <div>
       <h1>Cancelled Orders</h1>
       <p>Roadrunner cancellations → Khawla &amp; Sacha's follow-up queue</p>
@@ -274,7 +274,8 @@
 <script>
 (function(){
   "use strict";
-  var STORE_KEY = "saveDesk_v1";
+  var STORE_KEY = "cancelledOrders_v1";
+  var OLD_STORE_KEY = "saveDesk_v1";
   // The follow-up pipeline: 1st WhatsApp message -> phone call -> WhatsApp
   // coupon offer. At each stage a Yes/No decides "recovered?" — Yes locks
   // the case as recovered; No moves to the next stage; No at the last stage
@@ -306,6 +307,10 @@
     try{
       var raw = localStorage.getItem(STORE_KEY);
       if(raw) return JSON.parse(raw);
+      // One-time carryover from this tool's old name ("Save Desk") so
+      // renaming it doesn't look like every tracked order vanished.
+      var old = localStorage.getItem(OLD_STORE_KEY);
+      if(old) return JSON.parse(old);
     }catch(e){}
     return {orders:{}, settings:defaultSettings()};
   }

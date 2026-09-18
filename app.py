@@ -615,7 +615,9 @@ def get_shipment_tracker_ws():
 
 def _parse_sheet_date(v):
     """Handles the sheet's mixed date storage: real date cells (serial numbers) and
-    manually-typed text dates like '27/3/2026'."""
+    manually-typed text dates like '27/3/2026'. Returns None if it genuinely can't
+    make sense of the value — the caller is responsible for surfacing that, rather
+    than letting it silently show up as a blank date."""
     if v in (None, ""):
         return None
     if isinstance(v, (int, float)):
@@ -623,11 +625,20 @@ def _parse_sheet_date(v):
             return date(1899, 12, 30) + timedelta(days=int(v))
         except (ValueError, OverflowError):
             return None
-    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y"):
+    s = str(v).strip()
+    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y", "%d-%m-%Y", "%Y-%m-%d"):
         try:
-            return datetime.strptime(str(v).strip(), fmt).date()
+            return datetime.strptime(s, fmt).date()
         except ValueError:
             continue
+    # Tolerates one specific, seen-in-the-wild typo: a missing slash right before a
+    # 4-digit year, e.g. "7/72026" meant as "7/7/2026".
+    m = re.match(r"^(\d{1,2})/(\d{1,2})(\d{4})$", s)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            return None
     return None
 
 def _as_number(v):
@@ -653,25 +664,34 @@ def load_shipments():
     ws = get_shipment_tracker_ws()
     values = ws.get("A2:R500", value_render_option="UNFORMATTED_VALUE")
     if not values:
-        return pd.DataFrame()
-    rows = []
+        return pd.DataFrame(), []
+    rows, date_issues = [], []
+    date_cols = [("Date Paid", 2), ("Date Shipped", 3), ("Date Received", 9)]
     for row in values[1:]:
         row = row + [None] * (18 - len(row))
         batch = row[0]
         if not batch:
             continue
         brand, status = row[1] or "", row[10] or ""
+
+        parsed = {}
+        for label, idx in date_cols:
+            raw = row[idx]
+            parsed[label] = _parse_sheet_date(raw)
+            if raw not in (None, "") and parsed[label] is None:
+                date_issues.append(f"{batch} — {label}: {raw!r} isn't a recognizable date")
+
         rows.append({
             "Batch #": batch,
             "Brand": brand,
-            "Date Paid": _parse_sheet_date(row[2]),
-            "Date Shipped": _parse_sheet_date(row[3]),
+            "Date Paid": parsed["Date Paid"],
+            "Date Shipped": parsed["Date Shipped"],
             "Shipment Type": row[4] or "",
             "Shipping Company": row[5] or "",
             "Warehouse Address": row[6] or "",
             "Shipping Mark": row[7] or "",
             "Tracking #": str(row[8]) if row[8] not in (None, "") else "",
-            "Date Received": _parse_sheet_date(row[9]),
+            "Date Received": parsed["Date Received"],
             "Status": _status_display(brand, status),
             "Total Items": _as_number(row[11]),
             "Price": _as_number(row[12]),
@@ -681,7 +701,7 @@ def load_shipments():
             "Img ref.": row[16] or "",
             "Shopify Inventory Status": row[17] or "",
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), date_issues
 
 @st.cache_data(ttl=120)
 def load_packaging_tables():
@@ -1809,7 +1829,14 @@ elif page == "🚢 Shipment Tracker":
 
     try:
         with st.spinner("Loading shipments…"):
-            df = load_shipments()
+            df, date_issues = load_shipments()
+
+        if date_issues:
+            st.warning(
+                "Some dates in the Sheet couldn't be read and are showing blank below "
+                "— fix them at the source:\n\n" + "\n".join(f"- {i}" for i in date_issues),
+                icon=":material/event_busy:",
+            )
 
         if df.empty:
             st.info("No shipments found in the Sheet yet.")

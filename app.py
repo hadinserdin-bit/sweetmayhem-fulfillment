@@ -184,7 +184,7 @@ def effective_pages(user):
 # localStorage-based tool, so Khawla, Sacha, and admins all see the same list
 # no matter what they're signed in on.
 
-REFUNDS_SHEET_ID = "1U24iwNFUgYeSsjaP2j5R1ay5bib_EDvH"
+REFUNDS_SHEET_ID = "1e24MtmjE7BRSeZ_WKGbR58BEt9DO1XmR-ykE03F-pjI"
 REFUNDS_SHEET_NAME = "Refunds"
 REFUND_STATUSES = ["Pending", "Refunded", "Rejected"]
 

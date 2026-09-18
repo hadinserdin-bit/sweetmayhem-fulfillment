@@ -525,7 +525,16 @@ def update_co_order(row, **fields):
         updates.append({"range": gspread.utils.rowcol_to_a1(row, col_map[key]), "values": [[value]]})
     if updates:
         ws.batch_update(updates)
-    load_cancelled_orders.clear()
+    # Deliberately NOT clearing load_cancelled_orders' cache here — that forced
+    # a full Sheet re-read (on top of the write above) on every single Yes/No/
+    # notes click, which is what made those buttons feel laggy. The page
+    # applies this exact change to its already-loaded list itself instead (see
+    # co_local_patches in session_state); the cache still expires normally
+    # (ttl=30) so other devices/sessions pick up the change shortly after, and
+    # the "Refresh" button forces an immediate full resync for anyone who
+    # wants one right away.
+    patches = st.session_state.setdefault("co_local_patches", {})
+    patches.setdefault(row, {}).update(fields)
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -2165,7 +2174,13 @@ elif page == "🚫 Cancelled Orders":
     if st.button("Refresh", icon=":material/refresh:"):
         load_cancelled_orders.clear()
         load_co_settings.clear()
+        st.session_state.pop("co_local_patches", None)
         st.rerun()
+
+    if "co_upload_msg" in st.session_state:
+        st.success(st.session_state.pop("co_upload_msg"), icon=":material/check_circle:")
+    if "co_upload_err" in st.session_state:
+        st.error(st.session_state.pop("co_upload_err"))
 
     try:
         with st.spinner("Loading…"):
@@ -2174,6 +2189,15 @@ elif page == "🚫 Cancelled Orders":
     except Exception as e:
         st.error(f"Could not load cancelled orders: {e}")
         st.stop()
+
+    # Edits made THIS session (stage/outcome/notes) are applied on top of the
+    # possibly-cached list rather than forcing a fresh Sheet read on every
+    # click — see the comment on update_co_order() for why.
+    co_patches = st.session_state.get("co_local_patches", {})
+    if co_patches:
+        for o in co_orders:
+            if o["row"] in co_patches:
+                o.update(co_patches[o["row"]])
 
     co_locked_employee = None
     if not is_admin and st.session_state.username:
@@ -2205,7 +2229,11 @@ elif page == "🚫 Cancelled Orders":
         with st.expander("Upload today's Roadrunner export", icon=":material/upload:"):
             st.caption('.xlsx or .csv — the "Orders" export from the dashboard. Already-tracked orders are skipped automatically.')
             co_file = st.file_uploader("Roadrunner export", type=["xlsx", "xls", "csv"], label_visibility="collapsed")
-            if co_file is not None:
+            # The uploaded file stays in the widget's state across the rerun
+            # triggered below, so without this guard the same file would be
+            # re-parsed and re-added in an infinite loop.
+            co_file_id = f"{co_file.name}:{co_file.size}" if co_file is not None else None
+            if co_file is not None and co_file_id != st.session_state.get("co_last_uploaded_file_id"):
                 try:
                     with st.spinner("Parsing…"):
                         co_records, co_total_rows, co_skipped = parse_roadrunner_export(co_file)
@@ -2221,9 +2249,13 @@ elif page == "🚫 Cancelled Orders":
                         co_msg = f"Parsed {co_total_rows} row(s) → 0 new order(s) added, {co_existing_count} already tracked"
                     if co_skipped:
                         co_msg += f", {co_skipped} skipped (not cancelled)"
-                    st.success(co_msg, icon=":material/check_circle:")
+                    st.session_state["co_last_uploaded_file_id"] = co_file_id
+                    st.session_state["co_upload_msg"] = co_msg
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"Couldn't read that file — {e}")
+                    st.session_state["co_last_uploaded_file_id"] = co_file_id
+                    st.session_state["co_upload_err"] = f"Couldn't read that file — {e}"
+                    st.rerun()
 
         with st.expander("Settings", icon=":material/settings:"):
             with st.form("co_settings_form"):

@@ -45,8 +45,9 @@ def get_ws():
 # ─── Users & Access Control ────────────────────────────────────────────────────
 
 USERS_SHEET_NAME = "Users"
-ALL_PAGES = ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder"]
+ALL_PAGES = ["📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder", "🛟 Save Desk"]
 ADMIN_PAGE = "👤 Manage Users"
+SAVE_DESK_URL = "https://claude.ai/artifact/1TJ5d5iJuijaHKNTTBSiyZ"
 
 def get_users_ws():
     sh = _gc().open_by_key(SHEET_ID)
@@ -1269,6 +1270,25 @@ elif page == "📊 Demand & Reorder":
 
     except Exception as e:
         st.error(f"Could not compute demand & reorder data: {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE: SAVE DESK (cancelled-order recovery)
+# ─────────────────────────────────────────────────────────────────────────────
+
+elif page == "🛟 Save Desk":
+    st.subheader("Cancelled Order Recovery")
+    st.caption(
+        "Upload the daily Roadrunner cancelled-orders export and it splits automatically "
+        "between Khawla and Sacha, with a guided WhatsApp → call → coupon follow-up for "
+        "each case, right through to Recovered or Lost."
+    )
+    st.link_button("🛟 Open Save Desk ↗", SAVE_DESK_URL, use_container_width=True)
+    st.info(
+        "Opens in a new browser tab. Save Desk keeps its data in that browser only (not "
+        "this app), so use the same browser and device each day to keep the follow-up "
+        "queue continuous.",
+        icon="ℹ️",
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: MANAGE USERS (admin only)

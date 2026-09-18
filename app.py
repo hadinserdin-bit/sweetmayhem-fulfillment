@@ -23,7 +23,7 @@ from googleapiclient.discovery import build
 
 st.set_page_config(
     page_title="Sweet Mayhem — Fulfillment",
-    page_icon="🌸",
+    page_icon=":material/storefront:",
     layout="wide",
 )
 
@@ -445,6 +445,25 @@ def make_report(fulfillable):
     buf.seek(0)
     return buf
 
+# ─── Shared status-color styling ───────────────────────────────────────────────
+# st.dataframe's grid can't render icon fonts (or even reliably show emoji), so
+# status values are plain text and colored via a pandas Styler instead of emoji.
+
+STATUS_COLORS = {
+    "Out of Stock": "#fdecea", "Cancelled": "#fdecea",
+    "Reorder Now": "#fdecea",
+    "Reorder Soon": "#fff6e0",
+    "In Transit": "#eef2f7",
+    "OK": "#eaf7ed", "Received": "#eaf7ed",
+}
+
+def style_status(df, column="Status"):
+    def _color(val):
+        base = str(val).split(" (")[0].strip()
+        bg = STATUS_COLORS.get(base, "")
+        return f"background-color: {bg}" if bg else ""
+    return df.style.map(_color, subset=[column])
+
 # ─── Demand & Reorder ─────────────────────────────────────────────────────────
 
 SNAPSHOT_SHEET_NAME = "InventorySnapshots"
@@ -562,13 +581,13 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
         reorder_qty = max(0, math.ceil(daily_demand * coverage_days) - cur_qty)
 
         if v["qty"] <= 0:
-            status = "🔴 Out of Stock"
+            status = "Out of Stock"
         elif days_left <= lead_time:
-            status = "🟠 Reorder Now"
+            status = "Reorder Now"
         elif days_left <= lead_time + 7:
-            status = "🟡 Reorder Soon"
+            status = "Reorder Soon"
         else:
-            status = "🟢 OK"
+            status = "OK"
 
         rows.append({
             "Product": v["product"], "Color": v["color"], "Size": v["size"],
@@ -613,18 +632,18 @@ def _as_number(v):
 
 def _status_display(brand, status):
     if str(brand).strip().upper() == "CANCELLED":
-        return "❌ Cancelled"
+        return "Cancelled"
     s = (status or "").strip()
     low = s.lower()
     if not s:
-        return "🕐 In Transit"
+        return "In Transit"
     if "cancel" in low:
-        return "❌ Cancelled"
+        return "Cancelled"
     if low in ("recieved", "received"):
-        return "✅ Received"
+        return "Received"
     # Anything else that merely mentions "received" (e.g. "Received on stockie",
     # an intermediate holding point) hasn't actually arrived yet — keep it in transit.
-    return f"🕐 In Transit ({s})"
+    return f"In Transit ({s})"
 
 @st.cache_data(ttl=120)
 def load_shipments():
@@ -890,26 +909,29 @@ html, body, [data-testid="stAppViewContainer"] {
     width: 100% !important;
     box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
 }
+.st-key-sidebar_nav .stButton > button * { color: #1f232c !important; }
 .st-key-sidebar_nav .stButton > button:hover {
     background: #f7f8fa !important;
     border-color: #d0d3d9 !important;
-    color: #1f232c !important;
 }
 .st-key-sidebar_nav .stButton > button:active {
     background: var(--rr-red) !important;
     border-color: var(--rr-red) !important;
+}
+.st-key-sidebar_nav .stButton > button:active * {
     color: #fff !important;
 }
 .st-key-sidebar_nav .stButton > button[kind="primary"] {
     background: var(--rr-red) !important;
-    color: #fff !important;
     border: 1px solid var(--rr-red) !important;
+}
+.st-key-sidebar_nav .stButton > button[kind="primary"] * {
+    color: #fff !important;
 }
 .st-key-sidebar_nav .stButton > button[kind="primary"]:hover,
 .st-key-sidebar_nav .stButton > button[kind="primary"]:active {
     background: var(--rr-red-dark) !important;
     border-color: var(--rr-red-dark) !important;
-    color: #fff !important;
 }
 
 /* ── Buttons ── */
@@ -927,25 +949,24 @@ html, body, [data-testid="stAppViewContainer"] {
     background: transparent !important;
     box-shadow: none !important;
 }
-.stButton > button:hover {
-    background: var(--rr-red) !important;
-    color: white !important;
-    border-color: var(--rr-red) !important;
-}
-.stButton > button:active {
-    background: var(--rr-red-dark) !important;
-    color: white !important;
-    border-color: var(--rr-red-dark) !important;
-}
+.stButton > button:hover,
+.stButton > button:active,
 .stButton > button[kind="primary"] {
     background: var(--rr-red) !important;
-    color: white !important;
     border-color: var(--rr-red) !important;
+}
+.stButton > button:hover *,
+.stButton > button:active *,
+.stButton > button[kind="primary"] * {
+    color: white !important;
 }
 .stButton > button[kind="primary"]:hover,
 .stButton > button[kind="primary"]:active {
     background: var(--rr-red-dark) !important;
     border-color: var(--rr-red-dark) !important;
+}
+.stButton > button[kind="primary"]:hover *,
+.stButton > button[kind="primary"]:active * {
     color: white !important;
 }
 
@@ -1137,8 +1158,23 @@ with st.sidebar:
                 type="primary" if st.session_state.page == p else "secondary",
             ):
                 st.session_state.page = p
+                st.session_state._close_sidebar_on_nav = True
                 st.rerun()
     page = st.session_state.page
+
+    if st.session_state.pop("_close_sidebar_on_nav", False):
+        components.html(
+            """
+            <script>
+            try {
+                const el = window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"] button')
+                        || window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"]');
+                if (el) el.click();
+            } catch (e) {}
+            </script>
+            """,
+            height=0,
+        )
 
     st.divider()
     st.caption(f"Signed in as **{st.session_state.username}**  ·  {st.session_state.role}")
@@ -1164,12 +1200,12 @@ st.markdown("""
 if page == "📦 Fulfillment":
 
     c1, c2 = st.columns(2)
-    fetch_btn   = c1.button("🔄 Fetch All Unfulfilled", use_container_width=True)
-    preview_btn = c2.button("🔍 Preview  (no changes)", use_container_width=True, disabled=not st.session_state.preview_done and st.session_state.fulfillable is None)
+    fetch_btn   = c1.button("Fetch All Unfulfilled", icon=":material/refresh:", use_container_width=True)
+    preview_btn = c2.button("Preview  (no changes)", icon=":material/visibility:", use_container_width=True, disabled=not st.session_state.preview_done and st.session_state.fulfillable is None)
 
     sc1, sc2 = st.columns([3, 1])
     order_input = sc1.text_input("", placeholder="Order number e.g. 17234", label_visibility="collapsed")
-    single_btn  = sc2.button("🔍 Fetch Order", use_container_width=True)
+    single_btn  = sc2.button("Fetch Order", icon=":material/search:", use_container_width=True)
 
     st.divider()
 
@@ -1235,7 +1271,10 @@ if page == "📦 Fulfillment":
         sc4.markdown(f'<div class="stat"><p class="num" style="color:var(--rr-red)">{no_phone_count}</p><p class="lbl">No Phone Number</p></div>', unsafe_allow_html=True)
         st.markdown("")
 
-        tab1, tab2, tab3 = st.tabs(["✅ To Fulfill", "⚠️ Skipped", "📊 Inventory Changes"])
+        tab1, tab2, tab3 = st.tabs([
+            ":material/check_circle: To Fulfill", ":material/warning: Skipped",
+            ":material/sync_alt: Inventory Changes",
+        ])
 
         # Tab 1 — To Fulfill
         with tab1:
@@ -1246,11 +1285,12 @@ if page == "📦 Fulfillment":
                 if no_phone:
                     names = ", ".join(f"`{o['name']}`" for o in no_phone)
                     st.warning(
-                        f"📵 {len(no_phone)} order(s) have no phone number on file — carriers can "
-                        f"fail delivery without one: {names}"
+                        f"{len(no_phone)} order(s) have no phone number on file — carriers can "
+                        f"fail delivery without one: {names}",
+                        icon=":material/phone_disabled:",
                     )
 
-                st.caption("Click ✕ to remove an order from this run before fulfilling.")
+                st.caption("Click :material/close: to remove an order from this run before fulfilling.")
                 hc = st.columns([2, 2, 1.3, 4, 1])
                 hc[0].markdown("**Order #**")
                 hc[1].markdown("**Date**")
@@ -1267,11 +1307,11 @@ if page == "📦 Fulfillment":
                     rc[0].markdown(f"`{order['name']}`")
                     rc[1].markdown(date)
                     if order.get("phone"):
-                        rc[2].markdown("✅")
+                        rc[2].markdown(":material/check_circle:")
                     else:
-                        rc[2].markdown(":red[⚠️ Missing]")
+                        rc[2].markdown(":red[:material/warning: Missing]")
                     rc[3].markdown(items_str)
-                    if rc[4].button("✕", key=f"rm_{order['name']}"):
+                    if rc[4].button("", icon=":material/close:", key=f"rm_{order['name']}"):
                         st.session_state.removed.add(order["name"])
                         st.rerun()
 
@@ -1280,7 +1320,7 @@ if page == "📦 Fulfillment":
                     f"I confirm I want to fulfill {len(fulfillable)} order(s) and update inventory"
                 )
                 if confirm:
-                    if st.button("✅ Fulfill These Orders", type="primary", use_container_width=True):
+                    if st.button("Fulfill These Orders", icon=":material/check_circle:", type="primary", use_container_width=True):
                         errors = []
                         with st.spinner("Updating inventory in Google Sheets…"):
                             try:
@@ -1338,19 +1378,20 @@ if page == "📦 Fulfillment":
     if st.session_state.fulfilled and st.session_state.report_buf:
         shopify_errors = st.session_state.get("shopify_errors", [])
         if shopify_errors:
-            st.error("⚠️ Shopify fulfillment failed for some orders. See details below:")
+            st.error("Shopify fulfillment failed for some orders. See details below:", icon=":material/error:")
             for err in shopify_errors:
                 st.code(err)
         else:
-            st.success("✅ Orders marked as fulfilled in Shopify and inventory updated in Google Sheets.")
+            st.success("Orders marked as fulfilled in Shopify and inventory updated in Google Sheets.", icon=":material/check_circle:")
         st.download_button(
-            "📥 Download Fulfillment Report",
+            "Download Fulfillment Report",
+            icon=":material/download:",
             data=st.session_state.report_buf,
             file_name=st.session_state.report_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
-        if st.button("🔄 Start New Run"):
+        if st.button("Start New Run", icon=":material/restart_alt:"):
             for k, v in _defaults.items():
                 st.session_state[k] = v
             st.rerun()
@@ -1408,7 +1449,7 @@ elif page == "🔄 Restock":
                             new_qty = item["qty"] + int(changed.loc[idx, "Add Qty"])
                             updates.append((item["row"], new_qty))
                         batch_update_qty(ws, updates)
-                        st.success(f"✅ {len(updates)} item(s) restocked!")
+                        st.success(f"{len(updates)} item(s) restocked!", icon=":material/check_circle:")
                         st.balloons()
                     except Exception as e:
                         st.error(str(e))
@@ -1455,10 +1496,10 @@ elif page == "➕ Add Product":
                 skipped_count = len(variants) - len(to_add)
                 if to_add:
                     ws.append_rows([[p, c, s, q] for p, c, s, q in to_add])
-                msg = f"✅ {len(to_add)} variant(s) added to inventory."
+                msg = f"{len(to_add)} variant(s) added to inventory."
                 if skipped_count:
                     msg += f" ({skipped_count} skipped — already existed.)"
-                st.success(msg)
+                st.success(msg, icon=":material/check_circle:")
             except Exception as e:
                 st.error(str(e))
 
@@ -1543,19 +1584,23 @@ elif page == "📊 Demand & Reorder":
         max_tracked = max(tracked_counts) if tracked_counts else 0
         if max_tracked < MIN_TRACKED_DAYS:
             st.info(
-                f"📅 {max_tracked} day(s) of stock-history recorded so far. Demand is shown as a "
+                f"{max_tracked} day(s) of stock-history recorded so far. Demand is shown as a "
                 f"raw average (unadjusted) until {MIN_TRACKED_DAYS} days are tracked — check back "
-                f"as the history builds up."
+                f"as the history builds up.",
+                icon=":material/calendar_month:",
             )
         else:
-            st.info(f"📅 {max_tracked} day(s) of stock-history recorded — adjusted figures below where available.")
+            st.info(
+                f"{max_tracked} day(s) of stock-history recorded — adjusted figures below where available.",
+                icon=":material/calendar_month:",
+            )
 
         df = build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days)
 
         s1, s2, s3, s4 = st.columns(4)
-        s1.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="🟠 Reorder Now").sum()}</p><p class="lbl">Reorder Now</p></div>', unsafe_allow_html=True)
-        s2.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="🟡 Reorder Soon").sum()}</p><p class="lbl">Reorder Soon</p></div>', unsafe_allow_html=True)
-        s3.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="🔴 Out of Stock").sum()}</p><p class="lbl">Out of Stock</p></div>', unsafe_allow_html=True)
+        s1.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="Reorder Now").sum()}</p><p class="lbl">Reorder Now</p></div>', unsafe_allow_html=True)
+        s2.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="Reorder Soon").sum()}</p><p class="lbl">Reorder Soon</p></div>', unsafe_allow_html=True)
+        s3.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="Out of Stock").sum()}</p><p class="lbl">Out of Stock</p></div>', unsafe_allow_html=True)
         s4.markdown(f'<div class="stat"><p class="num">{int(df["Reorder Qty"].sum())}</p><p class="lbl">Units to Reorder</p></div>', unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1571,7 +1616,7 @@ elif page == "📊 Demand & Reorder":
         fdf = fdf.sort_values("Days Left")
 
         st.dataframe(
-            fdf,
+            style_status(fdf),
             use_container_width=True, hide_index=True,
             column_config={"Days Left": st.column_config.NumberColumn(format="%.1f")},
         )
@@ -1585,7 +1630,8 @@ elif page == "📊 Demand & Reorder":
         df.sort_values("Days Left").to_excel(buf, index=False)
         buf.seek(0)
         st.download_button(
-            "📥 Download Full Reorder Report",
+            "Download Full Reorder Report",
+            icon=":material/download:",
             data=buf,
             file_name=f"reorder_report_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1704,7 +1750,7 @@ elif page == ADMIN_PAGE:
         elif is_self:
             st.caption("You can't delete your own account while signed in as it.")
         else:
-            if st.button(f"🗑️ Delete '{u['username']}'", use_container_width=True):
+            if st.button(f"Delete '{u['username']}'", icon=":material/delete:", use_container_width=True):
                 delete_user(u["row"])
                 st.success(f"Deleted '{u['username']}'.")
                 st.rerun()
@@ -1720,7 +1766,7 @@ elif page == "🚢 Shipment Tracker":
         "there — this page always shows what's currently in the Sheet."
     )
 
-    if st.button("🔄 Refresh", icon=":material/refresh:"):
+    if st.button("Refresh", icon=":material/refresh:"):
         load_shipments.clear()
         load_packaging_tables.clear()
         st.rerun()
@@ -1733,8 +1779,8 @@ elif page == "🚢 Shipment Tracker":
             st.info("No shipments found in the Sheet yet.")
         else:
             total_shipments = len(df)
-            received = df["Status"].str.startswith("✅").sum()
-            cancelled = df["Status"].str.startswith("❌").sum()
+            received = df["Status"].eq("Received").sum()
+            cancelled = df["Status"].eq("Cancelled").sum()
             total_spent = df["Price"].fillna(0).sum()
 
             s1, s2, s3, s4 = st.columns(4)
@@ -1766,7 +1812,7 @@ elif page == "🚢 Shipment Tracker":
                 "Total Items", "Price", "# of Cartons", "Items Ordered", "Shopify Inventory Status",
             ]
             st.dataframe(
-                fdf[display_cols],
+                style_status(fdf[display_cols]),
                 use_container_width=True, hide_index=True,
                 column_config={
                     "Date Paid": st.column_config.DateColumn(format="MMM D, YYYY"),
@@ -1795,7 +1841,7 @@ elif page == "🚢 Shipment Tracker":
                 )
 
             used_df, orders_df = load_packaging_tables()
-            with st.expander("📦 Packaging Usage & Stock Orders"):
+            with st.expander("Packaging Usage & Stock Orders", icon=":material/inventory_2:"):
                 p1, p2 = st.columns(2)
                 with p1:
                     st.markdown("**Packaging Used (per batch)**")
@@ -1818,7 +1864,7 @@ elif page == "🧾 Shipment Details":
         "shipment to see exactly what was ordered, by product, color, and size."
     )
 
-    if st.button("🔄 Refresh file list", icon=":material/refresh:"):
+    if st.button("Refresh file list", icon=":material/refresh:"):
         list_shipment_detail_files.clear()
         st.rerun()
 

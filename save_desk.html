@@ -1,4 +1,4 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf8f6;color:#1c1c1c}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#f4f5f7;color:#1f232c}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <title>Cancelled Orders</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600;700&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -8,15 +8,15 @@
      the host app doesn't support dark mode, so neither does this copy,
      otherwise the two could mismatch on a dark-mode device). */
   :root{
-    --bg:#FAF8F6;
+    --bg:#F4F5F7;
     --surface:#FFFFFF;
-    --surface-2:#FBEEF3;
-    --ink:#1C1C1C;
-    --muted:#8A8A8A;
-    --border:#F0E4E8;
-    --accent:#C2185B;
+    --surface-2:#EEF0F4;
+    --ink:#1F232C;
+    --muted:#6B6F7B;
+    --border:#E5E7EB;
+    --accent:#E6394F;
     --accent-ink:#FFFFFF;
-    --accent-soft:#FBE4EC;
+    --accent-soft:#FDECEA;
     --good:#227A55;
     --good-soft:#DCEEE3;
     --warn:#966600;
@@ -26,9 +26,9 @@
     --info:#2A5C8A;
     --info-soft:#DCE7F1;
     --whatsapp:#1D8A4E;
-    --shadow: 0 1px 4px rgba(168,38,94,0.06);
-    --shadow-lg: 0 4px 16px rgba(168,38,94,0.14);
-    --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%238A8A8A' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    --shadow: 0 1px 4px rgba(230,57,79,0.06);
+    --shadow-lg: 0 4px 16px rgba(230,57,79,0.14);
+    --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%236B6F7B' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
   }
 
   *{box-sizing:border-box}
@@ -50,9 +50,9 @@
   .brand{display:flex;align-items:center;gap:12px}
   .brand .mark{
     width:42px;height:42px;border-radius:8px;flex:none;
-    background:linear-gradient(135deg, #C2185B 0%, #880E4F 100%);
+    background:linear-gradient(135deg, #E6394F 0%, #C72E42 100%);
     color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:21px;
-    box-shadow:0 4px 14px -4px rgba(168,38,94,0.5);
+    box-shadow:0 4px 14px -4px rgba(230,57,79,0.5);
   }
   .brand h1{font-size:23px;font-weight:600}
   .brand p{margin:2px 0 0;color:var(--muted);font-size:13px}

@@ -1686,7 +1686,11 @@ elif page == "🚫 Cancelled Orders":
         # for non-admins — see the APP_ROLE check near the top of its own script.
         role_script = f"<script>window.APP_ROLE = {json.dumps(st.session_state.role)};</script>"
         html = html.replace("<body>", "<body>" + role_script, 1)
-        components.html(html, height=1400, scrolling=True)
+        # scrolling=False on purpose: a scrollable iframe creates its own independent
+        # touch-scroll region, which on mobile fights the outer page's scroll and makes
+        # it feel like it "sticks" mid-swipe. Flat, non-scrolling content lets the page
+        # scroll past it normally instead.
+        components.html(html, height=1800, scrolling=False)
     else:
         st.error("cancelled_orders.html wasn't found next to app.py — the embed can't load.")
         st.link_button("Open Cancelled Orders ↗", CANCELLED_ORDERS_URL, use_container_width=True)

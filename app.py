@@ -279,12 +279,21 @@ def login_screen():
                     st.success("Admin account created — please sign in.")
                     st.rerun()
         else:
-            username = st.text_input("Username", autocomplete="username")
-            pwd = st.text_input(
-                "Password", type="password", placeholder="Enter password",
-                autocomplete="current-password",
-            )
-            if st.button("Sign In", type="primary", use_container_width=True):
+            # Submits both fields as one atomic unit rather than two independent widgets
+            # each syncing to the server on their own.
+            with st.form("login_form", clear_on_submit=False):
+                username = st.text_input("Username", autocomplete="username")
+                pwd = st.text_input(
+                    "Password", type="password", placeholder="Enter password",
+                    autocomplete="current-password",
+                )
+                st.caption(
+                    "Using saved/autofilled password? Tap this field once before Sign In "
+                    "— a current iOS Safari limitation, not specific to this app."
+                )
+                submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+
+            if submitted:
                 u = users.get(username.strip().lower())
                 if u and verify_password(pwd, u["password_hash"]):
                     st.session_state.authenticated = True

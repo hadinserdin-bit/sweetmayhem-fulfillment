@@ -69,7 +69,6 @@ ALL_PAGES = [
 ]
 ADMIN_PAGE = "👤 Manage Users"
 CANCELLED_ORDERS_URL = "https://claude.ai/artifact/1TJ5d5iJuijaHKNTTBSiyZ"
-REFUNDS_URL = "https://claude.ai/artifact/6bWxZna2m1guseJ2Apb6sk"
 
 # "Save Desk" was this page's old name — some users' saved Permissions cells
 # may still have the old identity string. Translated on load (below) so
@@ -180,6 +179,63 @@ def effective_pages(user):
     if user["role"] == "admin":
         return ALL_PAGES + [ADMIN_PAGE]
     return [p for p in user["permissions"] if p in ALL_PAGES]
+
+# ─── Refunds ──────────────────────────────────────────────────────────────────
+# Lives in the same spreadsheet as Users, one row per refund request — shared
+# across every device, unlike the old localStorage-based tool, so Khawla, Sacha,
+# and admins all see the same list no matter what they're signed in on.
+
+REFUNDS_SHEET_NAME = "Refunds"
+REFUND_STATUSES = ["Pending", "Refunded", "Rejected"]
+
+def get_refunds_ws():
+    sh = _spreadsheet()
+    try:
+        return sh.worksheet(REFUNDS_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=REFUNDS_SHEET_NAME, rows=200, cols=7)
+        ws.append_row(["Order #", "Customer Name", "Amount", "Status", "Whish Number", "Logged By", "Date Logged"])
+        return ws
+
+def _parse_amount(v):
+    try:
+        return float(str(v).strip())
+    except (ValueError, TypeError):
+        return None
+
+@st.cache_data(ttl=30)
+def load_refunds():
+    ws = get_refunds_ws()
+    data = ws.get_all_values()
+    refunds = []
+    for i, row in enumerate(data[1:], start=2):
+        if len(row) < 1 or not row[0].strip():
+            continue
+        status = row[3].strip() if len(row) > 3 else ""
+        refunds.append({
+            "row": i,
+            "order": row[0].strip(),
+            "customer": row[1].strip() if len(row) > 1 else "",
+            "amount": _parse_amount(row[2]) if len(row) > 2 else None,
+            "status": status if status in REFUND_STATUSES else "Pending",
+            "whish": row[4].strip() if len(row) > 4 else "",
+            "logged_by": row[5].strip() if len(row) > 5 else "",
+            "date_logged": row[6].strip() if len(row) > 6 else "",
+        })
+    return refunds
+
+def add_refund(order, customer, amount, whish, logged_by):
+    ws = get_refunds_ws()
+    ws.append_row([order, customer, amount, "Pending", whish, logged_by, datetime.now().strftime("%Y-%m-%d %H:%M")])
+    load_refunds.clear()
+
+def update_refund_status(row, status):
+    get_refunds_ws().update_cell(row, 4, status)
+    load_refunds.clear()
+
+def delete_refund(row):
+    get_refunds_ws().delete_rows(row)
+    load_refunds.clear()
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -555,11 +611,11 @@ def make_report(fulfillable):
 # status values are plain text and colored via a pandas Styler instead of emoji.
 
 STATUS_COLORS = {
-    "Out of Stock": "#fdecea", "Cancelled": "#fdecea",
+    "Out of Stock": "#fdecea", "Cancelled": "#fdecea", "Rejected": "#fdecea",
     "Reorder Now": "#fdecea",
-    "Reorder Soon": "#fff6e0",
+    "Reorder Soon": "#fff6e0", "Pending": "#fff6e0",
     "In Transit": "#eef2f7",
-    "OK": "#eaf7ed", "Received": "#eaf7ed",
+    "OK": "#eaf7ed", "Received": "#eaf7ed", "Refunded": "#eaf7ed",
 }
 
 def style_status(df, column="Status"):
@@ -1836,20 +1892,130 @@ elif page == "🚫 Cancelled Orders":
 # ─────────────────────────────────────────────────────────────────────────────
 
 elif page == "💸 Refunds":
-    refunds_html = Path(__file__).parent / "refunds.html"
-    if refunds_html.exists():
-        html = refunds_html.read_text(encoding="utf-8")
-        # Same role/username injection as Cancelled Orders: role gates deleting
-        # entries to admins, username auto-fills "Logged by" on new refunds.
-        role_script = (
-            f"<script>window.APP_ROLE = {json.dumps(st.session_state.role)}; "
-            f"window.APP_USER = {json.dumps(st.session_state.username)};</script>"
-        )
-        html = html.replace("<body>", "<body>" + role_script, 1)
-        components.html(html, height=1800, scrolling=False)
+    st.subheader("Refunds")
+    st.caption("Customer refund requests → Whish payout tracker. Shared across every device — everyone sees the same list.")
+
+    if st.button("Refresh", icon=":material/refresh:"):
+        load_refunds.clear()
+        st.rerun()
+
+    try:
+        with st.spinner("Loading refunds…"):
+            refunds = load_refunds()
+    except Exception as e:
+        st.error(f"Could not load refunds: {e}")
+        st.stop()
+
+    pending = [r for r in refunds if r["status"] == "Pending"]
+    refunded = [r for r in refunds if r["status"] == "Refunded"]
+    rejected = [r for r in refunds if r["status"] == "Rejected"]
+    pending_sum = sum(r["amount"] or 0 for r in pending)
+    refunded_sum = sum(r["amount"] or 0 for r in refunded)
+
+    s1, s2, s3 = st.columns(3)
+    s1.markdown(f'<div class="stat"><p class="num" style="color:#966600">{len(pending)}</p><p class="lbl">Pending · ${pending_sum:,.2f} owed</p></div>', unsafe_allow_html=True)
+    s2.markdown(f'<div class="stat"><p class="num" style="color:#227A55">{len(refunded)}</p><p class="lbl">Refunded · ${refunded_sum:,.2f} paid out</p></div>', unsafe_allow_html=True)
+    s3.markdown(f'<div class="stat"><p class="num" style="color:var(--rr-red)">{len(rejected)}</p><p class="lbl">Rejected</p></div>', unsafe_allow_html=True)
+
+    st.markdown("")
+    with st.expander("Log a new refund request", icon=":material/add_circle:"):
+        with st.form("add_refund_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            order = c1.text_input("Order # *")
+            customer = c2.text_input("Customer name *")
+            c3, c4 = st.columns(2)
+            amount = c3.number_input("Amount ($) *", min_value=0.0, step=0.01, format="%.2f")
+            whish = c4.text_input("Whish number *")
+            submitted = st.form_submit_button("Save refund", type="primary", use_container_width=True)
+            if submitted:
+                if not order.strip() or not customer.strip() or not whish.strip() or amount <= 0:
+                    st.error("Order #, Customer name, Amount, and Whish number are all required.")
+                else:
+                    add_refund(order.strip(), customer.strip(), amount, whish.strip(), st.session_state.username)
+                    st.success(f"Refund for {customer.strip()} logged.")
+                    st.rerun()
+
+    st.markdown("")
+    if not refunds:
+        st.info("No refund requests logged yet — use the form above to log one.")
     else:
-        st.error("refunds.html wasn't found next to app.py — the embed can't load.")
-        st.link_button("Open Refunds ↗", REFUNDS_URL, use_container_width=True)
+        fc1, fc2 = st.columns([2, 1])
+        search = fc1.text_input("Search", placeholder="Search order # or customer…", label_visibility="collapsed")
+        status_filter = fc2.selectbox("Status filter", ["All"] + REFUND_STATUSES, label_visibility="collapsed")
+
+        filtered = refunds
+        if status_filter != "All":
+            filtered = [r for r in filtered if r["status"] == status_filter]
+        if search.strip():
+            q = search.strip().lower()
+            filtered = [r for r in filtered if q in r["order"].lower() or q in r["customer"].lower()]
+        filtered = sorted(filtered, key=lambda r: r["date_logged"], reverse=True)
+
+        if not filtered:
+            st.caption("No refunds match this filter.")
+        else:
+            df = pd.DataFrame([{
+                "Order #": r["order"], "Customer": r["customer"],
+                "Amount": r["amount"], "Status": r["status"],
+                "Whish Number": r["whish"], "Logged By": r["logged_by"],
+                "Date": r["date_logged"],
+            } for r in filtered])
+            st.dataframe(
+                style_status(df, column="Status"),
+                use_container_width=True, hide_index=True,
+                column_config={"Amount": st.column_config.NumberColumn(format="$%.2f")},
+            )
+            st.caption(f"{len(filtered)} of {len(refunds)} refund(s) shown")
+
+        st.divider()
+        st.markdown("### Update a Refund")
+        sel_refund = st.selectbox(
+            "Refund", refunds, label_visibility="collapsed",
+            format_func=lambda r: f"{r['order']} — {r['customer']}",
+        )
+
+        d1, d2 = st.columns(2)
+        with d1:
+            amt_str = f"${sel_refund['amount']:,.2f}" if sel_refund["amount"] is not None else "—"
+            st.markdown(f"**Amount:** {amt_str}")
+            st.markdown(f"**Whish number:** {sel_refund['whish'] or '—'}")
+        with d2:
+            st.markdown(f"**Logged by:** {sel_refund['logged_by'] or '—'}")
+            st.markdown(f"**Date logged:** {sel_refund['date_logged'] or '—'}")
+
+        new_status = st.selectbox(
+            "Status", REFUND_STATUSES,
+            index=REFUND_STATUSES.index(sel_refund["status"]),
+            key=f"status_select_{sel_refund['row']}",
+        )
+        if st.button(
+            "Update Status", type="primary", use_container_width=True,
+            disabled=(new_status == sel_refund["status"]),
+        ):
+            update_refund_status(sel_refund["row"], new_status)
+            st.success(f"Marked {sel_refund['order']} as {new_status}.")
+            st.rerun()
+
+        if st.session_state.role == "admin":
+            confirm_key = f"confirm_del_refund_{sel_refund['row']}"
+            if not st.session_state.get(confirm_key):
+                if st.button("Delete this refund", icon=":material/delete:", use_container_width=True):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+            else:
+                st.warning(
+                    f"Permanently delete the refund for {sel_refund['customer']} "
+                    f"({sel_refund['order']})? This can't be undone."
+                )
+                cc1, cc2 = st.columns(2)
+                if cc1.button("Yes, delete", type="primary", use_container_width=True):
+                    delete_refund(sel_refund["row"])
+                    st.session_state.pop(confirm_key, None)
+                    st.success("Refund deleted.")
+                    st.rerun()
+                if cc2.button("Cancel", use_container_width=True):
+                    st.session_state.pop(confirm_key, None)
+                    st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: MANAGE USERS (admin only)

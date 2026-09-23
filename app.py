@@ -1373,21 +1373,29 @@ def load_shipments():
         })
     return pd.DataFrame(rows), date_issues
 
-def update_shipment(row_num, fields):
+def _shipment_row_values(fields):
     """fields: dict of the editable columns (Batch # through Shopify Inventory
-    Status, matching load_shipments' keys) -> new value. Writes the whole row
-    back in one call so a stale read never overwrites an unrelated cell."""
-    ws = get_shipment_tracker_ws()
+    Status, matching load_shipments' keys) -> value, in sheet column order."""
     def d(v):
         return v.strftime("%Y-%m-%d") if v else ""
-    values = [
+    return [
         fields["Batch #"], fields["Brand"], d(fields["Date Paid"]), d(fields["Date Shipped"]),
         fields["Shipment Type"], fields["Shipping Company"], fields["Warehouse Address"],
         fields["Shipping Mark"], fields["Tracking #"], d(fields["Date Received"]),
         fields["raw_status"], fields["Total Items"], fields["Price"], fields["# of Cartons"],
         fields["Notes"], fields["Items Ordered"], fields["Img ref."], fields["Shopify Inventory Status"],
     ]
-    ws.update(f"A{row_num}:R{row_num}", [values])
+
+def update_shipment(row_num, fields):
+    """Writes the whole row back in one call so a stale read never overwrites
+    an unrelated cell."""
+    ws = get_shipment_tracker_ws()
+    ws.update(f"A{row_num}:R{row_num}", [_shipment_row_values(fields)])
+    load_shipments.clear()
+
+def add_shipment(fields):
+    ws = get_shipment_tracker_ws()
+    ws.append_row(_shipment_row_values(fields))
     load_shipments.clear()
 
 @st.cache_data(ttl=120)
@@ -3064,6 +3072,73 @@ elif page == "🚢 Shipment Tracker":
             s3.markdown(f'<div class="stat"><p class="num">{total_shipments - received - cancelled}</p><p class="lbl">In Transit</p></div>', unsafe_allow_html=True)
             s4.markdown(f'<div class="stat"><p class="num">${total_spent:,.0f}</p><p class="lbl">Total Spent</p></div>', unsafe_allow_html=True)
             st.markdown("")
+
+            existing_batch_nums = [
+                int(m.group(1)) for m in (re.match(r"Batch (\d+)$", str(b).strip(), re.IGNORECASE) for b in df["Batch #"])
+                if m
+            ]
+            next_batch_default = f"Batch {max(existing_batch_nums) + 1}" if existing_batch_nums else "Batch 1"
+            add_product_names = sorted({v["product"] for v in load_inventory().values()})
+
+            with st.expander("Add New Batch", icon=":material/add_circle:"):
+                with st.form("add_shipment_form", clear_on_submit=True):
+                    c1, c2, c3 = st.columns(3)
+                    a_batch = c1.text_input("Batch #", value=next_batch_default)
+                    a_brand = c2.text_input("Brand", value="Sweet Mayhem")
+                    a_status = c3.selectbox("Status", SHIPMENT_STATUS_OPTIONS)
+
+                    c4, c5, c6 = st.columns(3)
+                    a_date_paid = c4.date_input("Date Paid", value=None)
+                    a_date_shipped = c5.date_input("Date Shipped", value=None)
+                    a_date_received = c6.date_input("Date Received", value=None)
+
+                    c7, c8, c9 = st.columns(3)
+                    a_ship_type = c7.text_input("Shipment Type", placeholder="e.g. Air, Sea")
+                    a_ship_co = c8.text_input("Shipping Company")
+                    a_tracking = c9.text_input("Tracking #")
+
+                    c10, c11, c12 = st.columns(3)
+                    a_total_items = c10.number_input("Total Items", min_value=0, step=1, value=0)
+                    a_price = c11.number_input("Price ($)", min_value=0.0, step=0.01, format="%.2f", value=0.0)
+                    a_cartons = c12.number_input("# of Cartons", min_value=0, step=1, value=0)
+
+                    c13, c14 = st.columns(2)
+                    a_ship_mark = c13.text_input("Shipping Mark")
+                    a_img_ref = c14.text_input("Img ref.")
+
+                    a_warehouse = st.text_area("Warehouse Address", height=90)
+                    a_items_ordered = st.multiselect("Items Ordered", options=add_product_names)
+                    a_notes = st.text_area("Notes", height=90)
+                    a_shopify_status = st.text_input("Shopify Inventory Status")
+
+                    if st.form_submit_button("Save New Batch", type="primary", use_container_width=True):
+                        if not a_batch.strip():
+                            st.error("Batch # is required.")
+                        elif a_batch.strip().lower() in df["Batch #"].str.lower().tolist():
+                            st.error(f"'{a_batch.strip()}' already exists — pick a different Batch #.")
+                        else:
+                            add_shipment({
+                                "Batch #": a_batch.strip(),
+                                "Brand": a_brand.strip(),
+                                "Date Paid": a_date_paid,
+                                "Date Shipped": a_date_shipped,
+                                "Shipment Type": a_ship_type.strip(),
+                                "Shipping Company": a_ship_co.strip(),
+                                "Warehouse Address": a_warehouse.strip(),
+                                "Shipping Mark": a_ship_mark.strip(),
+                                "Tracking #": a_tracking.strip(),
+                                "Date Received": a_date_received,
+                                "raw_status": _status_option_to_raw(a_status),
+                                "Total Items": a_total_items,
+                                "Price": a_price,
+                                "# of Cartons": a_cartons,
+                                "Notes": a_notes.strip(),
+                                "Items Ordered": ", ".join(a_items_ordered),
+                                "Img ref.": a_img_ref.strip(),
+                                "Shopify Inventory Status": a_shopify_status.strip(),
+                            })
+                            st.session_state["shipment_edit_message"] = f"{a_batch.strip()} added."
+                            st.rerun()
 
             fc1, fc2, fc3 = st.columns(3)
             brands = ["All"] + sorted(df["Brand"].replace("", pd.NA).dropna().unique().tolist())

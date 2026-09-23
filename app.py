@@ -2110,6 +2110,11 @@ elif page == "🔄 Restock":
     st.subheader("Add Restock Quantities")
     st.caption("Edit the 'Add Qty' column for any item, then click Apply Restock.")
 
+    for m in st.session_state.pop("restock_messages", []):
+        getattr(st, m["kind"])(m["text"], **({"icon": m["icon"]} if m.get("icon") else {}))
+    if st.session_state.pop("restock_balloons", False):
+        st.balloons()
+
     try:
         with st.spinner("Loading inventory…"):
             inv, ws = load_inventory(), get_ws()
@@ -2147,6 +2152,7 @@ elif page == "🔄 Restock":
             if changed.empty:
                 st.warning("No quantities entered. Edit the 'Add Qty' column first.")
             else:
+                messages = []
                 with st.spinner("Updating Google Sheets…"):
                     try:
                         updates = [
@@ -2154,8 +2160,7 @@ elif page == "🔄 Restock":
                             for idx in changed.index
                         ]
                         batch_update_qty(ws, updates)
-                        st.success(f"{len(updates)} item(s) restocked!", icon=":material/check_circle:")
-                        st.balloons()
+                        messages.append({"kind": "success", "text": f"{len(updates)} item(s) restocked!", "icon": ":material/check_circle:"})
                     except Exception as e:
                         st.error(str(e))
                         st.stop()
@@ -2181,20 +2186,24 @@ elif page == "🔄 Restock":
                             except Exception as e:
                                 failed.append(f"{label}: {e}")
                         if synced:
-                            st.success(f"{synced} item(s) added to Shopify's on-hand quantity.", icon=":material/sync:")
+                            messages.append({"kind": "success", "text": f"{synced} item(s) added to Shopify's on-hand quantity.", "icon": ":material/sync:"})
                         if unmatched:
-                            st.warning(
+                            messages.append({"kind": "warning", "text":
                                 "Couldn't match to a Shopify variant (Sheet quantity was still "
                                 "updated) — check these manually in Shopify:\n\n"
                                 + "\n".join(f"- {m}" for m in unmatched)
-                            )
+                            })
                         if failed:
-                            st.error(
+                            messages.append({"kind": "error", "text":
                                 "Matched in Shopify but the inventory update failed:\n\n"
                                 + "\n".join(f"- {f}" for f in failed)
-                            )
+                            })
                     except Exception as e:
-                        st.error(str(e))
+                        messages.append({"kind": "error", "text": str(e)})
+
+                st.session_state["restock_messages"] = messages
+                st.session_state["restock_balloons"] = True
+                st.rerun()
     except Exception as e:
         st.error(f"Could not load inventory: {e}")
 

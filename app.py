@@ -21,6 +21,7 @@ import uuid
 import hashlib
 import bcrypt
 import openpyxl
+from openpyxl.styles import Font
 from googleapiclient.discovery import build
 
 # ─── Page Config ─────────────────────────────────────────────────────────────
@@ -1673,6 +1674,58 @@ def format_order_summary(batch_name, products, grand_total):
     if grand_total is not None:
         lines.append(f"Grand Total: ${grand_total:,.2f}")
     return "\n".join(lines)
+
+def build_order_excel(batch_name, products, grand_total):
+    """One-sheet order form — a Color × Size grid per product, unit price and
+    subtotal, and a grand total — ready to download and send to a supplier."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Order"
+    bold = Font(bold=True)
+
+    row = 1
+    ws.cell(row=row, column=1, value=batch_name).font = Font(bold=True, size=14)
+    row += 2
+
+    max_col = 1
+    for p in products:
+        ws.cell(row=row, column=1, value=p["name"]).font = bold
+        row += 1
+
+        ws.cell(row=row, column=1, value="Color").font = bold
+        for i, (_, label) in enumerate(p["size_cols"], start=2):
+            ws.cell(row=row, column=i, value=label).font = bold
+        total_col = len(p["size_cols"]) + 2
+        ws.cell(row=row, column=total_col, value="Total").font = bold
+        max_col = max(max_col, total_col)
+        row += 1
+
+        for color, qtys in p["colors"]:
+            ws.cell(row=row, column=1, value=color)
+            total = 0
+            for i, (col, _) in enumerate(p["size_cols"], start=2):
+                qty = qtys.get(col) or 0
+                ws.cell(row=row, column=i, value=qty)
+                total += qty
+            ws.cell(row=row, column=total_col, value=total).font = bold
+            row += 1
+
+        ws.cell(row=row, column=1, value="Unit Price").font = bold
+        ws.cell(row=row, column=2, value=p["unit_price"])
+        ws.cell(row=row, column=3, value="Subtotal").font = bold
+        ws.cell(row=row, column=4, value=p["subtotal"])
+        row += 2
+
+    ws.cell(row=row, column=1, value="Grand Total").font = Font(bold=True, size=12)
+    ws.cell(row=row, column=2, value=grand_total).font = Font(bold=True, size=12)
+
+    for col_idx in range(1, max_col + 1):
+        letter = openpyxl.utils.get_column_letter(col_idx)
+        ws.column_dimensions[letter].width = 14
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 # ─── Session State ────────────────────────────────────────────────────────────
 
@@ -3495,8 +3548,15 @@ elif page == "🧾 Shipment Details":
 
                 st.divider()
                 st.markdown("##### Order Summary")
-                st.caption("Copy this and send it straight to your supplier.")
+                st.caption("Copy this, or download it as an Excel file, to send straight to your supplier.")
                 st.code(format_order_summary(sel_name, products, grand_total), language=None)
+                st.download_button(
+                    "Download as Excel",
+                    data=build_order_excel(sel_name, products, grand_total),
+                    file_name=f"{sel_name}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    icon=":material/download:",
+                )
 
     except Exception as e:
         st.error(f"Could not load shipment details: {e}")

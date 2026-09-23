@@ -3551,9 +3551,17 @@ elif page == "🧾 Shipment Details":
         next_batch_default = f"Batch {max(existing_batch_nums) + 1}" if existing_batch_nums else "Batch 1"
         detail_product_names = sorted({v["product"] for v in load_inventory().values()})
 
-        reorder_prefill = st.session_state.pop("prefill_reorder", None)
-        if reorder_prefill:
+        # Kept in session_state (not popped) so every rerun — including the one
+        # triggered by clicking "Create Batch" itself — rebuilds the grids with
+        # the same base quantities. A data_editor's returned value falls back to
+        # whatever its `data` argument says for any cell the user hasn't
+        # explicitly touched, so if this disappeared after the first render,
+        # an untouched prefilled cell would silently go back to 0 the moment
+        # the create-batch rerun re-evaluated the page.
+        reorder_prefill = st.session_state.get("prefill_reorder")
+        if reorder_prefill and not st.session_state.get("prefill_reorder_applied"):
             st.session_state["new_ship_items"] = list(reorder_prefill.keys())
+            st.session_state["prefill_reorder_applied"] = True
 
         with st.expander("Add New Shipment", icon=":material/add_circle:", expanded=True):
             if reorder_prefill:
@@ -3648,6 +3656,8 @@ elif page == "🧾 Shipment Details":
                     for k in list(st.session_state.keys()):
                         if k.startswith("new_ship_"):
                             del st.session_state[k]
+                    st.session_state.pop("prefill_reorder", None)
+                    st.session_state.pop("prefill_reorder_applied", None)
                     st.session_state["shipment_edit_message"] = f"{batch_name} created."
                     st.session_state["shipment_detail_select"] = batch_name
                     st.session_state["just_created_batch"] = batch_name

@@ -866,10 +866,12 @@ def _current_shopify_onhand(inventory_item_id, location_id):
         raise Exception("No inventory level found for this item at this location.")
     return level["quantities"][0]["quantity"]
 
-def set_shopify_onhand_quantity(inventory_item_id, location_id, quantity):
-    """Sets the Shopify 'On hand' quantity (not 'Available') to an absolute value,
-    matching the Google Sheet's inventory count for that variant."""
+def add_shopify_onhand_quantity(inventory_item_id, location_id, delta):
+    """Adds delta to whatever Shopify's 'On hand' quantity (not 'Available') currently
+    is — does not overwrite it to match the sheet, so manual additions made directly
+    in Shopify (e.g. for incoming batches) aren't clobbered."""
     current = _current_shopify_onhand(inventory_item_id, location_id)
+    quantity = current + delta
     query = """
     mutation setOnHand($input: InventorySetQuantitiesInput!, $key: String!) {
       inventorySetQuantities(input: $input) @idempotent(key: $key) {
@@ -2147,12 +2149,10 @@ elif page == "🔄 Restock":
             else:
                 with st.spinner("Updating Google Sheets…"):
                     try:
-                        updates = []
-                        new_qtys = {}
-                        for idx in changed.index:
-                            new_qty = items[idx][1]["qty"] + int(changed.loc[idx, "Add Qty"])
-                            updates.append((items[idx][1]["row"], new_qty))
-                            new_qtys[idx] = new_qty
+                        updates = [
+                            (items[idx][1]["row"], items[idx][1]["qty"] + int(changed.loc[idx, "Add Qty"]))
+                            for idx in changed.index
+                        ]
                         batch_update_qty(ws, updates)
                         st.success(f"{len(updates)} item(s) restocked!", icon=":material/check_circle:")
                         st.balloons()
@@ -2160,13 +2160,14 @@ elif page == "🔄 Restock":
                         st.error(str(e))
                         st.stop()
 
-                with st.spinner("Syncing on-hand quantities to Shopify…"):
+                with st.spinner("Adding restocked quantities to Shopify…"):
                     try:
                         variant_map = fetch_shopify_variant_map()
                         location_id = get_primary_location_id()
                         synced, unmatched, failed = 0, [], []
                         for idx in changed.index:
                             _, item = items[idx]
+                            delta = int(changed.loc[idx, "Add Qty"])
                             label = f"{item['product']} — {item['color']} / {item['size']}"
                             inv_item_id = find_shopify_inventory_item(
                                 variant_map, item["product"], item["color"], item["size"]
@@ -2175,22 +2176,21 @@ elif page == "🔄 Restock":
                                 unmatched.append(label)
                                 continue
                             try:
-                                set_shopify_onhand_quantity(inv_item_id, location_id, new_qtys[idx])
+                                add_shopify_onhand_quantity(inv_item_id, location_id, delta)
                                 synced += 1
                             except Exception as e:
                                 failed.append(f"{label}: {e}")
                         if synced:
-                            st.success(f"{synced} item(s) synced to Shopify's on-hand quantity.", icon=":material/sync:")
+                            st.success(f"{synced} item(s) added to Shopify's on-hand quantity.", icon=":material/sync:")
                         if unmatched:
                             st.warning(
                                 "Couldn't match to a Shopify variant (Sheet quantity was still "
-                                "updated) — the periodic sync job will retry this:\n\n"
+                                "updated) — check these manually in Shopify:\n\n"
                                 + "\n".join(f"- {m}" for m in unmatched)
                             )
                         if failed:
                             st.error(
-                                "Matched in Shopify but the inventory update failed (the periodic "
-                                "sync job will retry this):\n\n"
+                                "Matched in Shopify but the inventory update failed:\n\n"
                                 + "\n".join(f"- {f}" for f in failed)
                             )
                     except Exception as e:

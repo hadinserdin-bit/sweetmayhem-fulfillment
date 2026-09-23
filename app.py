@@ -3089,6 +3089,10 @@ elif page == "🚢 Shipment Tracker":
             sel_batch = st.selectbox("Batch #", df["Batch #"].tolist(), key="ship_edit_batch_select")
             row = df[df["Batch #"] == sel_batch].iloc[0]
 
+            product_names = sorted({v["product"] for v in load_inventory().values()})
+            existing_items_lower = (row["Items Ordered"] or "").lower()
+            default_items = [p for p in product_names if p.lower() in existing_items_lower]
+
             with st.container(border=True, key="shipment_edit_panel"):
                 st.markdown(f"**Batch #:** {row['Batch #']}")
                 with st.form(f"edit_shipment_form_{row['row']}"):
@@ -3128,7 +3132,7 @@ elif page == "🚢 Shipment Tracker":
                     f_img_ref = c13.text_input("Img ref.", value=row["Img ref."])
 
                     f_warehouse = st.text_area("Warehouse Address", value=row["Warehouse Address"], height=90)
-                    f_items_ordered = st.text_area("Items Ordered", value=row["Items Ordered"], height=90)
+                    f_items_ordered = st.multiselect("Items Ordered", options=product_names, default=default_items)
                     f_notes = st.text_area("Notes", value=row["Notes"], height=90)
                     f_shopify_status = st.text_input("Shopify Inventory Status", value=row["Shopify Inventory Status"])
 
@@ -3149,7 +3153,7 @@ elif page == "🚢 Shipment Tracker":
                             "Price": f_price,
                             "# of Cartons": f_cartons,
                             "Notes": f_notes.strip(),
-                            "Items Ordered": f_items_ordered.strip(),
+                            "Items Ordered": ", ".join(f_items_ordered),
                             "Img ref.": f_img_ref.strip(),
                             "Shopify Inventory Status": f_shopify_status.strip(),
                         })

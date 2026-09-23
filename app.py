@@ -15,6 +15,7 @@ from urllib.parse import quote as url_quote
 import io
 import math
 import re
+import html as html_lib
 import secrets
 import uuid
 import hashlib
@@ -1053,6 +1054,75 @@ def style_status(df, column="Status"):
         return f"background-color: {bg}" if bg else ""
     return df.style.map(_color, subset=[column])
 
+SHIPMENT_STATUS_PILL = {"Received": "rr-pill-green", "Cancelled": "rr-pill-red", "In Transit": "rr-pill-blue"}
+
+def render_shipment_table(df):
+    """Custom dashboard-style table for Shipment Tracker — st.dataframe can't do
+    pill badges, truncation-with-tooltip, or per-column typography, so this
+    renders the rows as HTML instead, reusing the app's existing design tokens."""
+    def esc(v):
+        return html_lib.escape(str(v)) if v not in (None, "") else "—"
+
+    def fmt_date(v):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return "—"
+        try:
+            return pd.Timestamp(v).strftime("%b %d, %Y")
+        except Exception:
+            return esc(v)
+
+    def fmt_num(v, prefix=""):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return "—"
+        return f"{prefix}{v:,.0f}"
+
+    def truncated(v, maxlen=42):
+        text = str(v) if v not in (None, "") else ""
+        if not text:
+            return "—"
+        short = text if len(text) <= maxlen else text[:maxlen - 1] + "…"
+        return f'<span title="{html_lib.escape(text)}">{html_lib.escape(short)}</span>'
+
+    rows_html = []
+    for _, r in df.iterrows():
+        pill_cls = SHIPMENT_STATUS_PILL.get(r["Status"], "rr-pill-amber")
+        rows_html.append(f"""
+        <tr>
+          <td class="rr-t-strong">{esc(r['Batch #'])}</td>
+          <td>{esc(r['Brand'])}</td>
+          <td>{fmt_date(r['Date Paid'])}</td>
+          <td>{fmt_date(r['Date Shipped'])}</td>
+          <td>{esc(r['Shipment Type'])}</td>
+          <td>{esc(r['Shipping Company'])}</td>
+          <td class="rr-t-mono">{esc(r['Tracking #'])}</td>
+          <td>{fmt_date(r['Date Received'])}</td>
+          <td><span class="rr-pill {pill_cls}">{esc(r['Status'])}</span></td>
+          <td class="rr-t-num">{fmt_num(r['Total Items'])}</td>
+          <td class="rr-t-num">{fmt_num(r['Price'], '$')}</td>
+          <td class="rr-t-num">{fmt_num(r['# of Cartons'])}</td>
+          <td class="rr-t-trunc">{truncated(r['Items Ordered'])}</td>
+          <td class="rr-t-trunc">{truncated(r['Shopify Inventory Status'], 28)}</td>
+        </tr>""")
+
+    headers = [
+        "Batch #", "Brand", "Date Paid", "Date Shipped", "Shipment Type",
+        "Shipping Company", "Tracking #", "Date Received", "Status",
+        "Total Items", "Price", "# of Cartons", "Items Ordered", "Shopify Status",
+    ]
+    num_cols = {"Total Items", "Price", "# of Cartons"}
+    header_html = "".join(
+        f'<th class="{"rr-t-num" if h in num_cols else ""}">{h}</th>' for h in headers
+    )
+
+    st.markdown(f"""
+    <div class="rr-table-wrap">
+      <table class="rr-table">
+        <thead><tr>{header_html}</tr></thead>
+        <tbody>{"".join(rows_html)}</tbody>
+      </table>
+    </div>
+    """, unsafe_allow_html=True)
+
 # ─── Demand & Reorder ─────────────────────────────────────────────────────────
 
 SNAPSHOT_SHEET_NAME = "InventorySnapshots"
@@ -1768,6 +1838,50 @@ hr { border-color: var(--rr-border) !important; }
 .rr-pill-green { background: #eaf7ed; color: #227A55; }
 .rr-pill-red   { background: #fdecea; color: #B03A3A; }
 .rr-pill-blue  { background: #eef2f7; color: #2A5C8A; }
+
+/* ── Dashboard table (Shipment Tracker) ── */
+.rr-table-wrap {
+    background: #fff;
+    border: 1px solid var(--rr-border);
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    overflow-x: auto;
+    margin-bottom: 0.5rem;
+}
+.rr-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    white-space: nowrap;
+}
+.rr-table thead th {
+    position: sticky;
+    top: 0;
+    background: #fafbfc;
+    color: #6b6f7b;
+    font-size: 0.64rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    text-align: left;
+    padding: 0.7rem 0.9rem;
+    border-bottom: 1px solid var(--rr-border);
+}
+.rr-table tbody td {
+    padding: 0.65rem 0.9rem;
+    border-bottom: 1px solid #f0f1f3;
+    color: #1f232c;
+    vertical-align: middle;
+}
+.rr-table tbody tr:last-child td { border-bottom: none; }
+.rr-table tbody tr:hover td { background: #fafbfc; }
+.rr-t-strong { font-weight: 700; }
+.rr-t-mono { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.78rem; color: #4a4e58; }
+.rr-t-num, th.rr-t-num { text-align: right; font-variant-numeric: tabular-nums; }
+.rr-t-trunc {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 220px; display: table-cell;
+}
 
 /* ── Avatar circle (assigned employee initial) ── */
 .rr-avatar {
@@ -2937,21 +3051,7 @@ elif page == "🚢 Shipment Tracker":
             if sel_type != "All":
                 fdf = fdf[fdf["Shipment Type"] == sel_type]
 
-            display_cols = [
-                "Batch #", "Brand", "Date Paid", "Date Shipped", "Shipment Type",
-                "Shipping Company", "Tracking #", "Date Received", "Status",
-                "Total Items", "Price", "# of Cartons", "Items Ordered", "Shopify Inventory Status",
-            ]
-            st.dataframe(
-                style_status(fdf[display_cols]),
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "Date Paid": st.column_config.DateColumn(format="MMM D, YYYY"),
-                    "Date Shipped": st.column_config.DateColumn(format="MMM D, YYYY"),
-                    "Date Received": st.column_config.DateColumn(format="MMM D, YYYY"),
-                    "Price": st.column_config.NumberColumn(format="$%.0f"),
-                },
-            )
+            render_shipment_table(fdf)
             st.caption(f"{len(fdf)} of {total_shipments} shipment(s) shown")
 
             st.divider()

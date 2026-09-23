@@ -1096,6 +1096,66 @@ def style_status(df, column="Status"):
         return f"background-color: {bg}" if bg else ""
     return df.style.map(_color, subset=[column])
 
+REORDER_STATUS_PILL = {
+    "Reorder Now": "rr-pill-red", "Out of Stock": "rr-pill-red",
+    "Reorder Soon": "rr-pill-amber", "OK": "rr-pill-green",
+}
+
+def render_reorder_table(df):
+    """Dashboard-style table for Demand & Reorder — same rationale as
+    render_shipment_table: pill badges and right-aligned tabular numbers instead
+    of a plain st.dataframe grid."""
+    def esc(v):
+        return html_lib.escape(str(v)) if v not in (None, "") else "—"
+
+    def fmt_int(v):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return "—"
+        return f"{int(v):,}"
+
+    def fmt_days(v):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return "—"
+        if isinstance(v, float) and math.isinf(v):
+            return "∞"
+        return f"{v:,.1f}"
+
+    rows_html = []
+    for _, r in df.iterrows():
+        pill_cls = REORDER_STATUS_PILL.get(r["Status"], "rr-pill-blue")
+        rows_html.append(f"""
+        <tr>
+          <td class="rr-t-strong">{esc(r['Product'])}</td>
+          <td>{esc(r['Color'])}</td>
+          <td>{esc(r['Size'])}</td>
+          <td class="rr-t-num">{fmt_int(r['Current Qty'])}</td>
+          <td class="rr-t-num">{fmt_int(r['Units Sold'])}</td>
+          <td class="rr-t-num">{fmt_int(r['Days OOS (window)'])}</td>
+          <td class="rr-t-num">{r['Daily Demand']:.2f}</td>
+          <td class="rr-t-num">{fmt_days(r['Days Left'])}</td>
+          <td class="rr-t-num rr-t-strong">{fmt_int(r['Reorder Qty'])}</td>
+          <td><span class="rr-pill {pill_cls}">{esc(r['Status'])}</span></td>
+          <td class="rr-t-trunc">{esc(r['Confidence'])}</td>
+        </tr>""")
+
+    headers = [
+        "Product", "Color", "Size", "Current Qty", "Units Sold", "Days OOS",
+        "Daily Demand", "Days Left", "Reorder Qty", "Status", "Confidence",
+    ]
+    num_cols = {"Current Qty", "Units Sold", "Days OOS", "Daily Demand", "Days Left", "Reorder Qty"}
+    header_html = "".join(
+        f'<th class="{"rr-t-num" if h in num_cols else ""}">{h}</th>' for h in headers
+    )
+
+    st.markdown(f"""
+    <div class="rr-table-wrap">
+      <table class="rr-table">
+        <thead><tr>{header_html}</tr></thead>
+        <tbody>{"".join(rows_html)}</tbody>
+      </table>
+    </div>
+    """, unsafe_allow_html=True)
+
 SHIPMENT_STATUS_PILL = {"Received": "rr-pill-green", "Cancelled": "rr-pill-red", "In Transit": "rr-pill-blue"}
 
 def render_shipment_table(df):
@@ -2713,21 +2773,32 @@ elif page == "📊 Demand & Reorder":
             fdf = fdf[fdf["Product"] == prod_filter]
         fdf = fdf.sort_values("Days Left")
 
-        st.dataframe(
-            style_status(fdf),
-            use_container_width=True, hide_index=True,
-            column_config={"Days Left": st.column_config.NumberColumn(format="%.1f")},
-        )
+        render_reorder_table(fdf)
         st.caption(
             f"{len(fdf)} variant(s) shown  |  Sales data: {start_date.strftime('%b %d, %Y')} – "
             f"{end_date.strftime('%b %d, %Y')}  |  Lead time: {lead_time} days  |  "
             f"Target coverage: {coverage_days} days"
         )
 
+        reorder_items = fdf[fdf["Reorder Qty"] > 0]
+        st.markdown("")
+        oc1, oc2 = st.columns(2)
+        if oc1.button(
+            f"Create Order — {len(reorder_items)} item(s), {int(reorder_items['Reorder Qty'].sum())} units",
+            icon=":material/local_shipping:", type="primary", use_container_width=True,
+            disabled=reorder_items.empty,
+        ):
+            prefill = {}
+            for _, r in reorder_items.iterrows():
+                prefill.setdefault(r["Product"], {})[(r["Color"], r["Size"])] = int(r["Reorder Qty"])
+            st.session_state["prefill_reorder"] = prefill
+            st.session_state.page = "🧾 Shipment Details"
+            st.rerun()
+
         buf = io.BytesIO()
         df.sort_values("Days Left").to_excel(buf, index=False)
         buf.seek(0)
-        st.download_button(
+        oc2.download_button(
             "Download Full Reorder Report",
             icon=":material/download:",
             data=buf,
@@ -3419,7 +3490,18 @@ elif page == "🧾 Shipment Details":
         next_batch_default = f"Batch {max(existing_batch_nums) + 1}" if existing_batch_nums else "Batch 1"
         detail_product_names = sorted({v["product"] for v in load_inventory().values()})
 
+        reorder_prefill = st.session_state.pop("prefill_reorder", None)
+        if reorder_prefill:
+            st.session_state["new_ship_items"] = list(reorder_prefill.keys())
+
         with st.expander("Add New Shipment", icon=":material/add_circle:", expanded=True):
+            if reorder_prefill:
+                st.info(
+                    "Pre-filled from your Demand & Reorder list — review the quantities "
+                    "below before creating the order.",
+                    icon=":material/auto_awesome:",
+                )
+
             c1, c2 = st.columns(2)
             nb_batch = c1.text_input("Batch #", value=next_batch_default, key="new_ship_batch")
             nb_brand = c2.text_input("Brand", value="Sweet Mayhem", key="new_ship_brand")
@@ -3435,7 +3517,14 @@ elif page == "🧾 Shipment Details":
                 colors = sorted({v["color"] for v in prod_variants})
                 sizes = sorted({v["size"] for v in prod_variants}, key=_size_sort_key)
                 st.markdown(f"**{prod}**")
-                grid_df = pd.DataFrame(0, index=colors or ["—"], columns=sizes or ["—"])
+                prod_prefill = (reorder_prefill or {}).get(prod, {})
+                if colors and sizes:
+                    grid_df = pd.DataFrame(
+                        [[prod_prefill.get((c, s), 0) for s in sizes] for c in colors],
+                        index=colors, columns=sizes,
+                    )
+                else:
+                    grid_df = pd.DataFrame(0, index=colors or ["—"], columns=sizes or ["—"])
                 edited_grid = st.data_editor(
                     grid_df,
                     key=f"new_ship_grid_{prod}",

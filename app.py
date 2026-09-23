@@ -1487,6 +1487,18 @@ def save_line_items(batch, entries):
     ws.append_rows([header] + kept + new_rows)
     load_line_items.clear()
 
+SIZE_ORDER = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL", "5XL"]
+
+def _size_sort_key(size):
+    """Sorts sizes as S/M/L/XL.../2XL/3XL instead of alphabetically. Combo sizes
+    like 'XS/S' or '2XL/3XL' sort by their first part; anything unrecognized
+    sorts after all known sizes, alphabetically."""
+    s = str(size).strip().upper()
+    first = s.split("/")[0].strip()
+    if first in SIZE_ORDER:
+        return (0, SIZE_ORDER.index(first))
+    return (1, s)
+
 def line_items_to_products(batch, all_items):
     """Groups one batch's line items into the same shape parse_shipment_detail()
     produces, so Shipment Details can render in-app-entered batches with the same
@@ -1498,7 +1510,7 @@ def line_items_to_products(batch, all_items):
 
     products = []
     for name, items in by_product.items():
-        sizes = sorted({it["size"] for it in items})
+        sizes = sorted({it["size"] for it in items}, key=_size_sort_key)
         colors = sorted({it["color"] for it in items})
         color_rows = []
         for c in colors:
@@ -3348,7 +3360,7 @@ elif page == "🧾 Shipment Details":
             for prod in nb_items:
                 prod_variants = [v for v in inv_for_new.values() if v["product"] == prod]
                 colors = sorted({v["color"] for v in prod_variants})
-                sizes = sorted({v["size"] for v in prod_variants})
+                sizes = sorted({v["size"] for v in prod_variants}, key=_size_sort_key)
                 st.markdown(f"**{prod}**")
                 grid_df = pd.DataFrame(0, index=colors or ["—"], columns=sizes or ["—"])
                 edited_grid = st.data_editor(

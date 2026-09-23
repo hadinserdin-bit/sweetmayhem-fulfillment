@@ -88,8 +88,9 @@ def get_ws():
 
 USERS_SHEET_NAME = "Users"
 ALL_PAGES = [
-    "📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory", "📊 Demand & Reorder",
-    "🚫 Cancelled Orders", "💸 Refunds", "🚢 Shipment Tracker", "🧾 Shipment Details",
+    "📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory",
+    "📊 Demand & Reorder", "🚢 Shipment Tracker", "🧾 Shipment Details",
+    "🚫 Cancelled Orders", "💸 Refunds",
 ]
 ADMIN_PAGE = "👤 Manage Users"
 
@@ -2365,10 +2366,21 @@ with st.sidebar:
         st.warning("Your account has no page access yet. Ask an admin to assign some.")
         st.stop()
 
+    # Always show pages in the same canonical order (grouped by section below),
+    # regardless of the order they happen to be stored in for this user.
+    _page_order = {p: i for i, p in enumerate(ALL_PAGES + [ADMIN_PAGE])}
+    my_pages = sorted(my_pages, key=lambda p: _page_order.get(p, len(_page_order)))
+
     if st.session_state.get("page") not in my_pages:
         st.session_state.page = my_pages[0]
 
-    NAV_SECTIONS = {"🚢 Shipment Tracker": "SHIPMENTS", "🧾 Shipment Details": "SHIPMENTS"}
+    NAV_SECTIONS = {
+        "📦 Fulfillment": "INVENTORY", "🔄 Restock": "INVENTORY",
+        "➕ Add Product": "INVENTORY", "📋 View Inventory": "INVENTORY",
+        "📊 Demand & Reorder": "SHIPMENTS", "🚢 Shipment Tracker": "SHIPMENTS",
+        "🧾 Shipment Details": "SHIPMENTS",
+        "🚫 Cancelled Orders": "SUPPORT", "💸 Refunds": "SUPPORT",
+    }
     with st.container(key="sidebar_nav"):
         last_section = None
         for p in my_pages:

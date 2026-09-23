@@ -2708,21 +2708,6 @@ elif page == "📊 Demand & Reorder":
     )
 
     today = datetime.now().date()
-    d1, d2, d3, d4 = st.columns([1, 1, 1, 1.2])
-    start_date = d1.date_input(
-        "Sales data from", value=today - timedelta(days=90),
-        max_value=today,
-        help="Set this to a product's launch date to exclude the period before it existed.",
-    )
-    end_date = d2.date_input("Sales data to", value=today, max_value=today)
-    lead_time = d3.slider("Lead time (days)", min_value=5, max_value=21, value=9,
-                           help="Sweet Mayhem's supplier lead time is ~7–10 days.")
-    coverage_days = d4.number_input("Target stock coverage (days)", min_value=5, max_value=90, value=25, step=1,
-                                     help="Reorder quantity tops stock up to cover this many days of demand.")
-
-    if start_date > end_date:
-        st.error("'Sales data from' must be on or before 'Sales data to'.")
-        st.stop()
 
     try:
         with st.spinner("Loading inventory & recording today's stock snapshot…"):
@@ -2730,12 +2715,34 @@ elif page == "📊 Demand & Reorder":
             recorded_today = record_snapshot_if_needed(inv)
             if recorded_today:
                 load_snapshots.clear()
+            records = load_snapshots()
+
+        tracking_start_date = min(
+            (datetime.strptime(r[0], "%Y-%m-%d").date() for r in records),
+            default=today,
+        )
+
+        d1, d2, d3, d4 = st.columns([1, 1, 1, 1.2])
+        start_date = d1.date_input(
+            "Sales data from", value=max(tracking_start_date, today - timedelta(days=90)),
+            min_value=tracking_start_date, max_value=today,
+            help="Set this to a product's launch date to exclude the period before it existed. "
+                 f"Can't go earlier than when stock tracking began ({tracking_start_date.strftime('%b %d, %Y')}).",
+        )
+        end_date = d2.date_input("Sales data to", value=today, min_value=tracking_start_date, max_value=today)
+        lead_time = d3.slider("Lead time (days)", min_value=5, max_value=21, value=9,
+                               help="Sweet Mayhem's supplier lead time is ~7–10 days.")
+        coverage_days = d4.number_input("Target stock coverage (days)", min_value=5, max_value=90, value=25, step=1,
+                                         help="Reorder quantity tops stock up to cover this many days of demand.")
+
+        if start_date > end_date:
+            st.error("'Sales data from' must be on or before 'Sales data to'.")
+            st.stop()
 
         with st.spinner("Fetching sales history from Shopify…"):
             orders = fetch_shopify_sales(start_date=start_date, end_date=end_date)
             sold, _unmatched = aggregate_sales(orders, inv)
 
-        records = load_snapshots()
         stock_days = compute_stock_days(records, start_date, end_date)
 
         tracked_counts = [len(v["tracked"]) for v in stock_days.values()]

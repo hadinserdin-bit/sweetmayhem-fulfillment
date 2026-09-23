@@ -3116,15 +3116,15 @@ elif page == "🚢 Shipment Tracker":
                     c9, c10, c11 = st.columns(3)
                     f_total_items = c9.number_input(
                         "Total Items", min_value=0, step=1,
-                        value=int(row["Total Items"]) if row["Total Items"] is not None else 0,
+                        value=int(row["Total Items"]) if pd.notna(row["Total Items"]) else 0,
                     )
                     f_price = c10.number_input(
                         "Price ($)", min_value=0.0, step=0.01, format="%.2f",
-                        value=float(row["Price"]) if row["Price"] is not None else 0.0,
+                        value=float(row["Price"]) if pd.notna(row["Price"]) else 0.0,
                     )
                     f_cartons = c11.number_input(
                         "# of Cartons", min_value=0, step=1,
-                        value=int(row["# of Cartons"]) if row["# of Cartons"] is not None else 0,
+                        value=int(row["# of Cartons"]) if pd.notna(row["# of Cartons"]) else 0,
                     )
 
                     c12, c13 = st.columns(2)

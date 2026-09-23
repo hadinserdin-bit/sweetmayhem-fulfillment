@@ -3631,7 +3631,7 @@ elif page == "🧾 Shipment Details":
                     add_shipment({
                         "Batch #": batch_name,
                         "Brand": nb_brand.strip(),
-                        "Date Paid": None,
+                        "Date Paid": datetime.now().date(),
                         "Date Shipped": None,
                         "Shipment Type": "",
                         "Shipping Company": "",

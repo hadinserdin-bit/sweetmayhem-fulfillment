@@ -1319,6 +1319,14 @@ def _status_display(brand, status):
     # an intermediate holding point) hasn't actually arrived yet — keep it in transit.
     return f"In Transit ({s})"
 
+SHIPMENT_STATUS_OPTIONS = ["In Transit", "Received", "Cancelled"]
+
+def _status_option_default(display_status):
+    return display_status if display_status in SHIPMENT_STATUS_OPTIONS else "In Transit"
+
+def _status_option_to_raw(option):
+    return {"In Transit": "", "Received": "Received", "Cancelled": "Cancelled"}[option]
+
 @st.cache_data(ttl=120)
 def load_shipments():
     ws = get_shipment_tracker_ws()
@@ -1327,7 +1335,7 @@ def load_shipments():
         return pd.DataFrame(), []
     rows, date_issues = [], []
     date_cols = [("Date Paid", 2), ("Date Shipped", 3), ("Date Received", 9)]
-    for row in values[1:]:
+    for sheet_row, row in enumerate(values[1:], start=3):
         row = row + [None] * (18 - len(row))
         batch = row[0]
         if not batch:
@@ -1360,8 +1368,27 @@ def load_shipments():
             "Items Ordered": row[15] or "",
             "Img ref.": row[16] or "",
             "Shopify Inventory Status": row[17] or "",
+            "row": sheet_row,
+            "raw_status": status,
         })
     return pd.DataFrame(rows), date_issues
+
+def update_shipment(row_num, fields):
+    """fields: dict of the editable columns (Batch # through Shopify Inventory
+    Status, matching load_shipments' keys) -> new value. Writes the whole row
+    back in one call so a stale read never overwrites an unrelated cell."""
+    ws = get_shipment_tracker_ws()
+    def d(v):
+        return v.strftime("%Y-%m-%d") if v else ""
+    values = [
+        fields["Batch #"], fields["Brand"], d(fields["Date Paid"]), d(fields["Date Shipped"]),
+        fields["Shipment Type"], fields["Shipping Company"], fields["Warehouse Address"],
+        fields["Shipping Mark"], fields["Tracking #"], d(fields["Date Received"]),
+        fields["raw_status"], fields["Total Items"], fields["Price"], fields["# of Cartons"],
+        fields["Notes"], fields["Items Ordered"], fields["Img ref."], fields["Shopify Inventory Status"],
+    ]
+    ws.update(f"A{row_num}:R{row_num}", [values])
+    load_shipments.clear()
 
 @st.cache_data(ttl=120)
 def load_packaging_tables():
@@ -3000,9 +3027,12 @@ elif page == ADMIN_PAGE:
 elif page == "🚢 Shipment Tracker":
     st.subheader("Shipment Tracker")
     st.caption(
-        "Reads live from the shared Shipments Tracker Google Sheet. Edit shipment data "
-        "there — this page always shows what's currently in the Sheet."
+        "Reads live from the shared Shipments Tracker Google Sheet. Edits made below "
+        "are saved straight back to the Sheet."
     )
+
+    if "shipment_edit_message" in st.session_state:
+        st.success(st.session_state.pop("shipment_edit_message"), icon=":material/check_circle:")
 
     if st.button("Refresh", icon=":material/refresh:"):
         load_shipments.clear()
@@ -3055,21 +3085,76 @@ elif page == "🚢 Shipment Tracker":
             st.caption(f"{len(fdf)} of {total_shipments} shipment(s) shown")
 
             st.divider()
-            st.markdown("### Shipment Detail Lookup")
-            sel_batch = st.selectbox("Batch #", df["Batch #"].tolist())
+            st.markdown("### Edit a Batch")
+            sel_batch = st.selectbox("Batch #", df["Batch #"].tolist(), key="ship_edit_batch_select")
             row = df[df["Batch #"] == sel_batch].iloc[0]
-            d1, d2 = st.columns(2)
-            with d1:
-                st.markdown(f"**Shipping Mark:** {row['Shipping Mark'] or '—'}")
-                st.markdown(f"**Tracking #:** {row['Tracking #'] or '—'}")
-                st.markdown(f"**Notes:** {row['Notes'] or '—'}")
-                st.markdown(f"**Img ref.:** {row['Img ref.'] or '—'}")
-            with d2:
-                st.markdown("**Warehouse Address:**")
-                st.text_area(
-                    "Warehouse Address", value=row["Warehouse Address"] or "—",
-                    height=140, disabled=True, label_visibility="collapsed",
-                )
+
+            with st.container(border=True, key="shipment_edit_panel"):
+                st.markdown(f"**Batch #:** {row['Batch #']}")
+                with st.form(f"edit_shipment_form_{row['row']}"):
+                    c1, c2 = st.columns(2)
+                    f_brand = c1.text_input("Brand", value=row["Brand"])
+                    f_status = c2.selectbox(
+                        "Status", SHIPMENT_STATUS_OPTIONS,
+                        index=SHIPMENT_STATUS_OPTIONS.index(_status_option_default(row["Status"])),
+                    )
+
+                    c3, c4, c5 = st.columns(3)
+                    f_date_paid = c3.date_input("Date Paid", value=row["Date Paid"])
+                    f_date_shipped = c4.date_input("Date Shipped", value=row["Date Shipped"])
+                    f_date_received = c5.date_input("Date Received", value=row["Date Received"])
+
+                    c6, c7, c8 = st.columns(3)
+                    f_ship_type = c6.text_input("Shipment Type", value=row["Shipment Type"])
+                    f_ship_co = c7.text_input("Shipping Company", value=row["Shipping Company"])
+                    f_tracking = c8.text_input("Tracking #", value=row["Tracking #"])
+
+                    c9, c10, c11 = st.columns(3)
+                    f_total_items = c9.number_input(
+                        "Total Items", min_value=0, step=1,
+                        value=int(row["Total Items"]) if row["Total Items"] is not None else 0,
+                    )
+                    f_price = c10.number_input(
+                        "Price ($)", min_value=0.0, step=0.01, format="%.2f",
+                        value=float(row["Price"]) if row["Price"] is not None else 0.0,
+                    )
+                    f_cartons = c11.number_input(
+                        "# of Cartons", min_value=0, step=1,
+                        value=int(row["# of Cartons"]) if row["# of Cartons"] is not None else 0,
+                    )
+
+                    c12, c13 = st.columns(2)
+                    f_ship_mark = c12.text_input("Shipping Mark", value=row["Shipping Mark"])
+                    f_img_ref = c13.text_input("Img ref.", value=row["Img ref."])
+
+                    f_warehouse = st.text_area("Warehouse Address", value=row["Warehouse Address"], height=90)
+                    f_items_ordered = st.text_area("Items Ordered", value=row["Items Ordered"], height=90)
+                    f_notes = st.text_area("Notes", value=row["Notes"], height=90)
+                    f_shopify_status = st.text_input("Shopify Inventory Status", value=row["Shopify Inventory Status"])
+
+                    if st.form_submit_button("Save Changes", type="primary", use_container_width=True):
+                        update_shipment(int(row["row"]), {
+                            "Batch #": row["Batch #"],
+                            "Brand": f_brand.strip(),
+                            "Date Paid": f_date_paid,
+                            "Date Shipped": f_date_shipped,
+                            "Shipment Type": f_ship_type.strip(),
+                            "Shipping Company": f_ship_co.strip(),
+                            "Warehouse Address": f_warehouse.strip(),
+                            "Shipping Mark": f_ship_mark.strip(),
+                            "Tracking #": f_tracking.strip(),
+                            "Date Received": f_date_received,
+                            "raw_status": _status_option_to_raw(f_status),
+                            "Total Items": f_total_items,
+                            "Price": f_price,
+                            "# of Cartons": f_cartons,
+                            "Notes": f_notes.strip(),
+                            "Items Ordered": f_items_ordered.strip(),
+                            "Img ref.": f_img_ref.strip(),
+                            "Shopify Inventory Status": f_shopify_status.strip(),
+                        })
+                        st.session_state["shipment_edit_message"] = f"Batch {row['Batch #']} updated."
+                        st.rerun()
 
             used_df, orders_df = load_packaging_tables()
             with st.expander("Packaging Usage & Stock Orders", icon=":material/inventory_2:"):

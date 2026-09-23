@@ -16,6 +16,7 @@ import io
 import math
 import re
 import html as html_lib
+import functools
 import secrets
 import uuid
 import hashlib
@@ -59,8 +60,29 @@ def _drive():
 def _spreadsheet():
     return _gc().open_by_key(SHEET_ID)
 
+@_resilient_google_call
 def get_ws():
     return _spreadsheet().get_worksheet(0)
+
+def _resilient_google_call(fn):
+    """Retries once on a transient network error, reconnecting fresh clients
+    first. Streamlit Cloud's process can sit idle between requests, and a
+    pooled connection Google's end has since closed then surfaces on the next
+    call as a low-level OSError (e.g. 'Broken pipe') rather than a clean
+    Google API error."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (BrokenPipeError, ConnectionError, OSError):
+            _gc.clear()
+            _drive.clear()
+            _spreadsheet.clear()
+            _shipment_tracker_spreadsheet.clear()
+            _refunds_spreadsheet.clear()
+            _cancelled_orders_spreadsheet.clear()
+            return fn(*args, **kwargs)
+    return wrapper
 
 # ─── Users & Access Control ────────────────────────────────────────────────────
 
@@ -97,6 +119,7 @@ PAGE_ICONS = {
 def page_label(p):
     return p.split(" ", 1)[1] if " " in p else p
 
+@_resilient_google_call
 def get_users_ws():
     sh = _spreadsheet()
     try:
@@ -107,6 +130,7 @@ def get_users_ws():
         return ws
 
 @st.cache_data(ttl=60)
+@_resilient_google_call
 def load_users():
     ws = get_users_ws()
     data = ws.get_all_values()
@@ -195,6 +219,7 @@ REFUND_STATUSES = ["Pending", "Refunded", "Rejected"]
 def _refunds_spreadsheet():
     return _gc().open_by_key(REFUNDS_SHEET_ID)
 
+@_resilient_google_call
 def get_refunds_ws():
     sh = _refunds_spreadsheet()
     try:
@@ -211,6 +236,7 @@ def _parse_amount(v):
         return None
 
 @st.cache_data(ttl=30)
+@_resilient_google_call
 def load_refunds():
     ws = get_refunds_ws()
     data = ws.get_all_values()
@@ -272,6 +298,7 @@ CO_SETTINGS_COLUMNS = [
 def _cancelled_orders_spreadsheet():
     return _gc().open_by_key(CANCELLED_ORDERS_SHEET_ID)
 
+@_resilient_google_call
 def get_co_ws():
     sh = _cancelled_orders_spreadsheet()
     try:
@@ -281,6 +308,7 @@ def get_co_ws():
         ws.append_row(CO_COLUMNS)
         return ws
 
+@_resilient_google_call
 def get_co_settings_ws():
     sh = _cancelled_orders_spreadsheet()
     try:
@@ -292,6 +320,7 @@ def get_co_settings_ws():
         return ws
 
 @st.cache_data(ttl=30)
+@_resilient_google_call
 def load_co_settings():
     ws = get_co_settings_ws()
     data = ws.get_all_values()
@@ -411,6 +440,7 @@ def co_wa_link(phone, text):
     return url
 
 @st.cache_data(ttl=30)
+@_resilient_google_call
 def load_cancelled_orders():
     ws = get_co_ws()
     data = ws.get_all_values()
@@ -679,6 +709,7 @@ if not login_screen():
     st.stop()
 
 @st.cache_data(ttl=60)
+@_resilient_google_call
 def load_inventory():
     ws = get_ws()
     data = ws.get_all_values()
@@ -707,6 +738,7 @@ def batch_update_qty(ws, updates):
 
 PRODUCT_PRICES_TAB = "Product Prices"
 
+@_resilient_google_call
 def get_product_prices_ws():
     sh = _spreadsheet()
     try:
@@ -717,6 +749,7 @@ def get_product_prices_ws():
         return ws
 
 @st.cache_data(ttl=120)
+@_resilient_google_call
 def load_product_prices():
     """Product -> fixed unit price, used to pre-fill Shipment Details' Add New
     Shipment form so prices stay consistent across batches instead of being
@@ -1230,6 +1263,7 @@ def render_shipment_table(df):
 SNAPSHOT_SHEET_NAME = "InventorySnapshots"
 MIN_TRACKED_DAYS = 5  # minimum days of stock-history before trusting the adjusted rate
 
+@_resilient_google_call
 def get_snapshot_ws():
     sh = _spreadsheet()
     try:
@@ -1252,6 +1286,7 @@ def record_snapshot_if_needed(inv):
     return True
 
 @st.cache_data(ttl=600)
+@_resilient_google_call
 def load_snapshots():
     ws = get_snapshot_ws()
     data = ws.get_all_values()
@@ -1372,6 +1407,7 @@ SHIPMENT_TRACKER_TAB = "Shipments Tracker"
 def _shipment_tracker_spreadsheet():
     return _gc().open_by_key(SHIPMENT_TRACKER_SHEET_ID)
 
+@_resilient_google_call
 def get_shipment_tracker_ws():
     return _shipment_tracker_spreadsheet().worksheet(SHIPMENT_TRACKER_TAB)
 
@@ -1430,6 +1466,7 @@ def _status_option_to_raw(option):
     return {"In Transit": "", "Received": "Received", "Cancelled": "Cancelled"}[option]
 
 @st.cache_data(ttl=120)
+@_resilient_google_call
 def load_shipments():
     ws = get_shipment_tracker_ws()
     values = ws.get("A2:R500", value_render_option="UNFORMATTED_VALUE")
@@ -1502,6 +1539,7 @@ def add_shipment(fields):
 
 SHIPMENT_LINE_ITEMS_TAB = "Shipment Line Items"
 
+@_resilient_google_call
 def get_shipment_line_items_ws():
     sh = _shipment_tracker_spreadsheet()
     try:
@@ -1512,6 +1550,7 @@ def get_shipment_line_items_ws():
         return ws
 
 @st.cache_data(ttl=120)
+@_resilient_google_call
 def load_line_items():
     """Per-(batch, product, color, size) quantities entered in-app — the structured
     alternative to uploading an Excel file for Shipment Details."""
@@ -1593,6 +1632,7 @@ def line_items_to_products(batch, all_items):
     return products, grand_total
 
 @st.cache_data(ttl=120)
+@_resilient_google_call
 def load_packaging_tables():
     ws = get_shipment_tracker_ws()
     values = ws.get("V2:AB100", value_render_option="UNFORMATTED_VALUE")
@@ -1614,6 +1654,7 @@ def _batch_num(name):
     return int(m.group(1)) if m else -1
 
 @st.cache_data(ttl=300)
+@_resilient_google_call
 def list_shipment_detail_files():
     """Flat list of real shipment files in the Drive folder (recurses one level into
     subfolders — some batches, e.g. split shipments, are grouped in their own subfolder).
@@ -1641,6 +1682,7 @@ def list_shipment_detail_files():
     return files
 
 @st.cache_data(ttl=300)
+@_resilient_google_call
 def fetch_shipment_detail_bytes(file_id):
     return bytes(_drive().files().get_media(fileId=file_id).execute())
 

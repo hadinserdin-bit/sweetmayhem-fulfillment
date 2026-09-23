@@ -1537,6 +1537,18 @@ def add_shipment(fields):
     ws.append_row(_shipment_row_values(fields))
     load_shipments.clear()
 
+def delete_shipment_batch(row_num, batch_name):
+    """Removes the batch's row from Shipments Tracker (if it has one) and any
+    of its Shipment Line Items rows."""
+    if row_num:
+        get_shipment_tracker_ws().delete_rows(int(row_num))
+        load_shipments.clear()
+    save_line_items(batch_name, [])
+
+def delete_shipment_detail_file(file_id):
+    _drive().files().delete(fileId=file_id).execute()
+    list_shipment_detail_files.clear()
+
 SHIPMENT_LINE_ITEMS_TAB = "Shipment Line Items"
 
 @_resilient_google_call
@@ -3695,6 +3707,34 @@ elif page == "🧾 Shipment Details":
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     icon=":material/download:",
                 )
+
+                if st.session_state.role == "admin":
+                    st.divider()
+                    confirm_key = f"confirm_del_shipment_{sel_name}"
+                    if not st.session_state.get(confirm_key):
+                        if st.button("Delete this batch", icon=":material/delete:"):
+                            st.session_state[confirm_key] = True
+                            st.rerun()
+                    else:
+                        st.warning(
+                            f"Permanently delete {sel_name}? This removes it from Shipment "
+                            "Tracker and its product breakdown here. This can't be undone."
+                        )
+                        cc1, cc2 = st.columns(2)
+                        if cc1.button("Yes, delete", type="primary", use_container_width=True):
+                            if sel_name in sheet_batches:
+                                tracker_match = tracker_df[tracker_df["Batch #"] == sel_name]
+                                del_row = int(tracker_match.iloc[0]["row"]) if not tracker_match.empty else None
+                                delete_shipment_batch(del_row, sel_name)
+                            else:
+                                delete_shipment_detail_file(sel_file["id"])
+                            st.session_state.pop(confirm_key, None)
+                            st.session_state.pop("shipment_detail_select", None)
+                            st.session_state["shipment_edit_message"] = f"{sel_name} deleted."
+                            st.rerun()
+                        if cc2.button("Cancel", use_container_width=True):
+                            st.session_state.pop(confirm_key, None)
+                            st.rerun()
 
     except Exception as e:
         st.error(f"Could not load shipment details: {e}")

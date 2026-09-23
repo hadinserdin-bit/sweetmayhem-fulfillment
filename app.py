@@ -1537,6 +1537,67 @@ def add_shipment(fields):
     ws.append_row(_shipment_row_values(fields))
     load_shipments.clear()
 
+def _row_to_fields(row):
+    """A load_shipments() row -> the fields dict update_shipment() expects,
+    for callers that only want to change one or two fields and leave the rest
+    of the row exactly as it was."""
+    return {
+        "Batch #": row["Batch #"], "Brand": row["Brand"],
+        "Date Paid": row["Date Paid"], "Date Shipped": row["Date Shipped"],
+        "Shipment Type": row["Shipment Type"], "Shipping Company": row["Shipping Company"],
+        "Warehouse Address": row["Warehouse Address"], "Shipping Mark": row["Shipping Mark"],
+        "Tracking #": row["Tracking #"], "Date Received": row["Date Received"],
+        "raw_status": row["raw_status"],
+        "Total Items": int(row["Total Items"]) if pd.notna(row["Total Items"]) else 0,
+        "Price": float(row["Price"]) if pd.notna(row["Price"]) else 0.0,
+        "# of Cartons": int(row["# of Cartons"]) if pd.notna(row["# of Cartons"]) else 0,
+        "Notes": row["Notes"], "Items Ordered": row["Items Ordered"],
+        "Img ref.": row["Img ref."], "Shopify Inventory Status": row["Shopify Inventory Status"],
+    }
+
+SHOPIFY_ADDED_MARKER = "Added to Shopify"
+
+def receive_batch_to_shopify(line_items):
+    """Adds a batch's line-item quantities to Shopify's on-hand inventory —
+    additive, same mechanism as Restock, so it's safe to run before the batch
+    has physically arrived (e.g. to start pre-selling incoming stock)."""
+    variant_map = fetch_shopify_variant_map()
+    location_id = get_primary_location_id()
+    synced, unmatched, failed = 0, [], []
+    for it in line_items:
+        label = f"{it['product']} — {it['color']} / {it['size']}"
+        inv_item_id = find_shopify_inventory_item(variant_map, it["product"], it["color"], it["size"])
+        if inv_item_id is None:
+            unmatched.append(label)
+            continue
+        try:
+            add_shopify_onhand_quantity(inv_item_id, location_id, it["qty"])
+            synced += 1
+        except Exception as e:
+            failed.append(f"{label}: {e}")
+    return synced, unmatched, failed
+
+def receive_batch_to_studio_inventory(line_items):
+    """Adds a batch's line-item quantities into the Studio's own Inventory
+    sheet — the one Restock/Fulfillment actually read from — for when the
+    stock has genuinely arrived and is physically on hand."""
+    inv = load_inventory()
+    ws = get_ws()
+    row_totals = {}
+    unmatched = []
+    for it in line_items:
+        key = find_key(inv, it["product"], it["color"], it["size"])
+        if key is None:
+            unmatched.append(f"{it['product']} — {it['color']} / {it['size']}")
+            continue
+        row_num = inv[key]["row"]
+        if row_num not in row_totals:
+            row_totals[row_num] = inv[key]["qty"]
+        row_totals[row_num] += it["qty"]
+    if row_totals:
+        batch_update_qty(ws, list(row_totals.items()))
+    return len(row_totals), unmatched
+
 def delete_shipment_batch(row_num, batch_name):
     """Removes the batch's row from Shipments Tracker (if it has one) and any
     of its Shipment Line Items rows."""
@@ -3501,6 +3562,66 @@ elif page == "🚢 Shipment Tracker":
                             "Shopify Inventory Status": f_shopify_status.strip(),
                         })
                         st.session_state["shipment_edit_message"] = f"Batch {row['Batch #']} updated."
+                        st.rerun()
+
+            batch_line_items = [it for it in load_line_items() if it["batch"] == row["Batch #"]]
+            if batch_line_items:
+                st.markdown("### Receiving")
+                st.caption(
+                    "Add this batch's ordered quantities to Shopify's on-hand inventory — safe "
+                    "to do before it physically arrives, e.g. to start pre-selling incoming stock. "
+                    "Add them to the Studio's own inventory separately, once you actually have "
+                    "them on hand."
+                )
+                shopify_done = (row["Shopify Inventory Status"] or "").strip() == SHOPIFY_ADDED_MARKER
+                received_done = row["Status"] == "Received"
+
+                rc1, rc2 = st.columns(2)
+                with rc1:
+                    if shopify_done:
+                        st.success("Added to Shopify", icon=":material/check_circle:")
+                        st.caption("Adding again will add these quantities a second time — only do this if you're sure it's needed.")
+                    if st.button(
+                        "Add to Shopify Inventory" if not shopify_done else "Add to Shopify again",
+                        icon=":material/sync:", use_container_width=True,
+                        type="secondary" if shopify_done else "primary",
+                        key=f"add_shopify_{row['row']}",
+                    ):
+                        with st.spinner("Adding to Shopify's on-hand inventory…"):
+                            synced, unmatched, failed = receive_batch_to_shopify(batch_line_items)
+                        if synced:
+                            update_shipment(int(row["row"]), {**_row_to_fields(row), "Shopify Inventory Status": SHOPIFY_ADDED_MARKER})
+                        msg = []
+                        if synced:
+                            msg.append(f"{synced} item(s) added to Shopify.")
+                        if unmatched:
+                            msg.append(f"{len(unmatched)} unmatched: " + ", ".join(unmatched))
+                        if failed:
+                            msg.append(f"{len(failed)} failed: " + ", ".join(failed))
+                        st.session_state["shipment_edit_message"] = " ".join(msg) if msg else "Nothing to add."
+                        st.rerun()
+
+                with rc2:
+                    if received_done:
+                        st.success("Added to Studio Inventory", icon=":material/check_circle:")
+                        st.caption("Adding again will add these quantities a second time — only do this if you're sure it's needed.")
+                    if st.button(
+                        "Add to Studio Inventory" if not received_done else "Add to Studio Inventory again",
+                        icon=":material/inventory_2:", use_container_width=True,
+                        type="secondary" if received_done else "primary",
+                        key=f"add_studio_{row['row']}",
+                    ):
+                        with st.spinner("Adding to the Studio inventory…"):
+                            added, unmatched = receive_batch_to_studio_inventory(batch_line_items)
+                        update_shipment(int(row["row"]), {
+                            **_row_to_fields(row),
+                            "raw_status": "Received",
+                            "Date Received": row["Date Received"] or datetime.now().date(),
+                        })
+                        msg = [f"{added} item(s) added to Studio inventory."]
+                        if unmatched:
+                            msg.append(f"{len(unmatched)} unmatched: " + ", ".join(unmatched))
+                        st.session_state["shipment_edit_message"] = " ".join(msg)
                         st.rerun()
 
             used_df, orders_df = load_packaging_tables()

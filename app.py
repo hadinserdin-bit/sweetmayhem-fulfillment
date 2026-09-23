@@ -1398,6 +1398,86 @@ def add_shipment(fields):
     ws.append_row(_shipment_row_values(fields))
     load_shipments.clear()
 
+SHIPMENT_LINE_ITEMS_TAB = "Shipment Line Items"
+
+def get_shipment_line_items_ws():
+    sh = _shipment_tracker_spreadsheet()
+    try:
+        return sh.worksheet(SHIPMENT_LINE_ITEMS_TAB)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=SHIPMENT_LINE_ITEMS_TAB, rows=1000, cols=6)
+        ws.append_row(["Batch #", "Product", "Color", "Size", "Qty", "Unit Price"])
+        return ws
+
+@st.cache_data(ttl=120)
+def load_line_items():
+    """Per-(batch, product, color, size) quantities entered in-app — the structured
+    alternative to uploading an Excel file for Shipment Details."""
+    ws = get_shipment_line_items_ws()
+    data = ws.get_all_values()
+    items = []
+    for row in data[1:]:
+        if len(row) < 6 or not row[0].strip():
+            continue
+        try:
+            qty = int(float(row[4]))
+        except (ValueError, TypeError):
+            qty = 0
+        try:
+            unit_price = float(row[5])
+        except (ValueError, TypeError):
+            unit_price = None
+        items.append({
+            "batch": row[0].strip(), "product": row[1].strip(),
+            "color": row[2].strip(), "size": row[3].strip(),
+            "qty": qty, "unit_price": unit_price,
+        })
+    return items
+
+def save_line_items(batch, entries):
+    """Replaces this batch's line items with `entries` (list of dicts with product,
+    color, size, qty, unit_price) — entries with qty <= 0 are dropped."""
+    ws = get_shipment_line_items_ws()
+    all_values = ws.get_all_values()
+    header = all_values[0] if all_values else ["Batch #", "Product", "Color", "Size", "Qty", "Unit Price"]
+    kept = [r for r in all_values[1:] if r and r[0].strip() != batch]
+    new_rows = [[batch, e["product"], e["color"], e["size"], e["qty"], e["unit_price"]] for e in entries if e["qty"] > 0]
+    ws.clear()
+    ws.append_rows([header] + kept + new_rows)
+    load_line_items.clear()
+
+def line_items_to_products(batch, all_items):
+    """Groups one batch's line items into the same shape parse_shipment_detail()
+    produces, so Shipment Details can render in-app-entered batches with the same
+    product_grid() rendering used for uploaded Excel files."""
+    batch_items = [it for it in all_items if it["batch"] == batch]
+    by_product = {}
+    for it in batch_items:
+        by_product.setdefault(it["product"], []).append(it)
+
+    products = []
+    for name, items in by_product.items():
+        sizes = sorted({it["size"] for it in items})
+        colors = sorted({it["color"] for it in items})
+        color_rows = []
+        for c in colors:
+            qtys = {s: 0 for s in sizes}
+            for it in items:
+                if it["color"] == c:
+                    qtys[it["size"]] = it["qty"]
+            color_rows.append((c, qtys))
+        total_qty = sum(it["qty"] for it in items)
+        unit_price = next((it["unit_price"] for it in items if it["unit_price"]), None)
+        subtotal = (unit_price * total_qty) if unit_price is not None else None
+        products.append({
+            "name": name, "size_cols": [(s, s) for s in sizes], "total_col": None,
+            "colors": color_rows, "unit_price": unit_price,
+            "subtotal": subtotal, "total_qty": total_qty,
+        })
+    subtotals = [p["subtotal"] for p in products if p["subtotal"] is not None]
+    grand_total = sum(subtotals) if subtotals else None
+    return products, grand_total
+
 @st.cache_data(ttl=120)
 def load_packaging_tables():
     ws = get_shipment_tracker_ws()
@@ -3081,64 +3161,107 @@ elif page == "🚢 Shipment Tracker":
             add_product_names = sorted({v["product"] for v in load_inventory().values()})
 
             with st.expander("Add New Batch", icon=":material/add_circle:"):
-                with st.form("add_shipment_form", clear_on_submit=True):
-                    c1, c2, c3 = st.columns(3)
-                    a_batch = c1.text_input("Batch #", value=next_batch_default)
-                    a_brand = c2.text_input("Brand", value="Sweet Mayhem")
-                    a_status = c3.selectbox("Status", SHIPMENT_STATUS_OPTIONS)
+                # Plain reactive widgets (not st.form) so the per-product breakdown
+                # grids below can appear/disappear as Items Ordered changes.
+                c1, c2, c3 = st.columns(3)
+                a_batch = c1.text_input("Batch #", value=next_batch_default, key="add_batch_num")
+                a_brand = c2.text_input("Brand", value="Sweet Mayhem", key="add_batch_brand")
+                a_status = c3.selectbox("Status", SHIPMENT_STATUS_OPTIONS, key="add_batch_status")
 
-                    c4, c5, c6 = st.columns(3)
-                    a_date_paid = c4.date_input("Date Paid", value=None)
-                    a_date_shipped = c5.date_input("Date Shipped", value=None)
-                    a_date_received = c6.date_input("Date Received", value=None)
+                c4, c5, c6 = st.columns(3)
+                a_date_paid = c4.date_input("Date Paid", value=None, key="add_batch_date_paid")
+                a_date_shipped = c5.date_input("Date Shipped", value=None, key="add_batch_date_shipped")
+                a_date_received = c6.date_input("Date Received", value=None, key="add_batch_date_received")
 
-                    c7, c8, c9 = st.columns(3)
-                    a_ship_type = c7.text_input("Shipment Type", placeholder="e.g. Air, Sea")
-                    a_ship_co = c8.text_input("Shipping Company")
-                    a_tracking = c9.text_input("Tracking #")
+                c7, c8, c9 = st.columns(3)
+                a_ship_type = c7.text_input("Shipment Type", placeholder="e.g. Air, Sea", key="add_batch_ship_type")
+                a_ship_co = c8.text_input("Shipping Company", key="add_batch_ship_co")
+                a_tracking = c9.text_input("Tracking #", key="add_batch_tracking")
 
-                    c10, c11, c12 = st.columns(3)
-                    a_total_items = c10.number_input("Total Items", min_value=0, step=1, value=0)
-                    a_price = c11.number_input("Price ($)", min_value=0.0, step=0.01, format="%.2f", value=0.0)
-                    a_cartons = c12.number_input("# of Cartons", min_value=0, step=1, value=0)
+                a_cartons = st.number_input("# of Cartons", min_value=0, step=1, value=0, key="add_batch_cartons")
 
-                    c13, c14 = st.columns(2)
-                    a_ship_mark = c13.text_input("Shipping Mark")
-                    a_img_ref = c14.text_input("Img ref.")
+                c10, c11 = st.columns(2)
+                a_ship_mark = c10.text_input("Shipping Mark", key="add_batch_ship_mark")
+                a_img_ref = c11.text_input("Img ref.", key="add_batch_img_ref")
 
-                    a_warehouse = st.text_area("Warehouse Address", height=90)
-                    a_items_ordered = st.multiselect("Items Ordered", options=add_product_names)
-                    a_notes = st.text_area("Notes", height=90)
-                    a_shopify_status = st.text_input("Shopify Inventory Status")
+                a_warehouse = st.text_area("Warehouse Address", height=90, key="add_batch_warehouse")
+                a_notes = st.text_area("Notes", height=90, key="add_batch_notes")
+                a_shopify_status = st.text_input("Shopify Inventory Status", key="add_batch_shopify_status")
 
-                    if st.form_submit_button("Save New Batch", type="primary", use_container_width=True):
-                        if not a_batch.strip():
-                            st.error("Batch # is required.")
-                        elif a_batch.strip().lower() in df["Batch #"].str.lower().tolist():
-                            st.error(f"'{a_batch.strip()}' already exists — pick a different Batch #.")
-                        else:
-                            add_shipment({
-                                "Batch #": a_batch.strip(),
-                                "Brand": a_brand.strip(),
-                                "Date Paid": a_date_paid,
-                                "Date Shipped": a_date_shipped,
-                                "Shipment Type": a_ship_type.strip(),
-                                "Shipping Company": a_ship_co.strip(),
-                                "Warehouse Address": a_warehouse.strip(),
-                                "Shipping Mark": a_ship_mark.strip(),
-                                "Tracking #": a_tracking.strip(),
-                                "Date Received": a_date_received,
-                                "raw_status": _status_option_to_raw(a_status),
-                                "Total Items": a_total_items,
-                                "Price": a_price,
-                                "# of Cartons": a_cartons,
-                                "Notes": a_notes.strip(),
-                                "Items Ordered": ", ".join(a_items_ordered),
-                                "Img ref.": a_img_ref.strip(),
-                                "Shopify Inventory Status": a_shopify_status.strip(),
-                            })
-                            st.session_state["shipment_edit_message"] = f"{a_batch.strip()} added."
-                            st.rerun()
+                st.markdown("##### Items Ordered")
+                st.caption("Pick the products in this batch, then fill in quantities per color/size below — this also builds the batch's Shipment Details breakdown.")
+                a_items_ordered = st.multiselect("Products in this batch", options=add_product_names, key="add_batch_items")
+
+                line_item_entries = []
+                inv_for_add = load_inventory()
+                for prod in a_items_ordered:
+                    prod_variants = [v for v in inv_for_add.values() if v["product"] == prod]
+                    colors = sorted({v["color"] for v in prod_variants})
+                    sizes = sorted({v["size"] for v in prod_variants})
+                    st.markdown(f"**{prod}**")
+                    grid_df = pd.DataFrame(0, index=colors or ["—"], columns=sizes or ["—"])
+                    edited_grid = st.data_editor(
+                        grid_df,
+                        key=f"add_batch_grid_{prod}",
+                        column_config={c: st.column_config.NumberColumn(min_value=0, step=1) for c in grid_df.columns},
+                    )
+                    unit_price = st.number_input(
+                        f"Unit price — {prod} ($)", min_value=0.0, step=0.01, format="%.2f",
+                        key=f"add_batch_price_{prod}",
+                    )
+                    for color in edited_grid.index:
+                        for size in edited_grid.columns:
+                            qty = int(edited_grid.loc[color, size] or 0)
+                            if qty > 0 and color != "—" and size != "—":
+                                line_item_entries.append({
+                                    "product": prod, "color": color, "size": size,
+                                    "qty": qty, "unit_price": unit_price,
+                                })
+
+                if line_item_entries:
+                    computed_total_items = sum(e["qty"] for e in line_item_entries)
+                    computed_price = sum(e["qty"] * e["unit_price"] for e in line_item_entries)
+                    st.caption(f"From breakdown: **{computed_total_items} items · ${computed_price:,.2f}**")
+                    a_total_items, a_price = computed_total_items, computed_price
+                else:
+                    c12, c13 = st.columns(2)
+                    a_total_items = c12.number_input("Total Items", min_value=0, step=1, value=0, key="add_batch_total_items")
+                    a_price = c13.number_input("Price ($)", min_value=0.0, step=0.01, format="%.2f", value=0.0, key="add_batch_price_total")
+
+                if st.button("Save New Batch", type="primary", use_container_width=True, key="add_batch_save"):
+                    if not a_batch.strip():
+                        st.error("Batch # is required.")
+                    elif a_batch.strip().lower() in df["Batch #"].str.lower().tolist():
+                        st.error(f"'{a_batch.strip()}' already exists — pick a different Batch #.")
+                    else:
+                        batch_name = a_batch.strip()
+                        add_shipment({
+                            "Batch #": batch_name,
+                            "Brand": a_brand.strip(),
+                            "Date Paid": a_date_paid,
+                            "Date Shipped": a_date_shipped,
+                            "Shipment Type": a_ship_type.strip(),
+                            "Shipping Company": a_ship_co.strip(),
+                            "Warehouse Address": a_warehouse.strip(),
+                            "Shipping Mark": a_ship_mark.strip(),
+                            "Tracking #": a_tracking.strip(),
+                            "Date Received": a_date_received,
+                            "raw_status": _status_option_to_raw(a_status),
+                            "Total Items": a_total_items,
+                            "Price": a_price,
+                            "# of Cartons": a_cartons,
+                            "Notes": a_notes.strip(),
+                            "Items Ordered": ", ".join(a_items_ordered),
+                            "Img ref.": a_img_ref.strip(),
+                            "Shopify Inventory Status": a_shopify_status.strip(),
+                        })
+                        if line_item_entries:
+                            save_line_items(batch_name, line_item_entries)
+                        for k in list(st.session_state.keys()):
+                            if k.startswith("add_batch_"):
+                                del st.session_state[k]
+                        st.session_state["shipment_edit_message"] = f"{batch_name} added."
+                        st.rerun()
 
             fc1, fc2, fc3 = st.columns(3)
             brands = ["All"] + sorted(df["Brand"].replace("", pd.NA).dropna().unique().tolist())
@@ -3255,31 +3378,43 @@ elif page == "🚢 Shipment Tracker":
 elif page == "🧾 Shipment Details":
     st.subheader("Shipment Details")
     st.caption(
-        "Reads directly from the Shipment Details folder in Google Drive — pick a "
-        "shipment to see exactly what was ordered, by product, color, and size."
+        "Shows exactly what was ordered, by product, color, and size — either "
+        "entered on Shipment Tracker's Add New Batch form, or uploaded as an Excel "
+        "file to the Shipment Details Drive folder."
     )
 
-    if st.button("Refresh file list", icon=":material/refresh:"):
+    if st.button("Refresh", icon=":material/refresh:"):
         list_shipment_detail_files.clear()
+        load_line_items.clear()
         st.rerun()
 
     try:
-        with st.spinner("Loading file list from Drive…"):
+        with st.spinner("Loading shipment list…"):
             files = list_shipment_detail_files()
+            all_line_items = load_line_items()
 
-        if not files:
-            st.info("No shipment detail files found in the folder.")
+        sheet_batches = sorted({it["batch"] for it in all_line_items}, key=_batch_num, reverse=True)
+        drive_names = [f["name"] for f in files]
+        # Sheet-entered batches take priority over a same-named Drive file.
+        all_names = sheet_batches + [n for n in drive_names if n not in sheet_batches]
+
+        if not all_names:
+            st.info("No shipment details yet — add one from Shipment Tracker's \"Add New Batch\" form, or upload an Excel file to the Drive folder.")
         else:
-            names = [f["name"] for f in files]
-            sel_name = st.selectbox("Shipment file", names)
-            sel_file = next(f for f in files if f["name"] == sel_name)
+            sel_name = st.selectbox("Shipment", all_names)
 
-            with st.spinner(f"Loading {sel_name}…"):
-                file_bytes = fetch_shipment_detail_bytes(sel_file["id"])
-                products, grand_total = parse_shipment_detail(file_bytes)
+            if sel_name in sheet_batches:
+                st.caption("Source: entered in-app")
+                products, grand_total = line_items_to_products(sel_name, all_line_items)
+            else:
+                st.caption("Source: uploaded Excel file")
+                sel_file = next(f for f in files if f["name"] == sel_name)
+                with st.spinner(f"Loading {sel_name}…"):
+                    file_bytes = fetch_shipment_detail_bytes(sel_file["id"])
+                    products, grand_total = parse_shipment_detail(file_bytes)
 
             if not products:
-                st.warning("Couldn't find any recognizable product blocks in this file.")
+                st.warning("Couldn't find any recognizable product blocks in this shipment.")
             else:
                 for p in products:
                     st.markdown(f"#### {p['name']}")

@@ -704,6 +704,47 @@ def batch_update_qty(ws, updates):
     ])
     load_inventory.clear()
 
+PRODUCT_PRICES_TAB = "Product Prices"
+
+def get_product_prices_ws():
+    sh = _spreadsheet()
+    try:
+        return sh.worksheet(PRODUCT_PRICES_TAB)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=PRODUCT_PRICES_TAB, rows=200, cols=2)
+        ws.append_row(["Product", "Unit Price"])
+        return ws
+
+@st.cache_data(ttl=120)
+def load_product_prices():
+    """Product -> fixed unit price, used to pre-fill Shipment Details' Add New
+    Shipment form so prices stay consistent across batches instead of being
+    retyped (and potentially mistyped) every time."""
+    ws = get_product_prices_ws()
+    data = ws.get_all_values()
+    prices = {}
+    for row in data[1:]:
+        if len(row) < 2 or not row[0].strip():
+            continue
+        try:
+            prices[row[0].strip()] = float(row[1])
+        except (ValueError, TypeError):
+            continue
+    return prices
+
+def set_product_prices(updates):
+    """updates: dict of product -> unit price. Updates existing rows in place,
+    appends new ones for products not yet tracked."""
+    ws = get_product_prices_ws()
+    data = ws.get_all_values()
+    remaining = dict(updates)
+    for i, row in enumerate(data[1:], start=2):
+        if row and row[0].strip() in remaining:
+            ws.update_cell(i, 2, remaining.pop(row[0].strip()))
+    if remaining:
+        ws.append_rows([[product, price] for product, price in remaining.items()])
+    load_product_prices.clear()
+
 # ─── Shopify ──────────────────────────────────────────────────────────────────
 
 _SHOPIFY_STORE   = st.secrets["shopify"]["store"]
@@ -3301,7 +3342,9 @@ elif page == "🧾 Shipment Details":
             nb_items = st.multiselect("Products in this shipment", options=detail_product_names, key="new_ship_items")
 
             nb_line_items = []
+            nb_unit_prices = {}
             inv_for_new = load_inventory()
+            fixed_prices = load_product_prices()
             for prod in nb_items:
                 prod_variants = [v for v in inv_for_new.values() if v["product"] == prod]
                 colors = sorted({v["color"] for v in prod_variants})
@@ -3315,8 +3358,10 @@ elif page == "🧾 Shipment Details":
                 )
                 unit_price = st.number_input(
                     f"Unit price — {prod} ($)", min_value=0.0, step=0.01, format="%.2f",
-                    key=f"new_ship_price_{prod}",
+                    value=fixed_prices.get(prod, 0.0), key=f"new_ship_price_{prod}",
+                    help="Remembered from last time — changing it here updates the fixed price for future shipments too.",
                 )
+                nb_unit_prices[prod] = unit_price
                 for color in edited_grid.index:
                     for size in edited_grid.columns:
                         qty = int(edited_grid.loc[color, size] or 0)
@@ -3362,6 +3407,9 @@ elif page == "🧾 Shipment Details":
                     })
                     if nb_line_items:
                         save_line_items(batch_name, nb_line_items)
+                    priced = {p: v for p, v in nb_unit_prices.items() if v > 0}
+                    if priced:
+                        set_product_prices(priced)
                     for k in list(st.session_state.keys()):
                         if k.startswith("new_ship_"):
                             del st.session_state[k]

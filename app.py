@@ -1657,6 +1657,23 @@ def product_grid(product):
         df["Total"] = df.sum(axis=1)
     return df
 
+def format_order_summary(batch_name, products, grand_total):
+    """Plain-text order summary, formatted to paste straight into a message to a supplier."""
+    lines = [batch_name, ""]
+    for p in products:
+        lines.append(p["name"])
+        for color, qtys in p["colors"]:
+            parts = ", ".join(f"{label}={qtys.get(col) or 0}" for col, label in p["size_cols"])
+            total = sum(qtys.get(col) or 0 for col, label in p["size_cols"])
+            lines.append(f"  {color}: {parts} (Total: {total})")
+        price_str = f"${p['unit_price']:,.2f}" if p["unit_price"] is not None else "—"
+        subtotal_str = f"${p['subtotal']:,.2f}" if p["subtotal"] is not None else "—"
+        lines.append(f"  Unit price: {price_str} | Subtotal: {subtotal_str}")
+        lines.append("")
+    if grand_total is not None:
+        lines.append(f"Grand Total: ${grand_total:,.2f}")
+    return "\n".join(lines)
+
 # ─── Session State ────────────────────────────────────────────────────────────
 
 _defaults = dict(
@@ -3321,10 +3338,13 @@ elif page == "🚢 Shipment Tracker":
 elif page == "🧾 Shipment Details":
     st.subheader("Shipment Details")
     st.caption(
-        "Add what's in a new shipment here — it creates the batch in Shipment "
-        "Tracker automatically, where you can then fill in tracking, dates, and "
-        "status. Also shows shipments uploaded as an Excel file to the Drive folder."
+        "Add what's in a new shipment here to build an order you can send straight "
+        "to your supplier. Also shows shipments uploaded as an Excel file to the "
+        "Drive folder."
     )
+
+    if "shipment_edit_message" in st.session_state:
+        st.success(st.session_state.pop("shipment_edit_message"), icon=":material/check_circle:")
 
     if st.button("Refresh", icon=":material/refresh:"):
         list_shipment_detail_files.clear()
@@ -3425,11 +3445,9 @@ elif page == "🧾 Shipment Details":
                     for k in list(st.session_state.keys()):
                         if k.startswith("new_ship_"):
                             del st.session_state[k]
-                    st.session_state["shipment_edit_message"] = (
-                        f"{batch_name} created — fill in tracking, dates, and status below."
-                    )
-                    st.session_state.page = "🚢 Shipment Tracker"
-                    st.session_state["ship_edit_batch_select"] = batch_name
+                    st.session_state["shipment_edit_message"] = f"{batch_name} created."
+                    st.session_state["shipment_detail_select"] = batch_name
+                    st.session_state["just_created_batch"] = batch_name
                     st.rerun()
 
         sheet_batches = sorted({it["batch"] for it in all_line_items}, key=_batch_num, reverse=True)
@@ -3440,7 +3458,7 @@ elif page == "🧾 Shipment Details":
         if not all_names:
             st.info("No shipment details yet — use \"Add New Shipment\" above, or upload an Excel file to the Drive folder.")
         else:
-            sel_name = st.selectbox("Shipment", all_names)
+            sel_name = st.selectbox("Shipment", all_names, key="shipment_detail_select")
 
             if sel_name in sheet_batches:
                 st.caption("Source: entered in-app")
@@ -3455,6 +3473,12 @@ elif page == "🧾 Shipment Details":
             if not products:
                 st.warning("Couldn't find any recognizable product blocks in this shipment.")
             else:
+                if st.session_state.pop("just_created_batch", None) == sel_name:
+                    if st.button("Add tracking, dates & status in Shipment Tracker →", key="jump_to_tracker"):
+                        st.session_state.page = "🚢 Shipment Tracker"
+                        st.session_state["ship_edit_batch_select"] = sel_name
+                        st.rerun()
+
                 for p in products:
                     st.markdown(f"#### {p['name']}")
                     st.dataframe(product_grid(p), use_container_width=True)
@@ -3468,6 +3492,11 @@ elif page == "🧾 Shipment Details":
 
                 if grand_total is not None:
                     st.markdown(f"### Grand Total: ${grand_total:,.2f}")
+
+                st.divider()
+                st.markdown("##### Order Summary")
+                st.caption("Copy this and send it straight to your supplier.")
+                st.code(format_order_summary(sel_name, products, grand_total), language=None)
 
     except Exception as e:
         st.error(f"Could not load shipment details: {e}")

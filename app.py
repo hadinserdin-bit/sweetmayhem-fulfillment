@@ -1905,9 +1905,7 @@ st.markdown("""
 
 if page == "📦 Fulfillment":
 
-    c1, c2 = st.columns(2)
-    fetch_btn   = c1.button("Fetch All Unfulfilled", icon=":material/refresh:", use_container_width=True)
-    preview_btn = c2.button("Preview  (no changes)", icon=":material/visibility:", use_container_width=True, disabled=not st.session_state.preview_done and st.session_state.fulfillable is None)
+    fetch_btn = st.button("Fetch All Unfulfilled", icon=":material/refresh:", use_container_width=True)
 
     sc1, sc2 = st.columns([3, 1])
     order_input = sc1.text_input("", placeholder="Order number e.g. 17234", label_visibility="collapsed")

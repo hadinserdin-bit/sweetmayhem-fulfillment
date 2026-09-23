@@ -60,10 +60,6 @@ def _drive():
 def _spreadsheet():
     return _gc().open_by_key(SHEET_ID)
 
-@_resilient_google_call
-def get_ws():
-    return _spreadsheet().get_worksheet(0)
-
 def _resilient_google_call(fn):
     """Retries once on a transient network error, reconnecting fresh clients
     first. Streamlit Cloud's process can sit idle between requests, and a
@@ -83,6 +79,10 @@ def _resilient_google_call(fn):
             _cancelled_orders_spreadsheet.clear()
             return fn(*args, **kwargs)
     return wrapper
+
+@_resilient_google_call
+def get_ws():
+    return _spreadsheet().get_worksheet(0)
 
 # ─── Users & Access Control ────────────────────────────────────────────────────
 

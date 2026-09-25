@@ -71,12 +71,18 @@ def _resilient_google_call(fn):
         try:
             return fn(*args, **kwargs)
         except (BrokenPipeError, ConnectionError, OSError):
-            _gc.clear()
-            _drive.clear()
-            _spreadsheet.clear()
-            _shipment_tracker_spreadsheet.clear()
-            _refunds_spreadsheet.clear()
-            _cancelled_orders_spreadsheet.clear()
+            # Looked up by name rather than referenced directly: this fires
+            # from calls made early in the script (e.g. the login screen),
+            # before later cache functions like _shipment_tracker_spreadsheet
+            # are even defined yet in this run — a direct reference would
+            # crash with a NameError instead of actually retrying.
+            for name in (
+                "_gc", "_drive", "_spreadsheet", "_shipment_tracker_spreadsheet",
+                "_refunds_spreadsheet", "_cancelled_orders_spreadsheet",
+            ):
+                cache_fn = globals().get(name)
+                if cache_fn is not None:
+                    cache_fn.clear()
             return fn(*args, **kwargs)
     return wrapper
 
@@ -3220,6 +3226,8 @@ elif page == "📊 Demand & Reorder":
         s4.markdown(f'<div class="stat"><p class="num">{int(df["Reorder Qty"].sum())}</p><p class="lbl">Units to Reorder</p></div>', unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
+        needs_reorder_only = st.checkbox("Only show items I need to reorder", value=False)
+
         fc1, fc2 = st.columns(2)
         status_options = df["Status"].unique().tolist()
         status_filter = fc1.multiselect("Filter by Status", status_options, default=status_options)
@@ -3229,6 +3237,8 @@ elif page == "📊 Demand & Reorder":
         fdf = df[df["Status"].isin(status_filter)]
         if prod_filter != "All":
             fdf = fdf[fdf["Product"] == prod_filter]
+        if needs_reorder_only:
+            fdf = fdf[fdf["Reorder Qty"] > 0]
         fdf = fdf.sort_values("Days Left")
 
         try:

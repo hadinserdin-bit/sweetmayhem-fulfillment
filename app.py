@@ -1280,6 +1280,26 @@ def render_reorder_table(df, product_images=None, lead_time=None):
         target_date = (datetime.now().date() + timedelta(days=d)).strftime("%b %d, %y")
         return f'<div class="rr-t-strong">{d} day{"s" if d != 1 else ""}</div><div class="rr-t-sub">{target_date}</div>'
 
+    def fmt_reorder_in(v, reorder_qty):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return "—"
+        if isinstance(v, float) and math.isinf(v):
+            return '<span class="rr-pill rr-pill-green">∞</span>'
+        d = int(math.floor(v))
+        # The timing math alone would flag this urgent, but nothing more
+        # is actually needed — already fully covered by what's incoming —
+        # so don't show a false alarm.
+        if reorder_qty == 0 and d <= 7:
+            return '<span class="rr-pill rr-pill-green">Covered</span>'
+        target_date = (datetime.now().date() + timedelta(days=max(0, d))).strftime("%b %d, %y")
+        if d <= 0:
+            pill = '<span class="rr-pill rr-pill-red">Order now</span>'
+        elif d <= 7:
+            pill = f'<span class="rr-pill rr-pill-amber">{d} days</span>'
+        else:
+            pill = f'<span class="rr-pill rr-pill-green">{d} days</span>'
+        return f'{pill}<div class="rr-t-sub">{target_date}</div>'
+
     product_images = product_images or {}
     lead_time_html = (
         f'<span class="rr-pill rr-pill-gray">Lead time: {int(lead_time)}d</span>' if lead_time else ""
@@ -1308,6 +1328,7 @@ def render_reorder_table(df, product_images=None, lead_time=None):
           <td class="rr-t-num">{fmt_int(r['Days OOS (window)'])}</td>
           <td class="rr-t-num">{r['Daily Demand']:.2f}</td>
           <td class="rr-t-num">{fmt_stockout(r['Days Left'])}</td>
+          <td class="rr-t-num">{fmt_reorder_in(r['Reorder In'], r['Reorder Qty'])}</td>
           <td class="rr-t-num">{fmt_int(r['Incoming Qty'])}</td>
           <td class="rr-t-num rr-t-strong">{fmt_int(r['Reorder Qty'])}</td>
           <td><span class="rr-pill {pill_cls}">{esc(r['Status'])}</span></td>
@@ -1316,9 +1337,9 @@ def render_reorder_table(df, product_images=None, lead_time=None):
 
     headers = [
         "Photo", "Product", "Current Qty", "Available", "Units Sold", "Days OOS",
-        "Sales Velocity", "Stockout In", "Incoming Qty", "Reorder Qty", "Status", "Confidence",
+        "Sales Velocity", "Stockout In", "Reorder In", "Incoming Qty", "Reorder Qty", "Status", "Confidence",
     ]
-    num_cols = {"Current Qty", "Available", "Units Sold", "Days OOS", "Sales Velocity", "Stockout In", "Incoming Qty", "Reorder Qty"}
+    num_cols = {"Current Qty", "Available", "Units Sold", "Days OOS", "Sales Velocity", "Stockout In", "Reorder In", "Incoming Qty", "Reorder Qty"}
     header_html = "".join(
         f'<th class="{"rr-t-num" if h in num_cols else ""}">{h}</th>' for h in headers
     )
@@ -1550,6 +1571,10 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
 
         days_left = (cur_qty / daily_demand) if daily_demand > 0 else float("inf")
         reorder_qty = max(0, math.ceil(daily_demand * coverage_days) - cur_qty - incoming_qty)
+        # How many days from today you'd need to place the order to have it
+        # land before you actually run out — stockout minus lead time. Once
+        # this hits zero or below, the order is already overdue.
+        reorder_in = days_left - lead_time
 
         if v["qty"] <= 0:
             # Zero on hand normally means Out of Stock, but if enough is
@@ -1572,6 +1597,7 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
             "Days OOS (window)": days_oos,
             "Daily Demand": round(daily_demand, 2),
             "Days Left": float("inf") if daily_demand == 0 else round(days_left, 1),
+            "Reorder In": float("inf") if daily_demand == 0 else round(reorder_in, 1),
             "Incoming Qty": incoming_qty,
             "Reorder Qty": reorder_qty,
             "Status": status,

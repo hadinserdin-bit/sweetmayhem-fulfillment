@@ -89,7 +89,7 @@ def get_ws():
 USERS_SHEET_NAME = "Users"
 ALL_PAGES = [
     "📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory",
-    "📊 Demand & Reorder", "🚢 Shipment Tracker", "🧾 Shipment Details",
+    "📊 Demand & Reorder", "📥 Purchase Orders", "🚢 Shipment Tracker", "🧾 Shipment Details",
     "🚫 Cancelled Orders", "💸 Refunds",
 ]
 ADMIN_PAGE = "👤 Manage Users"
@@ -110,6 +110,7 @@ PAGE_ICONS = {
     "➕ Add Product": ":material/add_box:",
     "📋 View Inventory": ":material/list_alt:",
     "📊 Demand & Reorder": ":material/insights:",
+    "📥 Purchase Orders": ":material/move_to_inbox:",
     "🚫 Cancelled Orders": ":material/cancel:",
     "💸 Refunds": ":material/currency_exchange:",
     "🚢 Shipment Tracker": ":material/directions_boat:",
@@ -1173,6 +1174,7 @@ def render_reorder_table(df):
           <td class="rr-t-num">{fmt_int(r['Days OOS (window)'])}</td>
           <td class="rr-t-num">{r['Daily Demand']:.2f}</td>
           <td class="rr-t-num">{fmt_days(r['Days Left'])}</td>
+          <td class="rr-t-num">{fmt_int(r['Incoming Qty'])}</td>
           <td class="rr-t-num rr-t-strong">{fmt_int(r['Reorder Qty'])}</td>
           <td><span class="rr-pill {pill_cls}">{esc(r['Status'])}</span></td>
           <td class="rr-t-trunc">{esc(r['Confidence'])}</td>
@@ -1180,9 +1182,9 @@ def render_reorder_table(df):
 
     headers = [
         "Product", "Color", "Size", "Current Qty", "Units Sold", "Days OOS",
-        "Daily Demand", "Days Left", "Reorder Qty", "Status", "Confidence",
+        "Daily Demand", "Days Left", "Incoming Qty", "Reorder Qty", "Status", "Confidence",
     ]
-    num_cols = {"Current Qty", "Units Sold", "Days OOS", "Daily Demand", "Days Left", "Reorder Qty"}
+    num_cols = {"Current Qty", "Units Sold", "Days OOS", "Daily Demand", "Days Left", "Incoming Qty", "Reorder Qty"}
     header_html = "".join(
         f'<th class="{"rr-t-num" if h in num_cols else ""}">{h}</th>' for h in headers
     )
@@ -1191,6 +1193,36 @@ def render_reorder_table(df):
     <div class="rr-table-wrap">
       <table class="rr-table">
         <thead><tr>{header_html}</tr></thead>
+        <tbody>{"".join(rows_html)}</tbody>
+      </table>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_incoming_table(df):
+    """Dashboard-style table for Purchase Orders' variant-level breakdown."""
+    def esc(v):
+        return html_lib.escape(str(v)) if v not in (None, "") else "—"
+
+    rows_html = []
+    for _, r in df.iterrows():
+        rows_html.append(f"""
+        <tr>
+          <td class="rr-t-strong">{esc(r['Product'])}</td>
+          <td>{esc(r['Color'])}</td>
+          <td>{esc(r['Size'])}</td>
+          <td class="rr-t-num rr-t-strong">{r['Incoming Qty']:,}</td>
+          <td class="rr-t-trunc">{esc(r['Batches'])}</td>
+        </tr>""")
+
+    inc_headers = ["Product", "Color", "Size", "Incoming Qty", "Batches"]
+    inc_header_html = "".join(
+        f'<th class="{"rr-t-num" if h == "Incoming Qty" else ""}">{h}</th>' for h in inc_headers
+    )
+
+    st.markdown(f"""
+    <div class="rr-table-wrap">
+      <table class="rr-table">
+        <thead><tr>{inc_header_html}</tr></thead>
         <tbody>{"".join(rows_html)}</tbody>
       </table>
     </div>
@@ -1364,7 +1396,8 @@ def aggregate_sales(orders, inv):
             sold[k] = sold.get(k, 0) + qty
     return sold, unmatched
 
-def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days):
+def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days, incoming=None):
+    incoming = incoming or {}
     window_days = max(1, (end_date - start_date).days + 1)
     rows = []
     for key, v in inv.items():
@@ -1373,6 +1406,7 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
         days_tracked, days_in_stock = len(sd["tracked"]), len(sd["in_stock"])
         days_oos = days_tracked - days_in_stock
         cur_qty = max(0, v["qty"])
+        incoming_qty = incoming.get(key, 0)
 
         adjusted = days_tracked >= MIN_TRACKED_DAYS and days_in_stock > 0
         if adjusted:
@@ -1381,7 +1415,7 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
             daily_demand = total_sold / window_days
 
         days_left = (cur_qty / daily_demand) if daily_demand > 0 else float("inf")
-        reorder_qty = max(0, math.ceil(daily_demand * coverage_days) - cur_qty)
+        reorder_qty = max(0, math.ceil(daily_demand * coverage_days) - cur_qty - incoming_qty)
 
         if v["qty"] <= 0:
             status = "Out of Stock"
@@ -1399,6 +1433,7 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
             "Days OOS (window)": days_oos,
             "Daily Demand": round(daily_demand, 2),
             "Days Left": float("inf") if daily_demand == 0 else round(days_left, 1),
+            "Incoming Qty": incoming_qty,
             "Reorder Qty": reorder_qty,
             "Status": status,
             "Confidence": "Adjusted" if adjusted else "Raw (building history)",
@@ -1724,6 +1759,40 @@ def load_packaging_tables():
         if row[4]:
             orders.append({"Order": row[4], "Small 15×15": _as_number(row[5]), "Big 35×25": _as_number(row[6])})
     return pd.DataFrame(used), pd.DataFrame(orders)
+
+def compute_incoming():
+    """Sums ordered-but-not-yet-received quantities (batches whose Status isn't
+    Received or Cancelled) per (product, color, size), for Purchase Orders and
+    for Demand & Reorder to subtract before suggesting how much more to order.
+
+    Returns (qty_by_key, detail_rows, open_batches):
+      qty_by_key   — keyed like load_inventory() (lowercased tuples) -> qty
+      detail_rows  — display-ready per-variant breakdown with contributing batches
+      open_batches — set of batch names counted as still incoming
+    """
+    tracker_df, _ = load_shipments()
+    open_batches = (
+        set(tracker_df[~tracker_df["Status"].isin(["Received", "Cancelled"])]["Batch #"])
+        if not tracker_df.empty else set()
+    )
+
+    qty_by_key, batches_by_key, display_by_key = {}, {}, {}
+    for it in load_line_items():
+        if it["batch"] not in open_batches:
+            continue
+        key = (it["product"].lower(), it["color"].lower(), it["size"].lower())
+        qty_by_key[key] = qty_by_key.get(key, 0) + it["qty"]
+        batches_by_key.setdefault(key, set()).add(it["batch"])
+        display_by_key[key] = (it["product"], it["color"], it["size"])
+
+    detail_rows = [
+        {
+            "Product": display_by_key[key][0], "Color": display_by_key[key][1], "Size": display_by_key[key][2],
+            "Incoming Qty": qty, "Batches": ", ".join(sorted(batches_by_key[key], key=_batch_num)),
+        }
+        for key, qty in qty_by_key.items()
+    ]
+    return qty_by_key, detail_rows, open_batches
 
 # ─── Shipment Details ──────────────────────────────────────────────────────────
 
@@ -2387,8 +2456,8 @@ with st.sidebar:
     NAV_SECTIONS = {
         "📦 Fulfillment": "INVENTORY", "🔄 Restock": "INVENTORY",
         "➕ Add Product": "INVENTORY", "📋 View Inventory": "INVENTORY",
-        "📊 Demand & Reorder": "SHIPMENTS", "🚢 Shipment Tracker": "SHIPMENTS",
-        "🧾 Shipment Details": "SHIPMENTS",
+        "📊 Demand & Reorder": "SHIPMENTS", "📥 Purchase Orders": "SHIPMENTS",
+        "🚢 Shipment Tracker": "SHIPMENTS", "🧾 Shipment Details": "SHIPMENTS",
         "🚫 Cancelled Orders": "SUPPORT", "💸 Refunds": "SUPPORT",
     }
     with st.container(key="sidebar_nav"):
@@ -2897,7 +2966,8 @@ elif page == "📊 Demand & Reorder":
                 icon=":material/calendar_month:",
             )
 
-        df = build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days)
+        incoming_by_key, _incoming_detail, _open_batches = compute_incoming()
+        df = build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days, incoming_by_key)
 
         s1, s2, s3, s4 = st.columns(4)
         s1.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="Reorder Now").sum()}</p><p class="lbl">Reorder Now</p></div>', unsafe_allow_html=True)
@@ -2953,6 +3023,58 @@ elif page == "📊 Demand & Reorder":
 
     except Exception as e:
         st.error(f"Could not compute demand & reorder data: {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE: PURCHASE ORDERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+elif page == "📥 Purchase Orders":
+    st.subheader("Purchase Orders")
+    st.caption(
+        "Everything currently on order but not yet marked Received in Shipment "
+        "Tracker. These quantities are subtracted automatically from Demand & "
+        "Reorder's suggestions, so it knows what's already on its way before "
+        "telling you what else to order."
+    )
+
+    if st.button("Refresh", icon=":material/refresh:"):
+        load_shipments.clear()
+        load_line_items.clear()
+        st.rerun()
+
+    try:
+        with st.spinner("Loading purchase orders…"):
+            tracker_df, _ = load_shipments()
+            qty_by_key, detail_rows, open_batches = compute_incoming()
+
+        open_df = tracker_df[tracker_df["Batch #"].isin(open_batches)] if not tracker_df.empty else tracker_df
+        total_incoming_units = sum(r["Incoming Qty"] for r in detail_rows)
+
+        s1, s2, s3 = st.columns(3)
+        s1.markdown(f'<div class="stat"><p class="num">{len(open_df)}</p><p class="lbl">Open Purchase Orders</p></div>', unsafe_allow_html=True)
+        s2.markdown(f'<div class="stat"><p class="num">{total_incoming_units:,}</p><p class="lbl">Total Incoming Units</p></div>', unsafe_allow_html=True)
+        s3.markdown(f'<div class="stat"><p class="num">{len(detail_rows)}</p><p class="lbl">Variants Incoming</p></div>', unsafe_allow_html=True)
+        st.markdown("")
+
+        st.markdown("### Open Orders")
+        if open_df.empty:
+            st.info("No open purchase orders — every batch is either Received or Cancelled.")
+        else:
+            render_shipment_table(open_df)
+
+        st.markdown("")
+        st.markdown("### Incoming by Product")
+        if not detail_rows:
+            st.info(
+                "No incoming quantities to show yet — open batches don't have a "
+                "product breakdown (add one from Shipment Details)."
+            )
+        else:
+            incoming_df = pd.DataFrame(detail_rows).sort_values(["Product", "Color", "Size"])
+            render_incoming_table(incoming_df)
+
+    except Exception as e:
+        st.error(f"Could not load purchase orders: {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: CANCELLED ORDERS

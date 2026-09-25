@@ -2907,25 +2907,17 @@ elif page == "🔄 Restock":
             if restock_prod_filter == "All" or v["product"] == restock_prod_filter
         ]
 
-        hc1, hc2, hc3, hc4 = st.columns([3, 2, 1, 2])
-        hc1.caption("PRODUCT")
-        hc2.caption("COLOR")
-        hc3.caption("SIZE")
-        hc4.caption("ADD QTY")
-
         for idx in visible_indices:
             _, item = items[idx]
-            c1, c2, c3, c4 = st.columns([3, 2, 1, 2])
-            c1.write(item["product"])
-            c2.write(item["color"])
-            c3.write(item["size"])
-            c4.number_input(
-                f"Add qty — {item['product']} {item['color']} {item['size']}",
-                min_value=0, step=1, value=0,
-                key=f"restock_qty_{item['row']}",
-                label_visibility="collapsed",
-                help=f"Current: {item['qty']}",
-            )
+            with st.container(border=True):
+                st.markdown(f"**{item['product']}**")
+                st.caption(f"{item['color']} / {item['size']} · Current: {item['qty']}")
+                st.number_input(
+                    f"Add qty — {item['product']} {item['color']} {item['size']}",
+                    min_value=0, step=1, value=0,
+                    key=f"restock_qty_{item['row']}",
+                    label_visibility="collapsed",
+                )
 
         add_qty_by_idx = {}
         for idx, (_, item) in enumerate(items):

@@ -2542,6 +2542,15 @@ h3 {
     text-transform: uppercase !important;
     color: #6b6f7b !important;
 }
+
+/* ── Number inputs: hide the +/- stepper buttons ── */
+button[data-testid="stNumberInputStepUp"],
+button[data-testid="stNumberInputStepDown"] {
+    display: none !important;
+}
+[data-testid="stNumberInputContainer"] {
+    border-radius: 0.5rem !important;
+}
 </style>
 """, unsafe_allow_html=True)
 

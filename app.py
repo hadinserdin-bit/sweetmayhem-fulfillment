@@ -1533,6 +1533,8 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
             "Reorder Qty": reorder_qty,
             "Status": status,
             "Confidence": ("Adjusted" if adjusted else "Raw (building history)") + (" · sells past zero" if sells_past_zero else ""),
+            "_days_tracked": days_tracked,
+            "_days_in_stock": days_in_stock,
         })
     return pd.DataFrame(rows)
 
@@ -3125,6 +3127,33 @@ elif page == "📊 Demand & Reorder":
             f"{end_date.strftime('%b %d, %Y')}  |  Lead time: {lead_time} days  |  "
             f"Target coverage: {coverage_days} days"
         )
+
+        if not fdf.empty:
+            bd1, bd2 = st.columns([3, 1])
+            bd_labels = [f"{r['Product']} — {r['Color']} / {r['Size']}" for _, r in fdf.iterrows()]
+            bd_choice = bd1.selectbox("Inspect a variant's calculation", bd_labels, key="velocity_breakdown_select")
+            bd_row = fdf.iloc[bd_labels.index(bd_choice)]
+
+            is_default_range = (
+                start_date == max(tracking_start_date, today - timedelta(days=90))
+                and end_date == today
+            )
+            with bd2:
+                st.markdown("")
+                with st.popover(f"Sales velocity: {bd_row['Daily Demand']:.2f}", use_container_width=True):
+                    st.markdown(f"**Lookback period**  `{'Default' if is_default_range else 'Custom'}`")
+                    st.caption(f"{start_date.strftime('%b %d, %Y')} – {end_date.strftime('%b %d, %Y')}")
+                    st.markdown("**Qty sold in period**")
+                    st.caption(f"{int(bd_row['Units Sold'])}")
+                    st.markdown("**In-stock days**")
+                    st.caption(f"{int(bd_row['_days_in_stock'])} ({int(bd_row['Days OOS (window)'])} stockout days excluded)")
+                    st.markdown("**Stockout in**")
+                    days_left = bd_row["Days Left"]
+                    if isinstance(days_left, float) and math.isinf(days_left):
+                        stockout_str = "—"
+                    else:
+                        stockout_str = f"{int(days_left)} days ({(today + timedelta(days=int(days_left))).strftime('%d %b %y')})"
+                    st.caption(stockout_str)
 
         reorder_items = fdf[fdf["Reorder Qty"] > 0]
         st.markdown("")

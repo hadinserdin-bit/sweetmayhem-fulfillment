@@ -3030,7 +3030,7 @@ elif page == "📊 Demand & Reorder":
             for _, r in reorder_items.iterrows():
                 prefill.setdefault(r["Product"], {})[(r["Color"], r["Size"])] = int(r["Reorder Qty"])
             st.session_state["prefill_reorder"] = prefill
-            st.session_state.page = "🧾 Shipment Details"
+            st.session_state.page = "📥 Purchase Orders"
             st.rerun()
 
         buf = io.BytesIO()
@@ -3055,12 +3055,14 @@ elif page == "📊 Demand & Reorder":
 elif page == "📥 Purchase Orders":
     st.subheader("Purchase Orders")
     st.caption(
-        "Batches you've created stay invisible to Shopify and Demand & Reorder "
-        "until you act on them below. Mark as Ordered so Demand & Reorder counts "
-        "the quantities as incoming. Add to Shopify's on-hand inventory whenever "
-        "you're confident an order is coming — even before it physically "
-        "arrives, e.g. to start pre-selling. Add to the Studio's own inventory "
-        "separately, once you actually have it on hand. All three are independent."
+        "Create a purchase order here — it shows up in Shipment Tracker and "
+        "Shipment Details too. New orders stay invisible to Shopify and Demand "
+        "& Reorder until you act on them below. Mark as Ordered so Demand & "
+        "Reorder counts the quantities as incoming. Add to Shopify's on-hand "
+        "inventory whenever you're confident an order is coming — even before "
+        "it physically arrives, e.g. to start pre-selling. Add to the Studio's "
+        "own inventory separately, once you actually have it on hand. All "
+        "three are independent."
     )
 
     if "shipment_edit_message" in st.session_state:
@@ -3086,6 +3088,126 @@ elif page == "📥 Purchase Orders":
         s4.markdown(f'<div class="stat"><p class="num">{len(detail_rows)}</p><p class="lbl">Variants Incoming</p></div>', unsafe_allow_html=True)
         st.markdown("")
 
+        existing_batch_nums = [
+            int(m.group(1)) for m in (
+                re.match(r"Batch (\d+)$", str(b).strip(), re.IGNORECASE) for b in tracker_df["Batch #"]
+            ) if m
+        ] if not tracker_df.empty else []
+        next_batch_default = f"Batch {max(existing_batch_nums) + 1}" if existing_batch_nums else "Batch 1"
+        po_product_names = sorted({v["product"] for v in load_inventory().values()})
+
+        # Kept in session_state (not popped) so every rerun — including the one
+        # triggered by clicking "Create Purchase Order" itself — rebuilds the
+        # grids with the same base quantities. A data_editor's returned value
+        # falls back to whatever its `data` argument says for any cell the
+        # user hasn't explicitly touched, so if this disappeared after the
+        # first render, an untouched prefilled cell would silently go back to
+        # 0 the moment the create-order rerun re-evaluated the page.
+        reorder_prefill = st.session_state.get("prefill_reorder")
+        if reorder_prefill and not st.session_state.get("prefill_reorder_applied"):
+            st.session_state["new_ship_items"] = list(reorder_prefill.keys())
+            st.session_state["prefill_reorder_applied"] = True
+
+        with st.expander("Create Purchase Order", icon=":material/add_circle:", expanded=bool(reorder_prefill)):
+            if reorder_prefill:
+                st.info(
+                    "Pre-filled from your Demand & Reorder list — review the quantities "
+                    "below before creating the order.",
+                    icon=":material/auto_awesome:",
+                )
+
+            c1, c2 = st.columns(2)
+            nb_batch = c1.text_input("Batch #", value=next_batch_default, key="new_ship_batch")
+            nb_brand = c2.text_input("Brand", value="Sweet Mayhem", key="new_ship_brand")
+
+            nb_items = st.multiselect("Products in this order", options=po_product_names, key="new_ship_items")
+
+            nb_line_items = []
+            nb_unit_prices = {}
+            inv_for_new = load_inventory()
+            fixed_prices = load_product_prices()
+            for prod in nb_items:
+                prod_variants = [v for v in inv_for_new.values() if v["product"] == prod]
+                colors = sorted({v["color"] for v in prod_variants})
+                sizes = sorted({v["size"] for v in prod_variants}, key=_size_sort_key)
+                st.markdown(f"**{prod}**")
+                prod_prefill = (reorder_prefill or {}).get(prod, {})
+                if colors and sizes:
+                    grid_df = pd.DataFrame(
+                        [[prod_prefill.get((c, s), 0) for s in sizes] for c in colors],
+                        index=colors, columns=sizes,
+                    )
+                else:
+                    grid_df = pd.DataFrame(0, index=colors or ["—"], columns=sizes or ["—"])
+                edited_grid = st.data_editor(
+                    grid_df,
+                    key=f"new_ship_grid_{prod}",
+                    column_config={c: st.column_config.NumberColumn(min_value=0, step=1) for c in grid_df.columns},
+                )
+                unit_price = st.number_input(
+                    f"Unit price — {prod} ($)", min_value=0.0, step=0.01, format="%.2f",
+                    value=fixed_prices.get(prod, 0.0), key=f"new_ship_price_{prod}",
+                    help="Remembered from last time — changing it here updates the fixed price for future shipments too.",
+                )
+                nb_unit_prices[prod] = unit_price
+                for color in edited_grid.index:
+                    for size in edited_grid.columns:
+                        qty = int(edited_grid.loc[color, size] or 0)
+                        if qty > 0 and color != "—" and size != "—":
+                            nb_line_items.append({
+                                "product": prod, "color": color, "size": size,
+                                "qty": qty, "unit_price": unit_price,
+                            })
+
+            if nb_line_items:
+                nb_total_items = sum(e["qty"] for e in nb_line_items)
+                nb_price = sum(e["qty"] * e["unit_price"] for e in nb_line_items)
+                st.caption(f"Total: **{nb_total_items} items · ${nb_price:,.2f}**")
+            else:
+                nb_total_items, nb_price = 0, 0.0
+
+            if st.button("Create Purchase Order", type="primary", use_container_width=True, key="new_ship_create"):
+                if not nb_batch.strip():
+                    st.error("Batch # is required.")
+                elif not tracker_df.empty and nb_batch.strip().lower() in tracker_df["Batch #"].str.lower().tolist():
+                    st.error(f"'{nb_batch.strip()}' already exists — pick a different Batch #.")
+                else:
+                    batch_name = nb_batch.strip()
+                    add_shipment({
+                        "Batch #": batch_name,
+                        "Brand": nb_brand.strip(),
+                        "Date Paid": datetime.now().date(),
+                        "Date Shipped": None,
+                        "Shipment Type": "",
+                        "Shipping Company": "",
+                        "Warehouse Address": "",
+                        "Shipping Mark": "",
+                        "Tracking #": "",
+                        "Date Received": None,
+                        "raw_status": "",
+                        "Total Items": nb_total_items,
+                        "Price": nb_price,
+                        "# of Cartons": 0,
+                        "Notes": "",
+                        "Items Ordered": ", ".join(nb_items),
+                        "Img ref.": "",
+                        "Shopify Inventory Status": "",
+                        "Marked as Ordered": "",
+                    })
+                    if nb_line_items:
+                        save_line_items(batch_name, nb_line_items)
+                    priced = {p: v for p, v in nb_unit_prices.items() if v > 0}
+                    if priced:
+                        set_product_prices(priced)
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("new_ship_"):
+                            del st.session_state[k]
+                    st.session_state.pop("prefill_reorder", None)
+                    st.session_state.pop("prefill_reorder_applied", None)
+                    st.session_state["shipment_edit_message"] = f"{batch_name} created — it now shows up in Shipment Tracker and Shipment Details too."
+                    st.session_state["shipment_detail_select"] = batch_name
+                    st.rerun()
+
         st.markdown("### Receiving")
         if pending_df.empty:
             st.caption("No pending batches to receive.")
@@ -3095,7 +3217,7 @@ elif page == "📥 Purchase Orders":
             po_line_items = [it for it in load_line_items() if it["batch"] == po_batch]
 
             if not po_line_items:
-                st.info(f"{po_batch} has no product breakdown yet — add one from Shipment Details first.")
+                st.info(f"{po_batch} has no product breakdown yet — this only applies to batches created via \"Create Purchase Order\" above.")
             else:
                 po_shopify_done = (po_row["Shopify Inventory Status"] or "").strip() == SHOPIFY_ADDED_MARKER
                 po_received_done = po_row["Status"] == "Received"
@@ -3759,9 +3881,10 @@ elif page == "🚢 Shipment Tracker":
 elif page == "🧾 Shipment Details":
     st.subheader("Shipment Details")
     st.caption(
-        "Add what's in a new shipment here to build an order you can send straight "
-        "to your supplier. Also shows shipments uploaded as an Excel file to the "
-        "Drive folder."
+        "View and edit a batch's product breakdown and order summary — to "
+        "send straight to your supplier. To create a new one, go to Purchase "
+        "Orders. Also shows shipments uploaded as an Excel file to the Drive "
+        "folder."
     )
 
     if "shipment_edit_message" in st.session_state:
@@ -3778,126 +3901,6 @@ elif page == "🧾 Shipment Details":
             files = list_shipment_detail_files()
             all_line_items = load_line_items()
             tracker_df, _ = load_shipments()
-
-        existing_batch_nums = [
-            int(m.group(1)) for m in (
-                re.match(r"Batch (\d+)$", str(b).strip(), re.IGNORECASE) for b in tracker_df["Batch #"]
-            ) if m
-        ] if not tracker_df.empty else []
-        next_batch_default = f"Batch {max(existing_batch_nums) + 1}" if existing_batch_nums else "Batch 1"
-        detail_product_names = sorted({v["product"] for v in load_inventory().values()})
-
-        # Kept in session_state (not popped) so every rerun — including the one
-        # triggered by clicking "Create Batch" itself — rebuilds the grids with
-        # the same base quantities. A data_editor's returned value falls back to
-        # whatever its `data` argument says for any cell the user hasn't
-        # explicitly touched, so if this disappeared after the first render,
-        # an untouched prefilled cell would silently go back to 0 the moment
-        # the create-batch rerun re-evaluated the page.
-        reorder_prefill = st.session_state.get("prefill_reorder")
-        if reorder_prefill and not st.session_state.get("prefill_reorder_applied"):
-            st.session_state["new_ship_items"] = list(reorder_prefill.keys())
-            st.session_state["prefill_reorder_applied"] = True
-
-        with st.expander("Add New Shipment", icon=":material/add_circle:", expanded=bool(reorder_prefill)):
-            if reorder_prefill:
-                st.info(
-                    "Pre-filled from your Demand & Reorder list — review the quantities "
-                    "below before creating the order.",
-                    icon=":material/auto_awesome:",
-                )
-
-            c1, c2 = st.columns(2)
-            nb_batch = c1.text_input("Batch #", value=next_batch_default, key="new_ship_batch")
-            nb_brand = c2.text_input("Brand", value="Sweet Mayhem", key="new_ship_brand")
-
-            nb_items = st.multiselect("Products in this shipment", options=detail_product_names, key="new_ship_items")
-
-            nb_line_items = []
-            nb_unit_prices = {}
-            inv_for_new = load_inventory()
-            fixed_prices = load_product_prices()
-            for prod in nb_items:
-                prod_variants = [v for v in inv_for_new.values() if v["product"] == prod]
-                colors = sorted({v["color"] for v in prod_variants})
-                sizes = sorted({v["size"] for v in prod_variants}, key=_size_sort_key)
-                st.markdown(f"**{prod}**")
-                prod_prefill = (reorder_prefill or {}).get(prod, {})
-                if colors and sizes:
-                    grid_df = pd.DataFrame(
-                        [[prod_prefill.get((c, s), 0) for s in sizes] for c in colors],
-                        index=colors, columns=sizes,
-                    )
-                else:
-                    grid_df = pd.DataFrame(0, index=colors or ["—"], columns=sizes or ["—"])
-                edited_grid = st.data_editor(
-                    grid_df,
-                    key=f"new_ship_grid_{prod}",
-                    column_config={c: st.column_config.NumberColumn(min_value=0, step=1) for c in grid_df.columns},
-                )
-                unit_price = st.number_input(
-                    f"Unit price — {prod} ($)", min_value=0.0, step=0.01, format="%.2f",
-                    value=fixed_prices.get(prod, 0.0), key=f"new_ship_price_{prod}",
-                    help="Remembered from last time — changing it here updates the fixed price for future shipments too.",
-                )
-                nb_unit_prices[prod] = unit_price
-                for color in edited_grid.index:
-                    for size in edited_grid.columns:
-                        qty = int(edited_grid.loc[color, size] or 0)
-                        if qty > 0 and color != "—" and size != "—":
-                            nb_line_items.append({
-                                "product": prod, "color": color, "size": size,
-                                "qty": qty, "unit_price": unit_price,
-                            })
-
-            if nb_line_items:
-                nb_total_items = sum(e["qty"] for e in nb_line_items)
-                nb_price = sum(e["qty"] * e["unit_price"] for e in nb_line_items)
-                st.caption(f"Total: **{nb_total_items} items · ${nb_price:,.2f}**")
-            else:
-                nb_total_items, nb_price = 0, 0.0
-
-            if st.button("Create Batch", type="primary", use_container_width=True, key="new_ship_create"):
-                if not nb_batch.strip():
-                    st.error("Batch # is required.")
-                elif not tracker_df.empty and nb_batch.strip().lower() in tracker_df["Batch #"].str.lower().tolist():
-                    st.error(f"'{nb_batch.strip()}' already exists — pick a different Batch #.")
-                else:
-                    batch_name = nb_batch.strip()
-                    add_shipment({
-                        "Batch #": batch_name,
-                        "Brand": nb_brand.strip(),
-                        "Date Paid": datetime.now().date(),
-                        "Date Shipped": None,
-                        "Shipment Type": "",
-                        "Shipping Company": "",
-                        "Warehouse Address": "",
-                        "Shipping Mark": "",
-                        "Tracking #": "",
-                        "Date Received": None,
-                        "raw_status": "",
-                        "Total Items": nb_total_items,
-                        "Price": nb_price,
-                        "# of Cartons": 0,
-                        "Notes": "",
-                        "Items Ordered": ", ".join(nb_items),
-                        "Img ref.": "",
-                        "Shopify Inventory Status": "",
-                        "Marked as Ordered": "",
-                    })
-                    if nb_line_items:
-                        save_line_items(batch_name, nb_line_items)
-                    priced = {p: v for p, v in nb_unit_prices.items() if v > 0}
-                    if priced:
-                        set_product_prices(priced)
-                    for k in list(st.session_state.keys()):
-                        if k.startswith("new_ship_"):
-                            del st.session_state[k]
-                    st.session_state.pop("prefill_reorder", None)
-                    st.session_state.pop("prefill_reorder_applied", None)
-                    st.session_state["shipment_edit_message"] = f"{batch_name} created."
-                    st.session_state["shipment_detail_select"] = batch_name
-                    st.rerun()
 
         if not tracker_df.empty:
             st.divider()
@@ -3983,7 +3986,7 @@ elif page == "🧾 Shipment Details":
         all_names = sheet_batches + [n for n in drive_names if _batch_num(n) not in sheet_batch_nums]
 
         if not all_names:
-            st.info("No shipment details yet — use \"Add New Shipment\" above, or upload an Excel file to the Drive folder.")
+            st.info("No shipment details yet — create one from Purchase Orders, or upload an Excel file to the Drive folder.")
         else:
             sel_name = st.selectbox("Shipment", all_names, key="shipment_detail_select")
 

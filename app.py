@@ -3121,30 +3121,43 @@ elif page == "📊 Demand & Reorder":
             fdf = fdf[fdf["Product"] == prod_filter]
         fdf = fdf.sort_values("Days Left")
 
-        render_reorder_table(fdf)
+        display_cols = [
+            "Product", "Color", "Size", "Current Qty", "Units Sold", "Days OOS (window)",
+            "Daily Demand", "Days Left", "Incoming Qty", "Reorder Qty", "Status", "Confidence",
+        ]
+        fdf_display = fdf[display_cols].reset_index(drop=True)
+        select_event = st.dataframe(
+            style_status(fdf_display),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Daily Demand": st.column_config.NumberColumn(format="%.2f"),
+                "Days Left": st.column_config.NumberColumn(format="%.1f"),
+            },
+            on_select="rerun", selection_mode="single-row",
+            key="reorder_table_select",
+        )
         st.caption(
             f"{len(fdf)} variant(s) shown  |  Sales data: {start_date.strftime('%b %d, %Y')} – "
             f"{end_date.strftime('%b %d, %Y')}  |  Lead time: {lead_time} days  |  "
-            f"Target coverage: {coverage_days} days"
+            f"Target coverage: {coverage_days} days  |  Check a row's box to see its calculation."
         )
 
-        if not fdf.empty:
-            bd1, bd2 = st.columns([3, 1])
-            bd_labels = [f"{r['Product']} — {r['Color']} / {r['Size']}" for _, r in fdf.iterrows()]
-            bd_choice = bd1.selectbox("Inspect a variant's calculation", bd_labels, key="velocity_breakdown_select")
-            bd_row = fdf.iloc[bd_labels.index(bd_choice)]
-
+        sel_rows = select_event.selection.rows if select_event and select_event.selection else []
+        if sel_rows:
+            bd_row = fdf.reset_index(drop=True).iloc[sel_rows[0]]
             is_default_range = (
                 start_date == max(tracking_start_date, today - timedelta(days=90))
                 and end_date == today
             )
-            with bd2:
-                st.markdown("")
-                with st.popover(f"Sales velocity: {bd_row['Daily Demand']:.2f}", use_container_width=True):
+            with st.container(border=True):
+                st.markdown(f"**{bd_row['Product']} — {bd_row['Color']} / {bd_row['Size']}** · Sales velocity: {bd_row['Daily Demand']:.2f}")
+                cc1, cc2 = st.columns(2)
+                with cc1:
                     st.markdown(f"**Lookback period**  `{'Default' if is_default_range else 'Custom'}`")
                     st.caption(f"{start_date.strftime('%b %d, %Y')} – {end_date.strftime('%b %d, %Y')}")
                     st.markdown("**Qty sold in period**")
                     st.caption(f"{int(bd_row['Units Sold'])}")
+                with cc2:
                     st.markdown("**In-stock days**")
                     st.caption(f"{int(bd_row['_days_in_stock'])} ({int(bd_row['Days OOS (window)'])} stockout days excluded)")
                     st.markdown("**Stockout in**")

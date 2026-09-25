@@ -80,6 +80,19 @@ def _resilient_google_call(fn):
             return fn(*args, **kwargs)
     return wrapper
 
+def _resilient_shopify_call(fn):
+    """Same idea as _resilient_google_call, for Shopify REST calls — retries
+    once on a network hiccup or an unexpected non-JSON response (e.g. a
+    transient block page) instead of quietly coming back empty for the rest
+    of the cache window."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (requests.exceptions.RequestException, ValueError):
+            return fn(*args, **kwargs)
+    return wrapper
+
 @_resilient_google_call
 def get_ws():
     return _spreadsheet().get_worksheet(0)
@@ -903,6 +916,7 @@ def fetch_shopify_variant_map():
     return result
 
 @st.cache_data(ttl=600)
+@_resilient_shopify_call
 def fetch_shopify_product_images():
     """product title (lowercased) -> featured image URL, for small thumbnails
     in Purchase Orders. Missing/never-set images just come back absent."""
@@ -3182,8 +3196,9 @@ elif page == "📊 Demand & Reorder":
 
         try:
             reorder_product_images = fetch_shopify_product_images()
-        except Exception:
+        except Exception as e:
             reorder_product_images = {}
+            st.caption(f"Product photos unavailable right now ({e}).")
         render_reorder_table(fdf, reorder_product_images)
         st.caption(
             f"{len(fdf)} variant(s) shown  |  Sales data: {start_date.strftime('%b %d, %Y')} – "
@@ -3301,8 +3316,9 @@ elif page == "📥 Purchase Orders":
             fixed_prices = load_product_prices()
             try:
                 nb_product_images = fetch_shopify_product_images()
-            except Exception:
+            except Exception as e:
                 nb_product_images = {}
+                st.caption(f"Product photos unavailable right now ({e}).")
             for prod in nb_items:
                 prod_variants = [v for v in inv_for_new.values() if v["product"] == prod]
                 colors = sorted({v["color"] for v in prod_variants})

@@ -1256,9 +1256,10 @@ def style_status(df, column="Status"):
 REORDER_STATUS_PILL = {
     "Reorder Now": "rr-pill-red", "Out of Stock": "rr-pill-red",
     "Reorder Soon": "rr-pill-amber", "OK": "rr-pill-green",
+    "Incoming": "rr-pill-blue",
 }
 
-def render_reorder_table(df, product_images=None):
+def render_reorder_table(df, product_images=None, lead_time=None):
     """Dashboard-style table for Demand & Reorder — same rationale as
     render_shipment_table: pill badges and right-aligned tabular numbers instead
     of a plain st.dataframe grid."""
@@ -1270,14 +1271,19 @@ def render_reorder_table(df, product_images=None):
             return "—"
         return f"{int(v):,}"
 
-    def fmt_days(v):
+    def fmt_stockout(v):
         if v is None or (isinstance(v, float) and math.isnan(v)):
             return "—"
         if isinstance(v, float) and math.isinf(v):
-            return "∞"
-        return f"{v:,.1f}"
+            return '<div class="rr-t-strong">∞</div>'
+        d = int(math.floor(v))
+        target_date = (datetime.now().date() + timedelta(days=d)).strftime("%b %d, %y")
+        return f'<div class="rr-t-strong">{d} day{"s" if d != 1 else ""}</div><div class="rr-t-sub">{target_date}</div>'
 
     product_images = product_images or {}
+    lead_time_html = (
+        f'<span class="rr-pill rr-pill-gray">Lead time: {int(lead_time)}d</span>' if lead_time else ""
+    )
     rows_html = []
     for _, r in df.iterrows():
         pill_cls = REORDER_STATUS_PILL.get(r["Status"], "rr-pill-blue")
@@ -1291,14 +1297,17 @@ def render_reorder_table(df, product_images=None):
         rows_html.append(f"""
         <tr>
           <td>{img_html}</td>
-          <td class="rr-t-strong">{esc(r['Product'])}</td>
-          <td>{esc(r['Color'])}</td>
-          <td>{esc(r['Size'])}</td>
+          <td>
+            <div class="rr-t-strong">{esc(r['Product'])}</div>
+            <div class="rr-t-sub">{esc(r['Color'])} / {esc(r['Size'])}</div>
+            {lead_time_html}
+          </td>
           <td class="rr-t-num">{fmt_int(r['Current Qty'])}</td>
+          <td class="rr-t-num rr-t-strong">{fmt_int(r['Available'])}</td>
           <td class="rr-t-num">{fmt_int(r['Units Sold'])}</td>
           <td class="rr-t-num">{fmt_int(r['Days OOS (window)'])}</td>
           <td class="rr-t-num">{r['Daily Demand']:.2f}</td>
-          <td class="rr-t-num">{fmt_days(r['Days Left'])}</td>
+          <td class="rr-t-num">{fmt_stockout(r['Days Left'])}</td>
           <td class="rr-t-num">{fmt_int(r['Incoming Qty'])}</td>
           <td class="rr-t-num rr-t-strong">{fmt_int(r['Reorder Qty'])}</td>
           <td><span class="rr-pill {pill_cls}">{esc(r['Status'])}</span></td>
@@ -1306,10 +1315,10 @@ def render_reorder_table(df, product_images=None):
         </tr>""")
 
     headers = [
-        "Photo", "Product", "Color", "Size", "Current Qty", "Units Sold", "Days OOS",
-        "Daily Demand", "Days Left", "Incoming Qty", "Reorder Qty", "Status", "Confidence",
+        "Photo", "Product", "Current Qty", "Available", "Units Sold", "Days OOS",
+        "Sales Velocity", "Stockout In", "Incoming Qty", "Reorder Qty", "Status", "Confidence",
     ]
-    num_cols = {"Current Qty", "Units Sold", "Days OOS", "Daily Demand", "Days Left", "Incoming Qty", "Reorder Qty"}
+    num_cols = {"Current Qty", "Available", "Units Sold", "Days OOS", "Sales Velocity", "Stockout In", "Incoming Qty", "Reorder Qty"}
     header_html = "".join(
         f'<th class="{"rr-t-num" if h in num_cols else ""}">{h}</th>' for h in headers
     )
@@ -1543,7 +1552,11 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
         reorder_qty = max(0, math.ceil(daily_demand * coverage_days) - cur_qty - incoming_qty)
 
         if v["qty"] <= 0:
-            status = "Out of Stock"
+            # Zero on hand normally means Out of Stock, but if enough is
+            # already incoming to fully cover the reorder math (Reorder Qty
+            # came out to 0), it's already handled — showing it as an urgent
+            # red Out of Stock would be misleading.
+            status = "Incoming" if (reorder_qty == 0 and incoming_qty > 0) else "Out of Stock"
         elif days_left <= lead_time:
             status = "Reorder Now"
         elif days_left <= lead_time + 7:
@@ -1554,6 +1567,7 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
         rows.append({
             "Product": v["product"], "Color": v["color"], "Size": v["size"],
             "Current Qty": v["qty"],
+            "Available": v["qty"] + incoming_qty,
             "Units Sold": total_sold,
             "Days OOS (window)": days_oos,
             "Daily Demand": round(daily_demand, 2),
@@ -2509,6 +2523,10 @@ hr { border-color: var(--rr-border) !important; }
 .rr-pill-green { background: #eaf7ed; color: #227A55; }
 .rr-pill-red   { background: #fdecea; color: #B03A3A; }
 .rr-pill-blue  { background: #eef2f7; color: #2A5C8A; }
+.rr-pill-gray  {
+    background: #f0f1f3; color: #6b6f7b; font-weight: 600; text-transform: none;
+    font-size: 0.62rem; padding: 2px 8px; letter-spacing: 0.02em;
+}
 
 /* ── Dashboard table (Shipment Tracker) ── */
 .rr-table-wrap {
@@ -2547,6 +2565,7 @@ hr { border-color: var(--rr-border) !important; }
 .rr-table tbody tr:last-child td { border-bottom: none; }
 .rr-table tbody tr:hover td { background: #fafbfc; }
 .rr-t-strong { font-weight: 700; }
+.rr-t-sub { font-size: 0.72rem; color: #8b8f9b; margin: 1px 0 4px; }
 .rr-t-mono { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.78rem; color: #4a4e58; }
 .rr-t-num, th.rr-t-num { text-align: right; font-variant-numeric: tabular-nums; }
 .rr-t-trunc {
@@ -3211,7 +3230,7 @@ elif page == "📊 Demand & Reorder":
                     "Shopify returned no product photos at all (0 products with an "
                     "image) — check that your products have a featured image set."
                 )
-        render_reorder_table(fdf, reorder_product_images)
+        render_reorder_table(fdf, reorder_product_images, lead_time)
         st.caption(
             f"{len(fdf)} variant(s) shown  |  Sales data: {start_date.strftime('%b %d, %Y')} – "
             f"{end_date.strftime('%b %d, %Y')}  |  Lead time: {lead_time} days  |  "

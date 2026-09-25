@@ -4067,21 +4067,6 @@ elif page == "🧾 Shipment Details":
                     products, grand_total = parse_shipment_detail(file_bytes)
 
             if has_tracker_row:
-                pill_cls = SHIPMENT_STATUS_PILL.get(edit_row["Status"], "rr-pill-amber")
-
-                def _dv(v):
-                    if v is None or (isinstance(v, float) and math.isnan(v)) or v == "":
-                        return "—"
-                    return html_lib.escape(str(v))
-
-                def _dd(v):
-                    if v is None or (isinstance(v, float) and math.isnan(v)):
-                        return "—"
-                    try:
-                        return pd.Timestamp(v).strftime("%b %d, %Y")
-                    except Exception:
-                        return html_lib.escape(str(v))
-
                 hc1, hc2 = st.columns([5, 1])
                 with hc1:
                     st.markdown(f"### {html_lib.escape(sel_name)}")
@@ -4093,33 +4078,42 @@ elif page == "🧾 Shipment Details":
                 if not st.session_state.get(editing_key):
                     with st.container(border=True):
                         d1, d2 = st.columns(2)
-                        d1.caption("BRAND"); d1.write(_dv(edit_row["Brand"]))
-                        d2.caption("STATUS")
-                        d2.markdown(f'<span class="rr-pill {pill_cls}">{_dv(edit_row["Status"])}</span>', unsafe_allow_html=True)
+                        d1.text_input("Brand", value=edit_row["Brand"], disabled=True)
+                        d2.selectbox(
+                            "Status", SHIPMENT_STATUS_OPTIONS,
+                            index=SHIPMENT_STATUS_OPTIONS.index(_status_option_default(edit_row["Status"])),
+                            disabled=True,
+                        )
 
                         d3, d4, d5 = st.columns(3)
-                        d3.caption("DATE PAID"); d3.write(_dd(edit_row["Date Paid"]))
-                        d4.caption("DATE SHIPPED"); d4.write(_dd(edit_row["Date Shipped"]))
-                        d5.caption("DATE RECEIVED"); d5.write(_dd(edit_row["Date Received"]))
+                        d3.date_input("Date Paid", value=edit_row["Date Paid"], disabled=True)
+                        d4.date_input("Date Shipped", value=edit_row["Date Shipped"], disabled=True)
+                        d5.date_input("Date Received", value=edit_row["Date Received"], disabled=True)
 
                         d6, d7, d8 = st.columns(3)
-                        d6.caption("SHIPMENT TYPE"); d6.write(_dv(edit_row["Shipment Type"]))
-                        d7.caption("SHIPPING COMPANY"); d7.write(_dv(edit_row["Shipping Company"]))
-                        d8.caption("TRACKING #"); d8.write(_dv(edit_row["Tracking #"]))
+                        d6.text_input("Shipment Type", value=edit_row["Shipment Type"], disabled=True)
+                        d7.text_input("Shipping Company", value=edit_row["Shipping Company"], disabled=True)
+                        d8.text_input("Tracking #", value=edit_row["Tracking #"], disabled=True)
 
                         d9, d10 = st.columns(2)
-                        d9.caption("PRICE")
-                        d9.write(f"${edit_row['Price']:,.2f}" if pd.notna(edit_row["Price"]) else "—")
-                        d10.caption("# OF CARTONS")
-                        d10.write(_dv(int(edit_row["# of Cartons"])) if pd.notna(edit_row["# of Cartons"]) else "—")
+                        d9.number_input(
+                            "Price ($)", step=0.01, format="%.2f",
+                            value=float(edit_row["Price"]) if pd.notna(edit_row["Price"]) else 0.0,
+                            disabled=True,
+                        )
+                        d10.number_input(
+                            "# of Cartons", step=1,
+                            value=int(edit_row["# of Cartons"]) if pd.notna(edit_row["# of Cartons"]) else 0,
+                            disabled=True,
+                        )
 
                         d11, d12 = st.columns(2)
-                        d11.caption("SHIPPING MARK"); d11.write(_dv(edit_row["Shipping Mark"]))
-                        d12.caption("IMG REF."); d12.write(_dv(edit_row["Img ref."]))
+                        d11.text_input("Shipping Mark", value=edit_row["Shipping Mark"], disabled=True)
+                        d12.text_input("Img ref.", value=edit_row["Img ref."], disabled=True)
 
-                        st.caption("WAREHOUSE ADDRESS"); st.write(_dv(edit_row["Warehouse Address"]))
-                        st.caption("ITEMS ORDERED"); st.write(_dv(edit_row["Items Ordered"]))
-                        st.caption("NOTES"); st.write(_dv(edit_row["Notes"]))
+                        st.text_area("Warehouse Address", value=edit_row["Warehouse Address"], height=90, disabled=True)
+                        st.text_input("Items Ordered", value=edit_row["Items Ordered"], disabled=True)
+                        st.text_area("Notes", value=edit_row["Notes"], height=90, disabled=True)
                 else:
                     with st.container(border=True, key="shipment_edit_panel"):
                         st.caption("Items Ordered isn't editable here — it's set from the batch's product breakdown.")

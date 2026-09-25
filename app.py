@@ -902,6 +902,67 @@ def fetch_shopify_variant_map():
         url, params = next_url, None
     return result
 
+def fetch_shopify_available_by_key():
+    """(product, color, size) [lowercased] -> current Shopify 'Available'
+    quantity at the primary location. Available (not on_hand) is what
+    actually blocks a sale, so this is what determines whether a variant
+    counts as out-of-stock for a given day's snapshot — matches the same
+    (product, color, size) key format load_inventory() uses."""
+    location_id = get_primary_location_id()
+    result = {}
+    cursor = None
+    query = """
+    query($cursor: String, $locationId: ID!) {
+      products(first: 100, after: $cursor) {
+        edges {
+          node {
+            title
+            variants(first: 100) {
+              edges {
+                node {
+                  title
+                  inventoryItem {
+                    inventoryLevel(locationId: $locationId) {
+                      quantities(names: ["available"]) { quantity }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    while True:
+        resp = requests.post(
+            f"{_SHOPIFY_BASE}/graphql.json", headers=_SHOPIFY_HEADERS,
+            json={"query": query, "variables": {"cursor": cursor, "locationId": _gid("Location", location_id)}},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("errors"):
+            raise Exception("; ".join(e["message"] for e in data["errors"]))
+        products_page = data["data"]["products"]
+        for edge in products_page["edges"]:
+            p = edge["node"]
+            for ve in p["variants"]["edges"]:
+                v = ve["node"]
+                parts = (v.get("title") or "").split(" / ", 1)
+                if len(parts) != 2:
+                    continue
+                color, size = parts[0].strip(), parts[1].strip()
+                level = v["inventoryItem"].get("inventoryLevel")
+                qty = level["quantities"][0]["quantity"] if level else 0
+                key = (p["title"].lower(), color.lower(), size.lower())
+                result[key] = qty
+        if products_page["pageInfo"]["hasNextPage"]:
+            cursor = products_page["pageInfo"]["endCursor"]
+        else:
+            break
+    return result
+
 def find_shopify_inventory_item(variant_map, product, color, size):
     """Same exact-color/size + fuzzy-product-name matching as find_key(), applied to
     Shopify's variant list instead of the Google Sheet inventory."""
@@ -1310,14 +1371,39 @@ def get_snapshot_ws():
         ws.append_row(["Date", "Product", "Color", "Size", "Qty"])
         return ws
 
+def _match_shopify_available(available_by_key, product, color, size):
+    """Same exact + fuzzy matching as find_shopify_inventory_item(), against
+    a (product, color, size) -> available-qty dict instead of -> item id."""
+    exact = (product.lower(), color.lower(), size.lower())
+    if exact in available_by_key:
+        return available_by_key[exact]
+    best, ratio, best_val = None, 0.75, None
+    for key, qty in available_by_key.items():
+        p, c, s = key
+        if c != color.lower() or s != size.lower():
+            continue
+        r = SequenceMatcher(None, product.lower(), p).ratio()
+        if r > ratio:
+            ratio, best_val = r, qty
+    return best_val
+
 def record_snapshot_if_needed(inv):
-    """Log today's stock level per variant, once per day."""
+    """Log today's Shopify Available quantity per variant, once per day —
+    Available (not the Studio Inventory count) is what actually blocks a
+    sale, so it's the correct signal for whether a variant was genuinely
+    out of stock that day, feeding Demand & Reorder's OOS-adjusted demand."""
     today = datetime.now().strftime("%Y-%m-%d")
     ws = get_snapshot_ws()
     existing_dates = set(ws.col_values(1))
     if today in existing_dates:
         return False
-    rows = [[today, v["product"], v["color"], v["size"], v["qty"]] for v in inv.values()]
+    available_by_key = fetch_shopify_available_by_key()
+    rows = []
+    for v in inv.values():
+        qty = _match_shopify_available(available_by_key, v["product"], v["color"], v["size"])
+        if qty is None:
+            qty = v["qty"]  # not found in Shopify — fall back to the Studio count
+        rows.append([today, v["product"], v["color"], v["size"], qty])
     if rows:
         ws.append_rows(rows)
     return True
@@ -2931,10 +3017,10 @@ elif page == "📋 View Inventory":
 elif page == "📊 Demand & Reorder":
     st.subheader("Demand & Reorder Suggestions")
     st.caption(
-        "Sales velocity is adjusted for the days each item was actually out of stock, "
-        "so a stock-out doesn't make demand look lower than it really is. Stock levels "
-        "are logged automatically each time you open this page — accuracy improves the "
-        "more often it's checked."
+        "Sales velocity is adjusted for the days each item was actually out of stock "
+        "on Shopify (Available quantity at or below zero), so a stock-out doesn't make "
+        "demand look lower than it really is. Logged automatically once a day — "
+        "accuracy improves the more often this page is checked."
     )
 
     today = datetime.now().date()

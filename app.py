@@ -1254,7 +1254,7 @@ def style_status(df, column="Status"):
     return df.style.map(_color, subset=[column])
 
 REORDER_STATUS_PILL = {
-    "Reorder Now": "rr-pill-red", "Out of Stock": "rr-pill-red",
+    "Reorder Now": "rr-pill-red",
     "Reorder Soon": "rr-pill-amber", "OK": "rr-pill-green",
     "Incoming": "rr-pill-blue",
 }
@@ -1577,11 +1577,12 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
         reorder_in = days_left - lead_time
 
         if v["qty"] <= 0:
-            # Zero on hand normally means Out of Stock, but if enough is
-            # already incoming to fully cover the reorder math (Reorder Qty
-            # came out to 0), it's already handled — showing it as an urgent
-            # red Out of Stock would be misleading.
-            status = "Incoming" if (reorder_qty == 0 and incoming_qty > 0) else "Out of Stock"
+            # Zero on hand is just the most urgent case of "reorder now", not
+            # a separate status — showing both "Out of Stock" and "Reorder
+            # Now" as different red labels in the same column was confusing.
+            # If enough is already incoming to cover it (Reorder Qty came out
+            # to 0), it's already handled, so don't flag it as urgent at all.
+            status = "Incoming" if (reorder_qty == 0 and incoming_qty > 0) else "Reorder Now"
         elif days_left <= lead_time:
             status = "Reorder Now"
         elif days_left <= lead_time + 7:
@@ -3226,7 +3227,7 @@ elif page == "📊 Demand & Reorder":
         s1, s2, s3, s4 = st.columns(4)
         s1.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="Reorder Now").sum()}</p><p class="lbl">Reorder Now</p></div>', unsafe_allow_html=True)
         s2.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="Reorder Soon").sum()}</p><p class="lbl">Reorder Soon</p></div>', unsafe_allow_html=True)
-        s3.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="Out of Stock").sum()}</p><p class="lbl">Out of Stock</p></div>', unsafe_allow_html=True)
+        s3.markdown(f'<div class="stat"><p class="num">{(df["Current Qty"]<=0).sum()}</p><p class="lbl">Out of Stock</p></div>', unsafe_allow_html=True)
         s4.markdown(f'<div class="stat"><p class="num">{int(df["Reorder Qty"].sum())}</p><p class="lbl">Units to Reorder</p></div>', unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 

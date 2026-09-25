@@ -3977,8 +3977,13 @@ elif page == "🧾 Shipment Details":
 
         sheet_batches = sorted({it["batch"] for it in all_line_items}, key=_batch_num, reverse=True)
         drive_names = [f["name"] for f in files]
-        # Sheet-entered batches take priority over a same-named Drive file.
-        all_names = sheet_batches + [n for n in drive_names if n not in sheet_batches]
+        # Sheet-entered batches take priority over a Drive file for the same batch
+        # number — matched by number, not exact name, since a Drive file's name
+        # (e.g. "Batch_19_Sep17_2026_SM.xlsx") never matches the sheet's "Batch 19"
+        # as a string even when they represent the same shipment (e.g. after
+        # importing an old Excel file's breakdown into the sheet).
+        sheet_batch_nums = {_batch_num(b) for b in sheet_batches}
+        all_names = sheet_batches + [n for n in drive_names if _batch_num(n) not in sheet_batch_nums]
 
         if not all_names:
             st.info("No shipment details yet — use \"Add New Shipment\" above, or upload an Excel file to the Drive folder.")

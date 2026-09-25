@@ -1511,13 +1511,13 @@ def _status_option_to_raw(option):
 @_resilient_google_call
 def load_shipments():
     ws = get_shipment_tracker_ws()
-    values = ws.get("A2:R500", value_render_option="UNFORMATTED_VALUE")
+    values = ws.get("A2:S500", value_render_option="UNFORMATTED_VALUE")
     if not values:
         return pd.DataFrame(), []
     rows, date_issues = [], []
     date_cols = [("Date Paid", 2), ("Date Shipped", 3), ("Date Received", 9)]
     for sheet_row, row in enumerate(values[1:], start=3):
-        row = row + [None] * (18 - len(row))
+        row = row + [None] * (19 - len(row))
         batch = row[0]
         if not batch:
             continue
@@ -1549,14 +1549,15 @@ def load_shipments():
             "Items Ordered": row[15] or "",
             "Img ref.": row[16] or "",
             "Shopify Inventory Status": row[17] or "",
+            "Marked as Ordered": row[18] or "",
             "row": sheet_row,
             "raw_status": status,
         })
     return pd.DataFrame(rows), date_issues
 
 def _shipment_row_values(fields):
-    """fields: dict of the editable columns (Batch # through Shopify Inventory
-    Status, matching load_shipments' keys) -> value, in sheet column order."""
+    """fields: dict of the editable columns (Batch # through Marked as
+    Ordered, matching load_shipments' keys) -> value, in sheet column order."""
     def d(v):
         return v.strftime("%Y-%m-%d") if v else ""
     return [
@@ -1565,13 +1566,14 @@ def _shipment_row_values(fields):
         fields["Shipping Mark"], fields["Tracking #"], d(fields["Date Received"]),
         fields["raw_status"], fields["Total Items"], fields["Price"], fields["# of Cartons"],
         fields["Notes"], fields["Items Ordered"], fields["Img ref."], fields["Shopify Inventory Status"],
+        fields["Marked as Ordered"],
     ]
 
 def update_shipment(row_num, fields):
     """Writes the whole row back in one call so a stale read never overwrites
     an unrelated cell."""
     ws = get_shipment_tracker_ws()
-    ws.update(f"A{row_num}:R{row_num}", [_shipment_row_values(fields)])
+    ws.update(f"A{row_num}:S{row_num}", [_shipment_row_values(fields)])
     load_shipments.clear()
 
 def add_shipment(fields):
@@ -1595,9 +1597,17 @@ def _row_to_fields(row):
         "# of Cartons": int(row["# of Cartons"]) if pd.notna(row["# of Cartons"]) else 0,
         "Notes": row["Notes"], "Items Ordered": row["Items Ordered"],
         "Img ref.": row["Img ref."], "Shopify Inventory Status": row["Shopify Inventory Status"],
+        "Marked as Ordered": row["Marked as Ordered"],
     }
 
 SHOPIFY_ADDED_MARKER = "Added to Shopify"
+MARKED_ORDERED_MARKER = "Marked as Ordered"
+
+def mark_batch_as_ordered(row):
+    """Flags a batch as ordered — independent of Shopify — so Demand & Reorder
+    and Purchase Orders count its quantities as incoming. Doesn't touch
+    Shopify or the Studio inventory at all."""
+    update_shipment(int(row["row"]), {**_row_to_fields(row), "Marked as Ordered": MARKED_ORDERED_MARKER})
 
 def receive_batch_to_shopify(line_items):
     """Adds a batch's line-item quantities to Shopify's on-hand inventory —
@@ -1770,13 +1780,13 @@ def load_packaging_tables():
     return pd.DataFrame(used), pd.DataFrame(orders)
 
 def compute_incoming():
-    """Sums quantities for batches that have been added to Shopify (Shopify
-    Inventory Status == SHOPIFY_ADDED_MARKER) and aren't yet Received or
-    Cancelled, per (product, color, size) — for Purchase Orders and for
-    Demand & Reorder to subtract before suggesting how much more to order. A
-    batch created but not yet added to Shopify counts toward neither —
-    nothing about Shopify or these numbers changes until that button is
-    pressed.
+    """Sums quantities for batches that have been explicitly Marked as
+    Ordered (independent of whether they've also been added to Shopify) and
+    aren't yet Received or Cancelled, per (product, color, size) — for
+    Purchase Orders and for Demand & Reorder to subtract before suggesting
+    how much more to order. A batch created but not yet marked counts toward
+    neither — nothing about Demand & Reorder's numbers changes until that
+    button is pressed.
 
     Returns (qty_by_key, detail_rows, open_batches):
       qty_by_key   — keyed like load_inventory() (lowercased tuples) -> qty
@@ -1787,7 +1797,7 @@ def compute_incoming():
     open_batches = (
         set(tracker_df[
             ~tracker_df["Status"].isin(["Received", "Cancelled"])
-            & (tracker_df["Shopify Inventory Status"].fillna("").str.strip() == SHOPIFY_ADDED_MARKER)
+            & (tracker_df["Marked as Ordered"].fillna("").str.strip() == MARKED_ORDERED_MARKER)
         ]["Batch #"])
         if not tracker_df.empty else set()
     )
@@ -3048,10 +3058,11 @@ elif page == "📥 Purchase Orders":
     st.subheader("Purchase Orders")
     st.caption(
         "Batches you've created stay invisible to Shopify and Demand & Reorder "
-        "until you add them below. Add to Shopify's on-hand inventory whenever "
+        "until you act on them below. Mark as Ordered so Demand & Reorder counts "
+        "the quantities as incoming. Add to Shopify's on-hand inventory whenever "
         "you're confident an order is coming — even before it physically "
         "arrives, e.g. to start pre-selling. Add to the Studio's own inventory "
-        "separately, once you actually have it on hand."
+        "separately, once you actually have it on hand. All three are independent."
     )
 
     if "shipment_edit_message" in st.session_state:
@@ -3072,7 +3083,7 @@ elif page == "📥 Purchase Orders":
 
         s1, s2, s3, s4 = st.columns(4)
         s1.markdown(f'<div class="stat"><p class="num">{len(pending_df)}</p><p class="lbl">Pending Batches</p></div>', unsafe_allow_html=True)
-        s2.markdown(f'<div class="stat"><p class="num">{len(marked_batches)}</p><p class="lbl">Added to Shopify</p></div>', unsafe_allow_html=True)
+        s2.markdown(f'<div class="stat"><p class="num">{len(marked_batches)}</p><p class="lbl">Marked as Ordered</p></div>', unsafe_allow_html=True)
         s3.markdown(f'<div class="stat"><p class="num">{total_incoming_units:,}</p><p class="lbl">Total Incoming Units</p></div>', unsafe_allow_html=True)
         s4.markdown(f'<div class="stat"><p class="num">{len(detail_rows)}</p><p class="lbl">Variants Incoming</p></div>', unsafe_allow_html=True)
         st.markdown("")
@@ -3090,7 +3101,24 @@ elif page == "📥 Purchase Orders":
             else:
                 po_shopify_done = (po_row["Shopify Inventory Status"] or "").strip() == SHOPIFY_ADDED_MARKER
                 po_received_done = po_row["Status"] == "Received"
+                po_marked_done = (po_row["Marked as Ordered"] or "").strip() == MARKED_ORDERED_MARKER
 
+                if po_marked_done:
+                    st.success(f"{po_batch} is marked as ordered — its quantities count as incoming on Demand & Reorder.", icon=":material/check_circle:")
+                else:
+                    st.caption(f"{po_batch}: mark it as ordered so Demand & Reorder counts these quantities as incoming, without touching Shopify.")
+                if st.button(
+                    "Mark as Ordered" if not po_marked_done else "Already marked as ordered",
+                    icon=":material/playlist_add_check:", use_container_width=True,
+                    type="primary" if not po_marked_done else "secondary",
+                    disabled=po_marked_done,
+                    key=f"po_mark_ordered_{po_row['row']}",
+                ):
+                    mark_batch_as_ordered(po_row)
+                    st.session_state["shipment_edit_message"] = f"{po_batch} marked as ordered — now counted as incoming on Demand & Reorder."
+                    st.rerun()
+
+                st.markdown("")
                 rc1, rc2 = st.columns(2)
                 with rc1:
                     if po_shopify_done:
@@ -3146,9 +3174,9 @@ elif page == "📥 Purchase Orders":
 
         st.markdown("")
         st.markdown("### Incoming by Product")
-        st.caption("Only includes batches that have been added to Shopify.")
+        st.caption("Only includes batches that have been marked as ordered.")
         if not detail_rows:
-            st.info("Nothing counted as incoming yet — add a batch to Shopify above.")
+            st.info("Nothing counted as incoming yet — mark a batch as ordered above.")
         else:
             incoming_df = pd.DataFrame(detail_rows).sort_values(["Product", "Color", "Size"])
             render_incoming_table(incoming_df)
@@ -3784,6 +3812,7 @@ elif page == "🚢 Shipment Tracker":
                             "Items Ordered": ", ".join(f_items_ordered),
                             "Img ref.": f_img_ref.strip(),
                             "Shopify Inventory Status": f_shopify_status.strip(),
+                            "Marked as Ordered": row["Marked as Ordered"],
                         })
                         st.session_state["shipment_edit_message"] = f"Batch {row['Batch #']} updated."
                         st.rerun()
@@ -3932,6 +3961,7 @@ elif page == "🧾 Shipment Details":
                         "Items Ordered": ", ".join(nb_items),
                         "Img ref.": "",
                         "Shopify Inventory Status": "",
+                        "Marked as Ordered": "",
                     })
                     if nb_line_items:
                         save_line_items(batch_name, nb_line_items)

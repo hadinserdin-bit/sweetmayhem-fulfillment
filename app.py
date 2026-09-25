@@ -120,6 +120,12 @@ PAGE_ICONS = {
 def page_label(p):
     return p.split(" ", 1)[1] if " " in p else p
 
+# Lets the current page survive a real browser refresh (which starts a brand
+# new Streamlit session, wiping session_state) by round-tripping it through a
+# URL query param instead.
+PAGE_SLUGS = {p: re.sub(r"[^a-z0-9]+", "-", page_label(p).lower()).strip("-") for p in ALL_PAGES + [ADMIN_PAGE]}
+SLUG_TO_PAGE = {v: k for k, v in PAGE_SLUGS.items()}
+
 @_resilient_google_call
 def get_users_ws():
     sh = _spreadsheet()
@@ -2371,8 +2377,12 @@ with st.sidebar:
     _page_order = {p: i for i, p in enumerate(ALL_PAGES + [ADMIN_PAGE])}
     my_pages = sorted(my_pages, key=lambda p: _page_order.get(p, len(_page_order)))
 
-    if st.session_state.get("page") not in my_pages:
+    if "page" not in st.session_state:
+        qp_page = SLUG_TO_PAGE.get(st.query_params.get("page"))
+        st.session_state.page = qp_page if qp_page in my_pages else my_pages[0]
+    elif st.session_state.page not in my_pages:
         st.session_state.page = my_pages[0]
+    st.query_params["page"] = PAGE_SLUGS[st.session_state.page]
 
     NAV_SECTIONS = {
         "📦 Fulfillment": "INVENTORY", "🔄 Restock": "INVENTORY",
@@ -3696,7 +3706,7 @@ elif page == "🧾 Shipment Details":
             st.session_state["new_ship_items"] = list(reorder_prefill.keys())
             st.session_state["prefill_reorder_applied"] = True
 
-        with st.expander("Add New Shipment", icon=":material/add_circle:", expanded=True):
+        with st.expander("Add New Shipment", icon=":material/add_circle:", expanded=bool(reorder_prefill)):
             if reorder_prefill:
                 st.info(
                     "Pre-filled from your Demand & Reorder list — review the quantities "

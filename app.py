@@ -903,6 +903,27 @@ def fetch_shopify_variant_map():
     return result
 
 @st.cache_data(ttl=600)
+def fetch_shopify_product_images():
+    """product title (lowercased) -> featured image URL, for small thumbnails
+    in Purchase Orders. Missing/never-set images just come back absent."""
+    result = {}
+    url = f"{_SHOPIFY_BASE}/products.json"
+    params = {"limit": 250, "fields": "title,image"}
+    while url:
+        resp = requests.get(url, headers=_SHOPIFY_HEADERS, params=params)
+        resp.raise_for_status()
+        for p in resp.json().get("products", []):
+            img = p.get("image")
+            if img and img.get("src"):
+                result[p["title"].lower()] = img["src"]
+        next_url = None
+        for part in resp.headers.get("Link", "").split(","):
+            if 'rel="next"' in part and "<" in part:
+                next_url = part[part.find("<") + 1:part.find(">")]
+        url, params = next_url, None
+    return result
+
+@st.cache_data(ttl=600)
 def fetch_shopify_available_by_key():
     """(product, color, size) [lowercased] -> {"available": qty, "continue_oos": bool}.
     Available (not on_hand) is what actually blocks a sale, so it's what
@@ -1264,15 +1285,22 @@ def render_reorder_table(df):
     </div>
     """, unsafe_allow_html=True)
 
-def render_incoming_table(df):
+def render_incoming_table(df, product_images=None):
     """Dashboard-style table for Purchase Orders' variant-level breakdown."""
     def esc(v):
         return html_lib.escape(str(v)) if v not in (None, "") else "—"
 
+    product_images = product_images or {}
     rows_html = []
     for _, r in df.iterrows():
+        img_src = product_images.get(str(r["Product"]).lower())
+        img_html = (
+            f'<img src="{html_lib.escape(img_src)}" class="rr-t-thumb">' if img_src
+            else '<div class="rr-t-thumb rr-t-thumb-empty"></div>'
+        )
         rows_html.append(f"""
         <tr>
+          <td>{img_html}</td>
           <td class="rr-t-strong">{esc(r['Product'])}</td>
           <td>{esc(r['Color'])}</td>
           <td>{esc(r['Size'])}</td>
@@ -1280,7 +1308,7 @@ def render_incoming_table(df):
           <td class="rr-t-trunc">{esc(r['Batches'])}</td>
         </tr>""")
 
-    inc_headers = ["Product", "Color", "Size", "Incoming Qty", "Batches"]
+    inc_headers = ["", "Product", "Color", "Size", "Incoming Qty", "Batches"]
     inc_header_html = "".join(
         f'<th class="{"rr-t-num" if h == "Incoming Qty" else ""}">{h}</th>' for h in inc_headers
     )
@@ -2524,6 +2552,11 @@ hr { border-color: var(--rr-border) !important; }
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     max-width: 220px; display: table-cell;
 }
+.rr-t-thumb {
+    width: 32px; height: 32px; border-radius: 6px; object-fit: cover;
+    display: block; background: #f0f1f3;
+}
+.rr-t-thumb-empty { border: 1px dashed var(--rr-border); }
 
 /* ── Avatar circle (assigned employee initial) ── */
 .rr-avatar {
@@ -3277,11 +3310,19 @@ elif page == "📥 Purchase Orders":
             nb_unit_prices = {}
             inv_for_new = load_inventory()
             fixed_prices = load_product_prices()
+            try:
+                nb_product_images = fetch_shopify_product_images()
+            except Exception:
+                nb_product_images = {}
             for prod in nb_items:
                 prod_variants = [v for v in inv_for_new.values() if v["product"] == prod]
                 colors = sorted({v["color"] for v in prod_variants})
                 sizes = sorted({v["size"] for v in prod_variants}, key=_size_sort_key)
-                st.markdown(f"**{prod}**")
+                prod_img = nb_product_images.get(prod.lower())
+                hdr_img_col, hdr_name_col = st.columns([1, 9])
+                if prod_img:
+                    hdr_img_col.image(prod_img, width=40)
+                hdr_name_col.markdown(f"**{prod}**")
                 prod_prefill = (reorder_prefill or {}).get(prod, {})
                 if colors and sizes:
                     hdr_cols = st.columns([2] + [1] * len(sizes))
@@ -3458,7 +3499,11 @@ elif page == "📥 Purchase Orders":
             st.info("Nothing counted as incoming yet — mark a batch as ordered above.")
         else:
             incoming_df = pd.DataFrame(detail_rows).sort_values(["Product", "Color", "Size"])
-            render_incoming_table(incoming_df)
+            try:
+                product_images = fetch_shopify_product_images()
+            except Exception:
+                product_images = {}
+            render_incoming_table(incoming_df, product_images)
 
     except Exception as e:
         st.error(f"Could not load purchase orders: {e}")

@@ -923,6 +923,21 @@ def fetch_shopify_product_images():
         url, params = next_url, None
     return result
 
+def _match_product_image(product_images, product):
+    """Same exact-then-fuzzy lookup as find_shopify_inventory_item — the
+    inventory sheet's product names don't always match Shopify's titles
+    word-for-word (e.g. a sheet's "Seamless Deep V Push-Up Bra" vs. Shopify's
+    "Seamless Deep V Push-Up Wireless Bra")."""
+    key = product.lower()
+    if key in product_images:
+        return product_images[key]
+    best, ratio = None, 0.75
+    for p, url in product_images.items():
+        r = SequenceMatcher(None, key, p).ratio()
+        if r > ratio:
+            ratio, best = r, url
+    return best
+
 @st.cache_data(ttl=600)
 def fetch_shopify_available_by_key():
     """(product, color, size) [lowercased] -> {"available": qty, "continue_oos": bool}.
@@ -1252,7 +1267,7 @@ def render_reorder_table(df, product_images=None):
     rows_html = []
     for _, r in df.iterrows():
         pill_cls = REORDER_STATUS_PILL.get(r["Status"], "rr-pill-blue")
-        img_src = product_images.get(str(r["Product"]).lower())
+        img_src = _match_product_image(product_images, str(r["Product"]))
         img_html = (
             f'<img src="{html_lib.escape(img_src)}" class="rr-t-thumb">' if img_src
             else '<div class="rr-t-thumb rr-t-thumb-empty"></div>'
@@ -3292,7 +3307,7 @@ elif page == "📥 Purchase Orders":
                 prod_variants = [v for v in inv_for_new.values() if v["product"] == prod]
                 colors = sorted({v["color"] for v in prod_variants})
                 sizes = sorted({v["size"] for v in prod_variants}, key=_size_sort_key)
-                prod_img = nb_product_images.get(prod.lower())
+                prod_img = _match_product_image(nb_product_images, prod)
                 hdr_img_col, hdr_name_col = st.columns([1, 9])
                 if prod_img:
                     hdr_img_col.image(prod_img, width=40)

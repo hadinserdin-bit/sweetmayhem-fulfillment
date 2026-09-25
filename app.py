@@ -4150,29 +4150,8 @@ elif page == "🧾 Shipment Details":
                 else:
                     with st.container(border=True, key="shipment_edit_panel"):
                         st.caption("Items Ordered isn't editable here — it's set from the batch's product breakdown.")
-
-                        # Outside the form so picking a type/company updates the fixed
-                        # address preview immediately, instead of only after Save.
                         type_options = _options_with_current(SHIPMENT_TYPE_OPTIONS, edit_row["Shipment Type"])
                         co_options = _options_with_current(SHIPPING_COMPANY_OPTIONS, edit_row["Shipping Company"])
-
-                        ac1, ac2 = st.columns(2)
-                        sel_ship_type = ac1.selectbox(
-                            "Shipment Type", type_options,
-                            index=type_options.index((edit_row["Shipment Type"] or "").strip() or SHIPMENT_TYPE_OPTIONS[0]),
-                            key=f"ship_type_select_{edit_row['row']}",
-                        )
-                        sel_ship_co = ac2.selectbox(
-                            "Shipping Company", co_options,
-                            index=co_options.index((edit_row["Shipping Company"] or "").strip() or SHIPPING_COMPANY_OPTIONS[0]),
-                            key=f"ship_co_select_{edit_row['row']}",
-                        )
-                        sel_warehouse = WAREHOUSE_ADDRESS_BY_COMBO.get((sel_ship_type, sel_ship_co), "")
-                        st.text_area(
-                            "Warehouse Address",
-                            value=sel_warehouse or "No fixed address on file for this Shipment Type + Shipping Company yet.",
-                            height=90, disabled=True,
-                        )
 
                         with st.form(f"edit_shipment_form_{edit_row['row']}"):
                             c1, c2 = st.columns(2)
@@ -4187,7 +4166,16 @@ elif page == "🧾 Shipment Details":
                             f_date_shipped = c4.date_input("Date Shipped", value=edit_row["Date Shipped"])
                             f_date_received = c5.date_input("Date Received", value=edit_row["Date Received"])
 
-                            f_tracking = st.text_input("Tracking #", value=edit_row["Tracking #"])
+                            c6, c7, c8 = st.columns(3)
+                            sel_ship_type = c6.selectbox(
+                                "Shipment Type", type_options,
+                                index=type_options.index((edit_row["Shipment Type"] or "").strip() or SHIPMENT_TYPE_OPTIONS[0]),
+                            )
+                            sel_ship_co = c7.selectbox(
+                                "Shipping Company", co_options,
+                                index=co_options.index((edit_row["Shipping Company"] or "").strip() or SHIPPING_COMPANY_OPTIONS[0]),
+                            )
+                            f_tracking = c8.text_input("Tracking #", value=edit_row["Tracking #"])
 
                             c9, c10 = st.columns(2)
                             f_price = c9.number_input(
@@ -4207,6 +4195,11 @@ elif page == "🧾 Shipment Details":
 
                             fc1, fc2 = st.columns(2)
                             if fc1.form_submit_button("Save Changes", type="primary", use_container_width=True):
+                                # Only overwrite the address when this type+company pair has a
+                                # known fixed one — otherwise keep whatever was there before,
+                                # rather than blanking out a manually-entered address.
+                                fixed_addr = WAREHOUSE_ADDRESS_BY_COMBO.get((sel_ship_type, sel_ship_co))
+                                sel_warehouse = fixed_addr if fixed_addr is not None else edit_row["Warehouse Address"]
                                 update_shipment(int(edit_row["row"]), {
                                     "Batch #": edit_row["Batch #"],
                                     "Brand": f_brand.strip(),

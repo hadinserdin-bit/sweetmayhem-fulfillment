@@ -1283,7 +1283,9 @@ def render_reorder_table(df, product_images=None):
         pill_cls = REORDER_STATUS_PILL.get(r["Status"], "rr-pill-blue")
         img_src = _match_product_image(product_images, str(r["Product"]))
         img_html = (
-            f'<img src="{html_lib.escape(img_src)}" class="rr-t-thumb">' if img_src
+            f'<img src="{html_lib.escape(img_src)}" width="32" height="32" '
+            f'style="width:32px;height:32px;object-fit:cover;border-radius:6px;display:block;" '
+            f'class="rr-t-thumb">' if img_src
             else '<div class="rr-t-thumb rr-t-thumb-empty"></div>'
         )
         rows_html.append(f"""
@@ -1304,7 +1306,7 @@ def render_reorder_table(df, product_images=None):
         </tr>""")
 
     headers = [
-        "", "Product", "Color", "Size", "Current Qty", "Units Sold", "Days OOS",
+        "Photo", "Product", "Color", "Size", "Current Qty", "Units Sold", "Days OOS",
         "Daily Demand", "Days Left", "Incoming Qty", "Reorder Qty", "Status", "Confidence",
     ]
     num_cols = {"Current Qty", "Units Sold", "Days OOS", "Daily Demand", "Days Left", "Incoming Qty", "Reorder Qty"}

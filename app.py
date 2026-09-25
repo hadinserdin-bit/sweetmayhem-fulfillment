@@ -1619,12 +1619,10 @@ def receive_batch_to_shopify(line_items):
             failed.append(f"{label}: {e}")
     return synced, unmatched, failed
 
-def mark_batch_ordered(row, line_items):
+def add_batch_to_shopify(row, line_items):
     """Adds a batch's quantities to Shopify's on-hand inventory and marks it
     so Demand & Reorder and Purchase Orders count it as incoming — nothing
-    touches Shopify or those numbers before this runs. Shared by "Mark as
-    Ordered" on Purchase Orders and "Add to Shopify Inventory" on Shipment
-    Tracker; same action, two entry points."""
+    touches Shopify or those numbers before this runs."""
     synced, unmatched, failed = receive_batch_to_shopify(line_items)
     if synced:
         update_shipment(int(row["row"]), {**_row_to_fields(row), "Shopify Inventory Status": SHOPIFY_ADDED_MARKER})
@@ -1772,11 +1770,11 @@ def load_packaging_tables():
     return pd.DataFrame(used), pd.DataFrame(orders)
 
 def compute_incoming():
-    """Sums quantities for batches that have been explicitly "Marked as
-    Ordered" (Shopify Inventory Status == SHOPIFY_ADDED_MARKER) and aren't yet
-    Received or Cancelled, per (product, color, size) — for Purchase Orders and
-    for Demand & Reorder to subtract before suggesting how much more to order.
-    A batch created but not yet marked as ordered counts toward neither —
+    """Sums quantities for batches that have been added to Shopify (Shopify
+    Inventory Status == SHOPIFY_ADDED_MARKER) and aren't yet Received or
+    Cancelled, per (product, color, size) — for Purchase Orders and for
+    Demand & Reorder to subtract before suggesting how much more to order. A
+    batch created but not yet added to Shopify counts toward neither —
     nothing about Shopify or these numbers changes until that button is
     pressed.
 
@@ -3050,9 +3048,10 @@ elif page == "📥 Purchase Orders":
     st.subheader("Purchase Orders")
     st.caption(
         "Batches you've created stay invisible to Shopify and Demand & Reorder "
-        "until you press \"Mark as Ordered\" below — that's what actually adds "
-        "the quantities to Shopify's on-hand inventory and lets Demand & Reorder "
-        "count them as incoming."
+        "until you add them below. Add to Shopify's on-hand inventory whenever "
+        "you're confident an order is coming — even before it physically "
+        "arrives, e.g. to start pre-selling. Add to the Studio's own inventory "
+        "separately, once you actually have it on hand."
     )
 
     if "shipment_edit_message" in st.session_state:
@@ -3069,41 +3068,74 @@ elif page == "📥 Purchase Orders":
             qty_by_key, detail_rows, marked_batches = compute_incoming()
 
         pending_df = tracker_df[~tracker_df["Status"].isin(["Received", "Cancelled"])] if not tracker_df.empty else tracker_df
-        unmarked_df = pending_df[~pending_df["Batch #"].isin(marked_batches)]
         total_incoming_units = sum(r["Incoming Qty"] for r in detail_rows)
 
         s1, s2, s3, s4 = st.columns(4)
         s1.markdown(f'<div class="stat"><p class="num">{len(pending_df)}</p><p class="lbl">Pending Batches</p></div>', unsafe_allow_html=True)
-        s2.markdown(f'<div class="stat"><p class="num">{len(marked_batches)}</p><p class="lbl">Marked as Ordered</p></div>', unsafe_allow_html=True)
+        s2.markdown(f'<div class="stat"><p class="num">{len(marked_batches)}</p><p class="lbl">Added to Shopify</p></div>', unsafe_allow_html=True)
         s3.markdown(f'<div class="stat"><p class="num">{total_incoming_units:,}</p><p class="lbl">Total Incoming Units</p></div>', unsafe_allow_html=True)
         s4.markdown(f'<div class="stat"><p class="num">{len(detail_rows)}</p><p class="lbl">Variants Incoming</p></div>', unsafe_allow_html=True)
         st.markdown("")
 
-        st.markdown("### Mark an Order as Placed")
-        if unmarked_df.empty:
-            st.caption("Every pending batch has already been marked as ordered.")
+        st.markdown("### Receiving")
+        if pending_df.empty:
+            st.caption("No pending batches to receive.")
         else:
-            po_batch = st.selectbox("Batch #", unmarked_df["Batch #"].tolist(), key="po_mark_ordered_select")
-            po_row = unmarked_df[unmarked_df["Batch #"] == po_batch].iloc[0]
+            po_batch = st.selectbox("Batch #", pending_df["Batch #"].tolist(), key="po_receive_batch_select")
+            po_row = pending_df[pending_df["Batch #"] == po_batch].iloc[0]
             po_line_items = [it for it in load_line_items() if it["batch"] == po_batch]
 
             if not po_line_items:
-                st.info(f"{po_batch} has no product breakdown yet, so there's nothing to add to Shopify. Add one from Shipment Details first.")
+                st.info(f"{po_batch} has no product breakdown yet — add one from Shipment Details first.")
             else:
-                po_total = sum(it["qty"] for it in po_line_items)
-                st.caption(f"{po_batch}: {po_total} unit(s) across {len(po_line_items)} variant(s) will be added to Shopify's on-hand inventory.")
-                if st.button("Mark as Ordered", icon=":material/local_shipping:", type="primary", key=f"mark_ordered_{po_row['row']}"):
-                    with st.spinner("Adding to Shopify and updating Demand & Reorder…"):
-                        synced, unmatched, failed = mark_batch_ordered(po_row, po_line_items)
-                    msg = []
-                    if synced:
-                        msg.append(f"{synced} item(s) added to Shopify — {po_batch} now counts as incoming.")
-                    if unmatched:
-                        msg.append(f"{len(unmatched)} unmatched: " + ", ".join(unmatched))
-                    if failed:
-                        msg.append(f"{len(failed)} failed: " + ", ".join(failed))
-                    st.session_state["shipment_edit_message"] = " ".join(msg) if msg else "Nothing to add."
-                    st.rerun()
+                po_shopify_done = (po_row["Shopify Inventory Status"] or "").strip() == SHOPIFY_ADDED_MARKER
+                po_received_done = po_row["Status"] == "Received"
+
+                rc1, rc2 = st.columns(2)
+                with rc1:
+                    if po_shopify_done:
+                        st.success("Added to Shopify", icon=":material/check_circle:")
+                        st.caption("Adding again will add these quantities a second time — only do this if you're sure it's needed.")
+                    if st.button(
+                        "Add to Shopify Inventory" if not po_shopify_done else "Add to Shopify again",
+                        icon=":material/sync:", use_container_width=True,
+                        type="secondary" if po_shopify_done else "primary",
+                        key=f"po_add_shopify_{po_row['row']}",
+                    ):
+                        with st.spinner("Adding to Shopify's on-hand inventory…"):
+                            synced, unmatched, failed = add_batch_to_shopify(po_row, po_line_items)
+                        msg = []
+                        if synced:
+                            msg.append(f"{synced} item(s) added to Shopify.")
+                        if unmatched:
+                            msg.append(f"{len(unmatched)} unmatched: " + ", ".join(unmatched))
+                        if failed:
+                            msg.append(f"{len(failed)} failed: " + ", ".join(failed))
+                        st.session_state["shipment_edit_message"] = " ".join(msg) if msg else "Nothing to add."
+                        st.rerun()
+
+                with rc2:
+                    if po_received_done:
+                        st.success("Added to Studio Inventory", icon=":material/check_circle:")
+                        st.caption("Adding again will add these quantities a second time — only do this if you're sure it's needed.")
+                    if st.button(
+                        "Add to Studio Inventory" if not po_received_done else "Add to Studio Inventory again",
+                        icon=":material/inventory_2:", use_container_width=True,
+                        type="secondary" if po_received_done else "primary",
+                        key=f"po_add_studio_{po_row['row']}",
+                    ):
+                        with st.spinner("Adding to the Studio inventory…"):
+                            added, unmatched = receive_batch_to_studio_inventory(po_line_items)
+                        update_shipment(int(po_row["row"]), {
+                            **_row_to_fields(po_row),
+                            "raw_status": "Received",
+                            "Date Received": po_row["Date Received"] or datetime.now().date(),
+                        })
+                        msg = [f"{added} item(s) added to Studio inventory."]
+                        if unmatched:
+                            msg.append(f"{len(unmatched)} unmatched: " + ", ".join(unmatched))
+                        st.session_state["shipment_edit_message"] = " ".join(msg)
+                        st.rerun()
 
         st.markdown("")
         st.markdown("### Pending Batches")
@@ -3114,9 +3146,9 @@ elif page == "📥 Purchase Orders":
 
         st.markdown("")
         st.markdown("### Incoming by Product")
-        st.caption("Only includes batches that have been marked as ordered.")
+        st.caption("Only includes batches that have been added to Shopify.")
         if not detail_rows:
-            st.info("Nothing counted as incoming yet — mark a batch as ordered above.")
+            st.info("Nothing counted as incoming yet — add a batch to Shopify above.")
         else:
             incoming_df = pd.DataFrame(detail_rows).sort_values(["Product", "Color", "Size"])
             render_incoming_table(incoming_df)
@@ -3754,65 +3786,6 @@ elif page == "🚢 Shipment Tracker":
                             "Shopify Inventory Status": f_shopify_status.strip(),
                         })
                         st.session_state["shipment_edit_message"] = f"Batch {row['Batch #']} updated."
-                        st.rerun()
-
-            batch_line_items = [it for it in load_line_items() if it["batch"] == row["Batch #"]]
-            if batch_line_items:
-                st.markdown("### Receiving")
-                st.caption(
-                    "Add this batch's ordered quantities to Shopify's on-hand inventory, and let "
-                    "Demand & Reorder / Purchase Orders count it as incoming — safe to do before "
-                    "it physically arrives, e.g. to start pre-selling incoming stock. Nothing "
-                    "changes until you press this. Add to the Studio's own inventory separately, "
-                    "once you actually have it on hand."
-                )
-                shopify_done = (row["Shopify Inventory Status"] or "").strip() == SHOPIFY_ADDED_MARKER
-                received_done = row["Status"] == "Received"
-
-                rc1, rc2 = st.columns(2)
-                with rc1:
-                    if shopify_done:
-                        st.success("Added to Shopify", icon=":material/check_circle:")
-                        st.caption("Adding again will add these quantities a second time — only do this if you're sure it's needed.")
-                    if st.button(
-                        "Add to Shopify Inventory" if not shopify_done else "Add to Shopify again",
-                        icon=":material/sync:", use_container_width=True,
-                        type="secondary" if shopify_done else "primary",
-                        key=f"add_shopify_{row['row']}",
-                    ):
-                        with st.spinner("Adding to Shopify's on-hand inventory…"):
-                            synced, unmatched, failed = mark_batch_ordered(row, batch_line_items)
-                        msg = []
-                        if synced:
-                            msg.append(f"{synced} item(s) added to Shopify.")
-                        if unmatched:
-                            msg.append(f"{len(unmatched)} unmatched: " + ", ".join(unmatched))
-                        if failed:
-                            msg.append(f"{len(failed)} failed: " + ", ".join(failed))
-                        st.session_state["shipment_edit_message"] = " ".join(msg) if msg else "Nothing to add."
-                        st.rerun()
-
-                with rc2:
-                    if received_done:
-                        st.success("Added to Studio Inventory", icon=":material/check_circle:")
-                        st.caption("Adding again will add these quantities a second time — only do this if you're sure it's needed.")
-                    if st.button(
-                        "Add to Studio Inventory" if not received_done else "Add to Studio Inventory again",
-                        icon=":material/inventory_2:", use_container_width=True,
-                        type="secondary" if received_done else "primary",
-                        key=f"add_studio_{row['row']}",
-                    ):
-                        with st.spinner("Adding to the Studio inventory…"):
-                            added, unmatched = receive_batch_to_studio_inventory(batch_line_items)
-                        update_shipment(int(row["row"]), {
-                            **_row_to_fields(row),
-                            "raw_status": "Received",
-                            "Date Received": row["Date Received"] or datetime.now().date(),
-                        })
-                        msg = [f"{added} item(s) added to Studio inventory."]
-                        if unmatched:
-                            msg.append(f"{len(unmatched)} unmatched: " + ", ".join(unmatched))
-                        st.session_state["shipment_edit_message"] = " ".join(msg)
                         st.rerun()
 
             used_df, orders_df = load_packaging_tables()

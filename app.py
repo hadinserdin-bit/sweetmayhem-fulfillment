@@ -3198,7 +3198,17 @@ elif page == "📊 Demand & Reorder":
             reorder_product_images = fetch_shopify_product_images()
         except Exception as e:
             reorder_product_images = {}
-            st.caption(f"Product photos unavailable right now ({e}).")
+            rc1, rc2 = st.columns([5, 1])
+            rc1.error(f"Product photos unavailable right now: {type(e).__name__}: {e}")
+            if rc2.button("Retry photos", key="reorder_retry_photos"):
+                fetch_shopify_product_images.clear()
+                st.rerun()
+        else:
+            if not reorder_product_images:
+                st.warning(
+                    "Shopify returned no product photos at all (0 products with an "
+                    "image) — check that your products have a featured image set."
+                )
         render_reorder_table(fdf, reorder_product_images)
         st.caption(
             f"{len(fdf)} variant(s) shown  |  Sales data: {start_date.strftime('%b %d, %Y')} – "
@@ -3318,7 +3328,7 @@ elif page == "📥 Purchase Orders":
                 nb_product_images = fetch_shopify_product_images()
             except Exception as e:
                 nb_product_images = {}
-                st.caption(f"Product photos unavailable right now ({e}).")
+                st.error(f"Product photos unavailable right now: {type(e).__name__}: {e}")
             for prod in nb_items:
                 prod_variants = [v for v in inv_for_new.values() if v["product"] == prod]
                 colors = sorted({v["color"] for v in prod_variants})

@@ -1603,6 +1603,37 @@ def _status_option_default(display_status):
 def _status_option_to_raw(option):
     return {"In Transit": "", "Received": "Received", "Cancelled": "Cancelled"}[option]
 
+SHIPMENT_TYPE_OPTIONS = ["Air", "Sea"]
+SHIPPING_COMPANY_OPTIONS = ["WTB"]
+
+# The supplier hands each shipping method a fixed drop-off address — once you
+# pick the type + company there's nothing left to type, so it's looked up
+# here instead of being a free-text field.
+WAREHOUSE_ADDRESS_BY_COMBO = {
+    ("Air", "WTB"): (
+        "AIR CARGO WAREHOUSE\n\n"
+        "地址：广州市天河区沐陂西路八号大院D2-1-2空运仓库\n"
+        "入仓号A 1604           （入仓号不需写在外箱，写在运单或者装箱单附带即可）\n"
+        "如果货车送货 可以搜索高德地图《中航沈飞地板》\n"
+        "周先生  18922246469\n"
+        "陈先生  18928745807                                \n"
+        "请注意  \n"
+        "1  货物外包装四面写唛头   最好纸箱加编织袋包装\n"
+        "2  送货请提供客户全名或者ID\n"
+        "3  请提供详细装箱单(我司格式) 箱单随货一齐发！！！\n"
+        "4 仓库正常收货上班时间周一至周六上午10点到下午18：00，超过正常收货时间将拒收或有偿加班收货，由送货商自行支付\n"
+        "5 所有送货卸货自己安排自卸，如需要仓库安排卸货须有偿卸货\n"
+        "6 所有送货需要按照要求放置到仓库指定位置,并取得仓库收货回单，方算入仓完成\n"
+        "谢谢！"
+    ),
+}
+
+def _options_with_current(options, current):
+    """Keeps a legacy value (e.g. an old 'Rayan' shipment) selectable instead
+    of silently swapping it for the first option when the field is opened."""
+    current = (current or "").strip()
+    return options if (not current or current in options) else options + [current]
+
 @st.cache_data(ttl=120)
 @_resilient_google_call
 def load_shipments():
@@ -3338,8 +3369,10 @@ elif page == "📥 Purchase Orders":
                             del st.session_state[k]
                     st.session_state.pop("prefill_reorder", None)
                     st.session_state.pop("prefill_reorder_applied", None)
-                    st.session_state["shipment_edit_message"] = f"{batch_name} created — it now shows up in Shipment Tracker and Shipment Details too."
+                    st.session_state["shipment_edit_message"] = f"{batch_name} created — fill in its shipping details below."
                     st.session_state["shipment_detail_select"] = batch_name
+                    st.session_state[f"ship_editing_{batch_name}"] = True
+                    st.session_state.page = "🧾 Shipment Details"
                     st.rerun()
 
         st.markdown("### Receiving")
@@ -4117,6 +4150,30 @@ elif page == "🧾 Shipment Details":
                 else:
                     with st.container(border=True, key="shipment_edit_panel"):
                         st.caption("Items Ordered isn't editable here — it's set from the batch's product breakdown.")
+
+                        # Outside the form so picking a type/company updates the fixed
+                        # address preview immediately, instead of only after Save.
+                        type_options = _options_with_current(SHIPMENT_TYPE_OPTIONS, edit_row["Shipment Type"])
+                        co_options = _options_with_current(SHIPPING_COMPANY_OPTIONS, edit_row["Shipping Company"])
+
+                        ac1, ac2 = st.columns(2)
+                        sel_ship_type = ac1.selectbox(
+                            "Shipment Type", type_options,
+                            index=type_options.index((edit_row["Shipment Type"] or "").strip() or SHIPMENT_TYPE_OPTIONS[0]),
+                            key=f"ship_type_select_{edit_row['row']}",
+                        )
+                        sel_ship_co = ac2.selectbox(
+                            "Shipping Company", co_options,
+                            index=co_options.index((edit_row["Shipping Company"] or "").strip() or SHIPPING_COMPANY_OPTIONS[0]),
+                            key=f"ship_co_select_{edit_row['row']}",
+                        )
+                        sel_warehouse = WAREHOUSE_ADDRESS_BY_COMBO.get((sel_ship_type, sel_ship_co), "")
+                        st.text_area(
+                            "Warehouse Address",
+                            value=sel_warehouse or "No fixed address on file for this Shipment Type + Shipping Company yet.",
+                            height=90, disabled=True,
+                        )
+
                         with st.form(f"edit_shipment_form_{edit_row['row']}"):
                             c1, c2 = st.columns(2)
                             f_brand = c1.text_input("Brand", value=edit_row["Brand"])
@@ -4130,10 +4187,7 @@ elif page == "🧾 Shipment Details":
                             f_date_shipped = c4.date_input("Date Shipped", value=edit_row["Date Shipped"])
                             f_date_received = c5.date_input("Date Received", value=edit_row["Date Received"])
 
-                            c6, c7, c8 = st.columns(3)
-                            f_ship_type = c6.text_input("Shipment Type", value=edit_row["Shipment Type"])
-                            f_ship_co = c7.text_input("Shipping Company", value=edit_row["Shipping Company"])
-                            f_tracking = c8.text_input("Tracking #", value=edit_row["Tracking #"])
+                            f_tracking = st.text_input("Tracking #", value=edit_row["Tracking #"])
 
                             c9, c10 = st.columns(2)
                             f_price = c9.number_input(
@@ -4149,7 +4203,6 @@ elif page == "🧾 Shipment Details":
                             f_ship_mark = c11.text_input("Shipping Mark", value=edit_row["Shipping Mark"])
                             f_img_ref = c12.text_input("Img ref.", value=edit_row["Img ref."])
 
-                            f_warehouse = st.text_area("Warehouse Address", value=edit_row["Warehouse Address"], height=90)
                             f_notes = st.text_area("Notes", value=edit_row["Notes"], height=90)
 
                             fc1, fc2 = st.columns(2)
@@ -4159,9 +4212,9 @@ elif page == "🧾 Shipment Details":
                                     "Brand": f_brand.strip(),
                                     "Date Paid": f_date_paid,
                                     "Date Shipped": f_date_shipped,
-                                    "Shipment Type": f_ship_type.strip(),
-                                    "Shipping Company": f_ship_co.strip(),
-                                    "Warehouse Address": f_warehouse.strip(),
+                                    "Shipment Type": sel_ship_type,
+                                    "Shipping Company": sel_ship_co,
+                                    "Warehouse Address": sel_warehouse,
                                     "Shipping Mark": f_ship_mark.strip(),
                                     "Tracking #": f_tracking.strip(),
                                     "Date Received": f_date_received,

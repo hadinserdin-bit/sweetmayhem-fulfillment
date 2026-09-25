@@ -902,12 +902,16 @@ def fetch_shopify_variant_map():
         url, params = next_url, None
     return result
 
+@st.cache_data(ttl=600)
 def fetch_shopify_available_by_key():
-    """(product, color, size) [lowercased] -> current Shopify 'Available'
-    quantity at the primary location. Available (not on_hand) is what
-    actually blocks a sale, so this is what determines whether a variant
-    counts as out-of-stock for a given day's snapshot — matches the same
-    (product, color, size) key format load_inventory() uses."""
+    """(product, color, size) [lowercased] -> {"available": qty, "continue_oos": bool}.
+    Available (not on_hand) is what actually blocks a sale, so it's what
+    determines whether a variant counts as out-of-stock for a given day's
+    snapshot. continue_oos reflects Shopify's "Continue selling when out of
+    stock" setting (inventoryPolicy == CONTINUE) — when on, the variant can
+    always be sold regardless of Available, so no day should ever count as
+    out-of-stock for it. Matches the same (product, color, size) key format
+    load_inventory() uses."""
     location_id = get_primary_location_id()
     result = {}
     cursor = None
@@ -921,6 +925,7 @@ def fetch_shopify_available_by_key():
               edges {
                 node {
                   title
+                  inventoryPolicy
                   inventoryItem {
                     inventoryLevel(locationId: $locationId) {
                       quantities(names: ["available"]) { quantity }
@@ -956,7 +961,7 @@ def fetch_shopify_available_by_key():
                 level = v["inventoryItem"].get("inventoryLevel")
                 qty = level["quantities"][0]["quantity"] if level else 0
                 key = (p["title"].lower(), color.lower(), size.lower())
-                result[key] = qty
+                result[key] = {"available": qty, "continue_oos": v.get("inventoryPolicy") == "CONTINUE"}
         if products_page["pageInfo"]["hasNextPage"]:
             cursor = products_page["pageInfo"]["endCursor"]
         else:
@@ -1373,18 +1378,19 @@ def get_snapshot_ws():
 
 def _match_shopify_available(available_by_key, product, color, size):
     """Same exact + fuzzy matching as find_shopify_inventory_item(), against
-    a (product, color, size) -> available-qty dict instead of -> item id."""
+    fetch_shopify_available_by_key()'s (product, color, size) -> {"available",
+    "continue_oos"} dict instead of -> item id. Returns that dict, or None."""
     exact = (product.lower(), color.lower(), size.lower())
     if exact in available_by_key:
         return available_by_key[exact]
     best, ratio, best_val = None, 0.75, None
-    for key, qty in available_by_key.items():
+    for key, info in available_by_key.items():
         p, c, s = key
         if c != color.lower() or s != size.lower():
             continue
         r = SequenceMatcher(None, product.lower(), p).ratio()
         if r > ratio:
-            ratio, best_val = r, qty
+            ratio, best_val = r, info
     return best_val
 
 def record_snapshot_if_needed(inv):
@@ -1400,9 +1406,8 @@ def record_snapshot_if_needed(inv):
     available_by_key = fetch_shopify_available_by_key()
     rows = []
     for v in inv.values():
-        qty = _match_shopify_available(available_by_key, v["product"], v["color"], v["size"])
-        if qty is None:
-            qty = v["qty"]  # not found in Shopify — fall back to the Studio count
+        info = _match_shopify_available(available_by_key, v["product"], v["color"], v["size"])
+        qty = info["available"] if info else v["qty"]  # not found in Shopify — fall back to the Studio count
         rows.append([today, v["product"], v["color"], v["size"], qty])
     if rows:
         ws.append_rows(rows)
@@ -1480,14 +1485,21 @@ def aggregate_sales(orders, inv):
             sold[k] = sold.get(k, 0) + qty
     return sold, unmatched
 
-def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days, incoming=None):
+def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days, incoming=None, continue_oos=None):
     incoming = incoming or {}
+    continue_oos = continue_oos or {}
     window_days = max(1, (end_date - start_date).days + 1)
     rows = []
     for key, v in inv.items():
         total_sold = sold.get(key, 0)
         sd = stock_days.get(key, {"tracked": set(), "in_stock": set()})
         days_tracked, days_in_stock = len(sd["tracked"]), len(sd["in_stock"])
+        sells_past_zero = bool(continue_oos.get(key))
+        if sells_past_zero:
+            # "Continue selling when out of stock" is on for this variant, so
+            # it's never actually unsellable — no day should be excluded from
+            # its demand calculation just because Available hit zero.
+            days_in_stock = days_tracked
         days_oos = days_tracked - days_in_stock
         cur_qty = max(0, v["qty"])
         incoming_qty = incoming.get(key, 0)
@@ -1520,7 +1532,7 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
             "Incoming Qty": incoming_qty,
             "Reorder Qty": reorder_qty,
             "Status": status,
-            "Confidence": "Adjusted" if adjusted else "Raw (building history)",
+            "Confidence": ("Adjusted" if adjusted else "Raw (building history)") + (" · sells past zero" if sells_past_zero else ""),
         })
     return pd.DataFrame(rows)
 
@@ -3077,7 +3089,17 @@ elif page == "📊 Demand & Reorder":
             )
 
         incoming_by_key, _incoming_detail, _open_batches = compute_incoming()
-        df = build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days, incoming_by_key)
+
+        available_data = fetch_shopify_available_by_key()
+        continue_oos_by_key = {}
+        for key, v in inv.items():
+            info = _match_shopify_available(available_data, v["product"], v["color"], v["size"])
+            continue_oos_by_key[key] = bool(info and info.get("continue_oos"))
+
+        df = build_reorder_table(
+            inv, sold, stock_days, start_date, end_date, lead_time, coverage_days,
+            incoming_by_key, continue_oos_by_key,
+        )
 
         s1, s2, s3, s4 = st.columns(4)
         s1.markdown(f'<div class="stat"><p class="num">{(df["Status"]=="Reorder Now").sum()}</p><p class="lbl">Reorder Now</p></div>', unsafe_allow_html=True)

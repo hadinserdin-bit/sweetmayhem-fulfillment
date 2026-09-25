@@ -2846,7 +2846,7 @@ if page == "📦 Fulfillment":
 
 elif page == "🔄 Restock":
     st.subheader("Add Restock Quantities")
-    st.caption("Edit the 'Add Qty' column for any item, then click Apply Restock.")
+    st.caption("Tap a quantity box to add stock, then click Apply Restock.")
 
     for m in st.session_state.pop("restock_messages", []):
         getattr(st, m["kind"])(m["text"], **({"icon": m["icon"]} if m.get("icon") else {}))
@@ -2858,44 +2858,54 @@ elif page == "🔄 Restock":
             inv, ws = load_inventory(), get_ws()
 
         items = list(inv.items())
-        df = pd.DataFrame([
-            {
-                "Product": v["product"],
-                "Color":   v["color"],
-                "Size":    v["size"],
-                "Current Qty": v["qty"],
-                "Add Qty": 0,
-            }
-            for _, v in items
-        ])
 
-        edited = st.data_editor(
-            df,
-            column_config={
-                "Product":     st.column_config.TextColumn(disabled=True),
-                "Color":       st.column_config.TextColumn(disabled=True),
-                "Size":        st.column_config.TextColumn(disabled=True),
-                "Current Qty": st.column_config.NumberColumn(disabled=True),
-                "Add Qty":     st.column_config.NumberColumn(min_value=0, step=1),
-            },
-            hide_index=True,
-            use_container_width=True,
-        )
+        restock_products = ["All"] + sorted({v["product"] for _, v in items})
+        restock_prod_filter = st.selectbox("Filter by Product", restock_products, key="restock_prod_filter")
 
-        changed = edited[edited["Add Qty"] > 0]
-        if not changed.empty:
-            st.info(f"{len(changed)} item(s) with quantities to add.")
+        visible_indices = [
+            idx for idx, (_, v) in enumerate(items)
+            if restock_prod_filter == "All" or v["product"] == restock_prod_filter
+        ]
+
+        hc1, hc2, hc3, hc4 = st.columns([3, 2, 1, 2])
+        hc1.caption("PRODUCT")
+        hc2.caption("COLOR")
+        hc3.caption("SIZE")
+        hc4.caption("ADD QTY")
+
+        for idx in visible_indices:
+            _, item = items[idx]
+            c1, c2, c3, c4 = st.columns([3, 2, 1, 2])
+            c1.write(item["product"])
+            c2.write(item["color"])
+            c3.write(item["size"])
+            c4.number_input(
+                f"Add qty — {item['product']} {item['color']} {item['size']}",
+                min_value=0, step=1, value=0,
+                key=f"restock_qty_{item['row']}",
+                label_visibility="collapsed",
+                help=f"Current: {item['qty']}",
+            )
+
+        add_qty_by_idx = {}
+        for idx, (_, item) in enumerate(items):
+            qty = st.session_state.get(f"restock_qty_{item['row']}", 0)
+            if qty and qty > 0:
+                add_qty_by_idx[idx] = int(qty)
+
+        if add_qty_by_idx:
+            st.info(f"{len(add_qty_by_idx)} item(s) with quantities to add.")
 
         if st.button("Apply Restock", type="primary", use_container_width=True):
-            if changed.empty:
-                st.warning("No quantities entered. Edit the 'Add Qty' column first.")
+            if not add_qty_by_idx:
+                st.warning("No quantities entered. Tap a quantity box first.")
             else:
                 messages = []
                 with st.spinner("Updating Google Sheets…"):
                     try:
                         updates = [
-                            (items[idx][1]["row"], items[idx][1]["qty"] + int(changed.loc[idx, "Add Qty"]))
-                            for idx in changed.index
+                            (items[idx][1]["row"], items[idx][1]["qty"] + delta)
+                            for idx, delta in add_qty_by_idx.items()
                         ]
                         batch_update_qty(ws, updates)
                         messages.append({"kind": "success", "text": f"{len(updates)} item(s) restocked!", "icon": ":material/check_circle:"})
@@ -2908,9 +2918,8 @@ elif page == "🔄 Restock":
                         variant_map = fetch_shopify_variant_map()
                         location_id = get_primary_location_id()
                         synced, unmatched, failed = 0, [], []
-                        for idx in changed.index:
+                        for idx, delta in add_qty_by_idx.items():
                             _, item = items[idx]
-                            delta = int(changed.loc[idx, "Add Qty"])
                             label = f"{item['product']} — {item['color']} / {item['size']}"
                             inv_item_id = find_shopify_inventory_item(
                                 variant_map, item["product"], item["color"], item["size"]
@@ -2939,6 +2948,8 @@ elif page == "🔄 Restock":
                     except Exception as e:
                         messages.append({"kind": "error", "text": str(e)})
 
+                for idx in add_qty_by_idx:
+                    st.session_state.pop(f"restock_qty_{items[idx][1]['row']}", None)
                 st.session_state["restock_messages"] = messages
                 st.session_state["restock_balloons"] = True
                 st.rerun()
@@ -3241,27 +3252,33 @@ elif page == "📥 Purchase Orders":
                 st.markdown(f"**{prod}**")
                 prod_prefill = (reorder_prefill or {}).get(prod, {})
                 if colors and sizes:
-                    grid_df = pd.DataFrame(
-                        [[prod_prefill.get((c, s), 0) for s in sizes] for c in colors],
-                        index=colors, columns=sizes,
-                    )
+                    hdr_cols = st.columns([2] + [1] * len(sizes))
+                    hdr_cols[0].caption("")
+                    for hc, size in zip(hdr_cols[1:], sizes):
+                        hc.caption(size)
+                    for color in colors:
+                        row_cols = st.columns([2] + [1] * len(sizes))
+                        row_cols[0].write(color)
+                        for cc, size in zip(row_cols[1:], sizes):
+                            cc.number_input(
+                                f"{prod} — {color} / {size}",
+                                min_value=0, step=1,
+                                value=int(prod_prefill.get((color, size), 0)),
+                                key=f"new_ship_qty_{prod}__{color}__{size}",
+                                label_visibility="collapsed",
+                            )
                 else:
-                    grid_df = pd.DataFrame(0, index=colors or ["—"], columns=sizes or ["—"])
-                edited_grid = st.data_editor(
-                    grid_df,
-                    key=f"new_ship_grid_{prod}",
-                    column_config={c: st.column_config.NumberColumn(min_value=0, step=1) for c in grid_df.columns},
-                )
+                    st.caption("No color/size variants found in inventory for this product.")
                 unit_price = st.number_input(
                     f"Unit price — {prod} ($)", min_value=0.0, step=0.01, format="%.2f",
                     value=fixed_prices.get(prod, 0.0), key=f"new_ship_price_{prod}",
                     help="Remembered from last time — changing it here updates the fixed price for future shipments too.",
                 )
                 nb_unit_prices[prod] = unit_price
-                for color in edited_grid.index:
-                    for size in edited_grid.columns:
-                        qty = int(edited_grid.loc[color, size] or 0)
-                        if qty > 0 and color != "—" and size != "—":
+                for color in colors:
+                    for size in sizes:
+                        qty = int(st.session_state.get(f"new_ship_qty_{prod}__{color}__{size}", 0) or 0)
+                        if qty > 0:
                             nb_line_items.append({
                                 "product": prod, "color": color, "size": size,
                                 "qty": qty, "unit_price": unit_price,

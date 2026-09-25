@@ -1271,19 +1271,17 @@ def render_shipment_table(df):
           <td class="rr-t-mono">{esc(r['Tracking #'])}</td>
           <td>{fmt_date(r['Date Received'])}</td>
           <td><span class="rr-pill {pill_cls}">{esc(r['Status'])}</span></td>
-          <td class="rr-t-num">{fmt_num(r['Total Items'])}</td>
           <td class="rr-t-num">{fmt_num(r['Price'], '$')}</td>
           <td class="rr-t-num">{fmt_num(r['# of Cartons'])}</td>
           <td class="rr-t-trunc">{truncated(r['Items Ordered'])}</td>
-          <td class="rr-t-trunc">{truncated(r['Shopify Inventory Status'], 28)}</td>
         </tr>""")
 
     headers = [
         "Batch #", "Brand", "Date Paid", "Date Shipped", "Shipment Type",
         "Shipping Company", "Tracking #", "Date Received", "Status",
-        "Total Items", "Price", "# of Cartons", "Items Ordered", "Shopify Status",
+        "Price", "# of Cartons", "Items Ordered",
     ]
-    num_cols = {"Total Items", "Price", "# of Cartons"}
+    num_cols = {"Price", "# of Cartons"}
     header_html = "".join(
         f'<th class="{"rr-t-num" if h in num_cols else ""}">{h}</th>' for h in headers
     )
@@ -3157,7 +3155,7 @@ elif page == "📥 Purchase Orders":
                         update_shipment(int(po_row["row"]), {
                             **_row_to_fields(po_row),
                             "raw_status": "Received",
-                            "Date Received": po_row["Date Received"] or datetime.now().date(),
+                            "Date Received": datetime.now().date(),
                         })
                         msg = [f"{added} item(s) added to Studio inventory."]
                         if unmatched:
@@ -3683,8 +3681,8 @@ elif page == ADMIN_PAGE:
 elif page == "🚢 Shipment Tracker":
     st.subheader("Shipment Tracker")
     st.caption(
-        "Reads live from the shared Shipments Tracker Google Sheet. Edits made below "
-        "are saved straight back to the Sheet."
+        "Reads live from the shared Shipments Tracker Google Sheet. To edit a "
+        "batch, go to Shipment Details."
     )
 
     if "shipment_edit_message" in st.session_state:
@@ -3741,82 +3739,6 @@ elif page == "🚢 Shipment Tracker":
             st.caption(f"{len(fdf)} of {total_shipments} shipment(s) shown")
 
             st.divider()
-            st.markdown("### Edit a Batch")
-            sel_batch = st.selectbox("Batch #", df["Batch #"].tolist(), key="ship_edit_batch_select")
-            row = df[df["Batch #"] == sel_batch].iloc[0]
-
-            product_names = sorted({v["product"] for v in load_inventory().values()})
-            existing_items_lower = (row["Items Ordered"] or "").lower()
-            default_items = [p for p in product_names if p.lower() in existing_items_lower]
-
-            with st.container(border=True, key="shipment_edit_panel"):
-                st.markdown(f"**Batch #:** {row['Batch #']}")
-                with st.form(f"edit_shipment_form_{row['row']}"):
-                    c1, c2 = st.columns(2)
-                    f_brand = c1.text_input("Brand", value=row["Brand"])
-                    f_status = c2.selectbox(
-                        "Status", SHIPMENT_STATUS_OPTIONS,
-                        index=SHIPMENT_STATUS_OPTIONS.index(_status_option_default(row["Status"])),
-                    )
-
-                    c3, c4, c5 = st.columns(3)
-                    f_date_paid = c3.date_input("Date Paid", value=row["Date Paid"])
-                    f_date_shipped = c4.date_input("Date Shipped", value=row["Date Shipped"])
-                    f_date_received = c5.date_input("Date Received", value=row["Date Received"])
-
-                    c6, c7, c8 = st.columns(3)
-                    f_ship_type = c6.text_input("Shipment Type", value=row["Shipment Type"])
-                    f_ship_co = c7.text_input("Shipping Company", value=row["Shipping Company"])
-                    f_tracking = c8.text_input("Tracking #", value=row["Tracking #"])
-
-                    c9, c10, c11 = st.columns(3)
-                    f_total_items = c9.number_input(
-                        "Total Items", min_value=0, step=1,
-                        value=int(row["Total Items"]) if pd.notna(row["Total Items"]) else 0,
-                    )
-                    f_price = c10.number_input(
-                        "Price ($)", min_value=0.0, step=0.01, format="%.2f",
-                        value=float(row["Price"]) if pd.notna(row["Price"]) else 0.0,
-                    )
-                    f_cartons = c11.number_input(
-                        "# of Cartons", min_value=0, step=1,
-                        value=int(row["# of Cartons"]) if pd.notna(row["# of Cartons"]) else 0,
-                    )
-
-                    c12, c13 = st.columns(2)
-                    f_ship_mark = c12.text_input("Shipping Mark", value=row["Shipping Mark"])
-                    f_img_ref = c13.text_input("Img ref.", value=row["Img ref."])
-
-                    f_warehouse = st.text_area("Warehouse Address", value=row["Warehouse Address"], height=90)
-                    f_items_ordered = st.multiselect("Items Ordered", options=product_names, default=default_items)
-                    f_notes = st.text_area("Notes", value=row["Notes"], height=90)
-                    f_shopify_status = st.text_input("Shopify Inventory Status", value=row["Shopify Inventory Status"])
-
-                    if st.form_submit_button("Save Changes", type="primary", use_container_width=True):
-                        update_shipment(int(row["row"]), {
-                            "Batch #": row["Batch #"],
-                            "Brand": f_brand.strip(),
-                            "Date Paid": f_date_paid,
-                            "Date Shipped": f_date_shipped,
-                            "Shipment Type": f_ship_type.strip(),
-                            "Shipping Company": f_ship_co.strip(),
-                            "Warehouse Address": f_warehouse.strip(),
-                            "Shipping Mark": f_ship_mark.strip(),
-                            "Tracking #": f_tracking.strip(),
-                            "Date Received": f_date_received,
-                            "raw_status": _status_option_to_raw(f_status),
-                            "Total Items": f_total_items,
-                            "Price": f_price,
-                            "# of Cartons": f_cartons,
-                            "Notes": f_notes.strip(),
-                            "Items Ordered": ", ".join(f_items_ordered),
-                            "Img ref.": f_img_ref.strip(),
-                            "Shopify Inventory Status": f_shopify_status.strip(),
-                            "Marked as Ordered": row["Marked as Ordered"],
-                        })
-                        st.session_state["shipment_edit_message"] = f"Batch {row['Batch #']} updated."
-                        st.rerun()
-
             used_df, orders_df = load_packaging_tables()
             with st.expander("Packaging Usage & Stock Orders", icon=":material/inventory_2:"):
                 p1, p2 = st.columns(2)
@@ -3975,8 +3897,80 @@ elif page == "🧾 Shipment Details":
                     st.session_state.pop("prefill_reorder_applied", None)
                     st.session_state["shipment_edit_message"] = f"{batch_name} created."
                     st.session_state["shipment_detail_select"] = batch_name
-                    st.session_state["just_created_batch"] = batch_name
                     st.rerun()
+
+        if not tracker_df.empty:
+            st.divider()
+            st.markdown("### Edit a Batch")
+            edit_sel_batch = st.selectbox("Batch #", tracker_df["Batch #"].tolist(), key="ship_edit_batch_select")
+            edit_row = tracker_df[tracker_df["Batch #"] == edit_sel_batch].iloc[0]
+
+            edit_product_names = sorted({v["product"] for v in load_inventory().values()})
+            edit_existing_items_lower = (edit_row["Items Ordered"] or "").lower()
+            edit_default_items = [p for p in edit_product_names if p.lower() in edit_existing_items_lower]
+
+            with st.container(border=True, key="shipment_edit_panel"):
+                st.markdown(f"**Batch #:** {edit_row['Batch #']}")
+                with st.form(f"edit_shipment_form_{edit_row['row']}"):
+                    c1, c2 = st.columns(2)
+                    f_brand = c1.text_input("Brand", value=edit_row["Brand"])
+                    f_status = c2.selectbox(
+                        "Status", SHIPMENT_STATUS_OPTIONS,
+                        index=SHIPMENT_STATUS_OPTIONS.index(_status_option_default(edit_row["Status"])),
+                    )
+
+                    c3, c4, c5 = st.columns(3)
+                    f_date_paid = c3.date_input("Date Paid", value=edit_row["Date Paid"])
+                    f_date_shipped = c4.date_input("Date Shipped", value=edit_row["Date Shipped"])
+                    f_date_received = c5.date_input("Date Received", value=edit_row["Date Received"])
+
+                    c6, c7, c8 = st.columns(3)
+                    f_ship_type = c6.text_input("Shipment Type", value=edit_row["Shipment Type"])
+                    f_ship_co = c7.text_input("Shipping Company", value=edit_row["Shipping Company"])
+                    f_tracking = c8.text_input("Tracking #", value=edit_row["Tracking #"])
+
+                    c9, c10 = st.columns(2)
+                    f_price = c9.number_input(
+                        "Price ($)", min_value=0.0, step=0.01, format="%.2f",
+                        value=float(edit_row["Price"]) if pd.notna(edit_row["Price"]) else 0.0,
+                    )
+                    f_cartons = c10.number_input(
+                        "# of Cartons", min_value=0, step=1,
+                        value=int(edit_row["# of Cartons"]) if pd.notna(edit_row["# of Cartons"]) else 0,
+                    )
+
+                    c11, c12 = st.columns(2)
+                    f_ship_mark = c11.text_input("Shipping Mark", value=edit_row["Shipping Mark"])
+                    f_img_ref = c12.text_input("Img ref.", value=edit_row["Img ref."])
+
+                    f_warehouse = st.text_area("Warehouse Address", value=edit_row["Warehouse Address"], height=90)
+                    f_items_ordered = st.multiselect("Items Ordered", options=edit_product_names, default=edit_default_items)
+                    f_notes = st.text_area("Notes", value=edit_row["Notes"], height=90)
+
+                    if st.form_submit_button("Save Changes", type="primary", use_container_width=True):
+                        update_shipment(int(edit_row["row"]), {
+                            "Batch #": edit_row["Batch #"],
+                            "Brand": f_brand.strip(),
+                            "Date Paid": f_date_paid,
+                            "Date Shipped": f_date_shipped,
+                            "Shipment Type": f_ship_type.strip(),
+                            "Shipping Company": f_ship_co.strip(),
+                            "Warehouse Address": f_warehouse.strip(),
+                            "Shipping Mark": f_ship_mark.strip(),
+                            "Tracking #": f_tracking.strip(),
+                            "Date Received": f_date_received,
+                            "raw_status": _status_option_to_raw(f_status),
+                            "Total Items": int(edit_row["Total Items"]) if pd.notna(edit_row["Total Items"]) else 0,
+                            "Price": f_price,
+                            "# of Cartons": f_cartons,
+                            "Notes": f_notes.strip(),
+                            "Items Ordered": ", ".join(f_items_ordered),
+                            "Img ref.": f_img_ref.strip(),
+                            "Shopify Inventory Status": edit_row["Shopify Inventory Status"],
+                            "Marked as Ordered": edit_row["Marked as Ordered"],
+                        })
+                        st.session_state["shipment_edit_message"] = f"Batch {edit_row['Batch #']} updated."
+                        st.rerun()
 
         sheet_batches = sorted({it["batch"] for it in all_line_items}, key=_batch_num, reverse=True)
         drive_names = [f["name"] for f in files]
@@ -4006,12 +4000,6 @@ elif page == "🧾 Shipment Details":
             if not products:
                 st.warning("Couldn't find any recognizable product blocks in this shipment.")
             else:
-                if st.session_state.pop("just_created_batch", None) == sel_name:
-                    if st.button("Add tracking, dates & status in Shipment Tracker →", key="jump_to_tracker"):
-                        st.session_state.page = "🚢 Shipment Tracker"
-                        st.session_state["ship_edit_batch_select"] = sel_name
-                        st.rerun()
-
                 for p in products:
                     st.markdown(f"#### {p['name']}")
                     st.dataframe(product_grid(p), use_container_width=True)

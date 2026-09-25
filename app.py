@@ -1253,11 +1253,6 @@ def style_status(df, column="Status"):
         return f"background-color: {bg}" if bg else ""
     return df.style.map(_color, subset=[column])
 
-REORDER_STATUS_PILL = {
-    "Reorder Now": "rr-pill-red",
-    "Reorder Soon": "rr-pill-amber", "OK": "rr-pill-green",
-    "Incoming": "rr-pill-blue",
-}
 
 def render_reorder_table(df, product_images=None, lead_time=None):
     """Dashboard-style table for Demand & Reorder — same rationale as
@@ -1306,7 +1301,6 @@ def render_reorder_table(df, product_images=None, lead_time=None):
     )
     rows_html = []
     for _, r in df.iterrows():
-        pill_cls = REORDER_STATUS_PILL.get(r["Status"], "rr-pill-blue")
         img_src = _match_product_image(product_images, str(r["Product"]))
         img_html = (
             f'<img src="{html_lib.escape(img_src)}" width="32" height="32" '
@@ -1322,24 +1316,19 @@ def render_reorder_table(df, product_images=None, lead_time=None):
             <div class="rr-t-sub">{esc(r['Color'])} / {esc(r['Size'])}</div>
             {lead_time_html}
           </td>
-          <td class="rr-t-num">{fmt_int(r['Current Qty'])}</td>
           <td class="rr-t-num rr-t-strong">{fmt_int(r['Available'])}</td>
-          <td class="rr-t-num">{fmt_int(r['Units Sold'])}</td>
-          <td class="rr-t-num">{fmt_int(r['Days OOS (window)'])}</td>
+          <td class="rr-t-num">{fmt_int(r['Incoming Qty'])}</td>
           <td class="rr-t-num">{r['Daily Demand']:.2f}</td>
           <td class="rr-t-num">{fmt_stockout(r['Days Left'])}</td>
           <td class="rr-t-num">{fmt_reorder_in(r['Reorder In'], r['Reorder Qty'])}</td>
-          <td class="rr-t-num">{fmt_int(r['Incoming Qty'])}</td>
           <td class="rr-t-num rr-t-strong">{fmt_int(r['Reorder Qty'])}</td>
-          <td><span class="rr-pill {pill_cls}">{esc(r['Status'])}</span></td>
-          <td class="rr-t-trunc">{esc(r['Confidence'])}</td>
         </tr>""")
 
     headers = [
-        "Photo", "Product", "Current Qty", "Available", "Units Sold", "Days OOS",
-        "Sales Velocity", "Stockout In", "Reorder In", "Incoming Qty", "Reorder Qty", "Status", "Confidence",
+        "Photo", "Product", "Available", "Incoming",
+        "Sales Velocity", "Stockout In", "Reorder In", "Suggested Reorder Qty",
     ]
-    num_cols = {"Current Qty", "Available", "Units Sold", "Days OOS", "Sales Velocity", "Stockout In", "Reorder In", "Incoming Qty", "Reorder Qty"}
+    num_cols = {"Available", "Incoming", "Sales Velocity", "Stockout In", "Reorder In", "Suggested Reorder Qty"}
     header_html = "".join(
         f'<th class="{"rr-t-num" if h in num_cols else ""}">{h}</th>' for h in headers
     )

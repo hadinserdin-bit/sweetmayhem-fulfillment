@@ -1229,7 +1229,7 @@ REORDER_STATUS_PILL = {
     "Reorder Soon": "rr-pill-amber", "OK": "rr-pill-green",
 }
 
-def render_reorder_table(df):
+def render_reorder_table(df, product_images=None):
     """Dashboard-style table for Demand & Reorder — same rationale as
     render_shipment_table: pill badges and right-aligned tabular numbers instead
     of a plain st.dataframe grid."""
@@ -1248,11 +1248,18 @@ def render_reorder_table(df):
             return "∞"
         return f"{v:,.1f}"
 
+    product_images = product_images or {}
     rows_html = []
     for _, r in df.iterrows():
         pill_cls = REORDER_STATUS_PILL.get(r["Status"], "rr-pill-blue")
+        img_src = product_images.get(str(r["Product"]).lower())
+        img_html = (
+            f'<img src="{html_lib.escape(img_src)}" class="rr-t-thumb">' if img_src
+            else '<div class="rr-t-thumb rr-t-thumb-empty"></div>'
+        )
         rows_html.append(f"""
         <tr>
+          <td>{img_html}</td>
           <td class="rr-t-strong">{esc(r['Product'])}</td>
           <td>{esc(r['Color'])}</td>
           <td>{esc(r['Size'])}</td>
@@ -1268,7 +1275,7 @@ def render_reorder_table(df):
         </tr>""")
 
     headers = [
-        "Product", "Color", "Size", "Current Qty", "Units Sold", "Days OOS",
+        "", "Product", "Color", "Size", "Current Qty", "Units Sold", "Days OOS",
         "Daily Demand", "Days Left", "Incoming Qty", "Reorder Qty", "Status", "Confidence",
     ]
     num_cols = {"Current Qty", "Units Sold", "Days OOS", "Daily Demand", "Days Left", "Incoming Qty", "Reorder Qty"}
@@ -1280,43 +1287,6 @@ def render_reorder_table(df):
     <div class="rr-table-wrap">
       <table class="rr-table">
         <thead><tr>{header_html}</tr></thead>
-        <tbody>{"".join(rows_html)}</tbody>
-      </table>
-    </div>
-    """, unsafe_allow_html=True)
-
-def render_incoming_table(df, product_images=None):
-    """Dashboard-style table for Purchase Orders' variant-level breakdown."""
-    def esc(v):
-        return html_lib.escape(str(v)) if v not in (None, "") else "—"
-
-    product_images = product_images or {}
-    rows_html = []
-    for _, r in df.iterrows():
-        img_src = product_images.get(str(r["Product"]).lower())
-        img_html = (
-            f'<img src="{html_lib.escape(img_src)}" class="rr-t-thumb">' if img_src
-            else '<div class="rr-t-thumb rr-t-thumb-empty"></div>'
-        )
-        rows_html.append(f"""
-        <tr>
-          <td>{img_html}</td>
-          <td class="rr-t-strong">{esc(r['Product'])}</td>
-          <td>{esc(r['Color'])}</td>
-          <td>{esc(r['Size'])}</td>
-          <td class="rr-t-num rr-t-strong">{r['Incoming Qty']:,}</td>
-          <td class="rr-t-trunc">{esc(r['Batches'])}</td>
-        </tr>""")
-
-    inc_headers = ["", "Product", "Color", "Size", "Incoming Qty", "Batches"]
-    inc_header_html = "".join(
-        f'<th class="{"rr-t-num" if h == "Incoming Qty" else ""}">{h}</th>' for h in inc_headers
-    )
-
-    st.markdown(f"""
-    <div class="rr-table-wrap">
-      <table class="rr-table">
-        <thead><tr>{inc_header_html}</tr></thead>
         <tbody>{"".join(rows_html)}</tbody>
       </table>
     </div>
@@ -3195,7 +3165,11 @@ elif page == "📊 Demand & Reorder":
             fdf = fdf[fdf["Product"] == prod_filter]
         fdf = fdf.sort_values("Days Left")
 
-        render_reorder_table(fdf)
+        try:
+            reorder_product_images = fetch_shopify_product_images()
+        except Exception:
+            reorder_product_images = {}
+        render_reorder_table(fdf, reorder_product_images)
         st.caption(
             f"{len(fdf)} variant(s) shown  |  Sales data: {start_date.strftime('%b %d, %Y')} – "
             f"{end_date.strftime('%b %d, %Y')}  |  Lead time: {lead_time} days  |  "
@@ -3491,19 +3465,6 @@ elif page == "📥 Purchase Orders":
             st.info("No pending purchase orders — every batch is either Received or Cancelled.")
         else:
             render_shipment_table(pending_df)
-
-        st.markdown("")
-        st.markdown("### Incoming by Product")
-        st.caption("Only includes batches that have been marked as ordered.")
-        if not detail_rows:
-            st.info("Nothing counted as incoming yet — mark a batch as ordered above.")
-        else:
-            incoming_df = pd.DataFrame(detail_rows).sort_values(["Product", "Color", "Size"])
-            try:
-                product_images = fetch_shopify_product_images()
-            except Exception:
-                product_images = {}
-            render_incoming_table(incoming_df, product_images)
 
     except Exception as e:
         st.error(f"Could not load purchase orders: {e}")

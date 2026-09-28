@@ -2997,21 +2997,30 @@ elif page == "🔄 Restock":
             if restock_prod_filter == "All" or v["product"] == restock_prod_filter
         ]
 
+        # Streamlit forgets a widget's session_state once it isn't rendered
+        # on a run (e.g. filtered out) — a plain st.session_state.get() for a
+        # hidden item's key would silently come back empty. Quantities are
+        # mirrored into this plain dict the moment they're entered, so
+        # switching the product filter back and forth doesn't lose them.
+        pending = st.session_state.setdefault("restock_pending", {})
+
         for idx in visible_indices:
             _, item = items[idx]
             with st.container(border=True):
                 st.markdown(f"**{item['product']}**")
                 st.caption(f"{item['color']} / {item['size']} · Current: {item['qty']}")
-                st.number_input(
+                entered = st.number_input(
                     f"Add qty — {item['product']} {item['color']} {item['size']}",
-                    min_value=0, step=1, value=0,
+                    min_value=0, step=1, value=pending.get(item["row"]),
                     key=f"restock_qty_{item['row']}",
                     label_visibility="collapsed",
+                    placeholder="0",
                 )
+                pending[item["row"]] = int(entered) if entered else 0
 
         add_qty_by_idx = {}
         for idx, (_, item) in enumerate(items):
-            qty = st.session_state.get(f"restock_qty_{item['row']}", 0)
+            qty = pending.get(item["row"], 0)
             if qty and qty > 0:
                 add_qty_by_idx[idx] = int(qty)
 
@@ -3071,7 +3080,9 @@ elif page == "🔄 Restock":
                         messages.append({"kind": "error", "text": str(e)})
 
                 for idx in add_qty_by_idx:
-                    st.session_state.pop(f"restock_qty_{items[idx][1]['row']}", None)
+                    row = items[idx][1]["row"]
+                    st.session_state.pop(f"restock_qty_{row}", None)
+                    pending.pop(row, None)
                 st.session_state["restock_messages"] = messages
                 st.session_state["restock_balloons"] = True
                 st.rerun()

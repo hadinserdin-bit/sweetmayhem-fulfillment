@@ -819,20 +819,12 @@ def _order_phone(o):
     customer = o.get("customer") or {}
     return (shipping.get("phone") or o.get("phone") or customer.get("phone") or "").strip()
 
-def _order_customer_name(o):
-    shipping = o.get("shipping_address") or {}
-    customer = o.get("customer") or {}
-    name = (
-        shipping.get("name")
-        or " ".join(filter(None, [customer.get("first_name"), customer.get("last_name")])).strip()
-    )
-    return (name or "").strip()
-
-# A courier-pickup order for a refund — the customer's name is set to this on
-# purpose as a marker, so the driver knows to go collect an item rather than
-# deliver one. It should always be fulfillable and never blocked by stock
-# checks or move real inventory, since nothing is actually being shipped out.
-PICKUP_ORDER_NAME = "سحب"
+# A courier-pickup line item for a refund — added to the order on purpose as
+# a marker so the driver knows to go collect an item rather than deliver one.
+# An order made up of this (alone or alongside real products) should always
+# be fulfillable and this item should never block on or consume real
+# inventory, since nothing real is actually being shipped out for it.
+PICKUP_ITEM_NAME = "سحب"
 
 def _parse_order(o):
     items = [
@@ -849,7 +841,6 @@ def _parse_order(o):
         "phone": _order_phone(o),
         "created_at": o["created_at"],
         "line_items": items,
-        "is_pickup": _order_customer_name(o) == PICKUP_ORDER_NAME,
     }
 
 def fetch_shopify_orders():
@@ -1197,13 +1188,12 @@ def determine_fulfillable(orders, inv):
     working = deepcopy(inv)
     fulfillable, skipped = [], []
     for order in orders:
-        if order.get("is_pickup"):
-            # Always fulfillable, regardless of stock — no inventory to check
-            # or deduct since it's a driver pickup, not a real shipment.
-            fulfillable.append(order)
-            continue
         ok, reason, reqs = True, None, {}
         for item in order["line_items"]:
+            if item["name"].strip() == PICKUP_ITEM_NAME:
+                # Courier pickup marker, not a real product — doesn't need
+                # or consume any inventory, so just skip checking it.
+                continue
             p, c, s = parse_lineitem_name(item["name"])
             if not p or not s:
                 ok, reason = False, f"Can't parse: '{item['name']}'"
@@ -1235,9 +1225,9 @@ def determine_fulfillable(orders, inv):
 def recalc_inv(orig, fulfillable):
     new = deepcopy(orig)
     for order in fulfillable:
-        if order.get("is_pickup"):
-            continue
         for item in order["line_items"]:
+            if item["name"].strip() == PICKUP_ITEM_NAME:
+                continue
             p, c, s = parse_lineitem_name(item["name"])
             if p and c and s:
                 k = find_key(new, p, c, s)
@@ -2885,7 +2875,7 @@ if page == "📦 Fulfillment":
                     items_str = "  ·  ".join(
                         f"{i['name']} ×{i['quantity']}" for i in order["line_items"]
                     )
-                    if order.get("is_pickup"):
+                    if any(i["name"].strip() == PICKUP_ITEM_NAME for i in order["line_items"]):
                         items_str = ":blue[:material/local_shipping: Driver pickup — no stock check]  ·  " + items_str
                     rc = st.columns([2, 2, 1.3, 4, 1])
                     rc[0].markdown(f"`{order['name']}`")

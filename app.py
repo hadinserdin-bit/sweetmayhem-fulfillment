@@ -3054,23 +3054,37 @@ elif page == "🔄 Restock":
             if add_qty_by_idx:
                 st.info(f"{len(add_qty_by_idx)} item(s) with quantities to add.")
 
-            if st.button("Apply Restock", type="primary", use_container_width=True):
+            # Two-step guard against a slow/laggy click landing twice (which
+            # otherwise double-restocks): clicking only sets a flag and
+            # immediately reruns — it does the actual work on the *next* run,
+            # by which point the button below already renders disabled. A
+            # genuine double-click almost always lands on that disabled
+            # button rather than re-triggering the whole handler.
+            applying = st.session_state.get("restock_applying", False)
+
+            if st.button("Apply Restock", type="primary", use_container_width=True, disabled=applying):
                 if not add_qty_by_idx:
                     st.warning("No quantities entered. Tap a quantity box first.")
                 else:
-                    messages = []
-                    with st.spinner("Updating Google Sheets…"):
-                        try:
-                            updates = [
-                                (items[idx][1]["row"], items[idx][1]["qty"] + delta)
-                                for idx, delta in add_qty_by_idx.items()
-                            ]
-                            batch_update_qty(ws, updates)
-                            messages.append({"kind": "success", "text": f"{len(updates)} item(s) restocked!", "icon": ":material/check_circle:"})
-                        except Exception as e:
-                            st.error(str(e))
-                            st.stop()
+                    st.session_state["restock_applying"] = True
+                    st.rerun()
 
+            if applying:
+                messages = []
+                sheet_update_ok = False
+                with st.spinner("Updating Google Sheets…"):
+                    try:
+                        updates = [
+                            (items[idx][1]["row"], items[idx][1]["qty"] + delta)
+                            for idx, delta in add_qty_by_idx.items()
+                        ]
+                        batch_update_qty(ws, updates)
+                        messages.append({"kind": "success", "text": f"{len(updates)} item(s) restocked!", "icon": ":material/check_circle:"})
+                        sheet_update_ok = True
+                    except Exception as e:
+                        messages.append({"kind": "error", "text": str(e)})
+
+                if sheet_update_ok:
                     with st.spinner("Adding restocked quantities to Shopify…"):
                         try:
                             variant_map = fetch_shopify_variant_map()
@@ -3110,9 +3124,13 @@ elif page == "🔄 Restock":
                         row = items[idx][1]["row"]
                         st.session_state.pop(f"restock_qty_{row}", None)
                         pending.pop(row, None)
-                    st.session_state["restock_messages"] = messages
-                    st.session_state["restock_balloons"] = True
-                    st.rerun()
+
+                # Always cleared, success or failure — otherwise a Sheets
+                # write failure would leave the button stuck disabled forever.
+                st.session_state["restock_applying"] = False
+                st.session_state["restock_messages"] = messages
+                st.session_state["restock_balloons"] = sheet_update_ok
+                st.rerun()
 
         # Changing the product filter, typing in a quantity box, or clicking
         # Apply Restock all rerun just this fragment instead of the whole

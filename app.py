@@ -3054,82 +3054,92 @@ elif page == "🔄 Restock":
             if add_qty_by_idx:
                 st.info(f"{len(add_qty_by_idx)} item(s) with quantities to add.")
 
-            # Two-step guard against a slow/laggy click landing twice (which
-            # otherwise double-restocks): clicking only sets a flag and
-            # immediately reruns — it does the actual work on the *next* run,
-            # by which point the button below already renders disabled. A
-            # genuine double-click almost always lands on that disabled
-            # button rather than re-triggering the whole handler.
+            # A slow/laggy click can fire more than once, and a disabled-button
+            # flag alone isn't enough to stop it — Streamlit can interrupt and
+            # restart a run that's mid-flight on a slow network call, and a
+            # restarted run would just see the same un-cleared quantities and
+            # redo the same write. So the button click "claims" the batch —
+            # snapshots it and wipes the quantity boxes synchronously, before
+            # any network call — so a duplicate/restarted run finds nothing
+            # left to redo. Whatever run actually finishes the work then pops
+            # the claimed batch atomically, as its very first action, so a
+            # run interrupted partway through can't be redone by another one.
             applying = st.session_state.get("restock_applying", False)
 
             if st.button("Apply Restock", type="primary", use_container_width=True, disabled=applying):
                 if not add_qty_by_idx:
                     st.warning("No quantities entered. Tap a quantity box first.")
                 else:
-                    st.session_state["restock_applying"] = True
-                    st.rerun()
-
-            if applying:
-                messages = []
-                sheet_update_ok = False
-                with st.spinner("Updating Google Sheets…"):
-                    try:
-                        updates = [
-                            (items[idx][1]["row"], items[idx][1]["qty"] + delta)
-                            for idx, delta in add_qty_by_idx.items()
-                        ]
-                        batch_update_qty(ws, updates)
-                        messages.append({"kind": "success", "text": f"{len(updates)} item(s) restocked!", "icon": ":material/check_circle:"})
-                        sheet_update_ok = True
-                    except Exception as e:
-                        messages.append({"kind": "error", "text": str(e)})
-
-                if sheet_update_ok:
-                    with st.spinner("Adding restocked quantities to Shopify…"):
-                        try:
-                            variant_map = fetch_shopify_variant_map()
-                            location_id = get_primary_location_id()
-                            synced, unmatched, failed = 0, [], []
-                            for idx, delta in add_qty_by_idx.items():
-                                _, item = items[idx]
-                                label = f"{item['product']} — {item['color']} / {item['size']}"
-                                inv_item_id = find_shopify_inventory_item(
-                                    variant_map, item["product"], item["color"], item["size"]
-                                )
-                                if inv_item_id is None:
-                                    unmatched.append(label)
-                                    continue
-                                try:
-                                    add_shopify_onhand_quantity(inv_item_id, location_id, delta)
-                                    synced += 1
-                                except Exception as e:
-                                    failed.append(f"{label}: {e}")
-                            if synced:
-                                messages.append({"kind": "success", "text": f"{synced} item(s) added to Shopify's on-hand quantity.", "icon": ":material/sync:"})
-                            if unmatched:
-                                messages.append({"kind": "warning", "text":
-                                    "Couldn't match to a Shopify variant (Sheet quantity was still "
-                                    "updated) — check these manually in Shopify:\n\n"
-                                    + "\n".join(f"- {m}" for m in unmatched)
-                                })
-                            if failed:
-                                messages.append({"kind": "error", "text":
-                                    "Matched in Shopify but the inventory update failed:\n\n"
-                                    + "\n".join(f"- {f}" for f in failed)
-                                })
-                        except Exception as e:
-                            messages.append({"kind": "error", "text": str(e)})
-
                     for idx in add_qty_by_idx:
                         row = items[idx][1]["row"]
                         st.session_state.pop(f"restock_qty_{row}", None)
                         pending.pop(row, None)
+                    st.session_state["restock_batch_to_apply"] = add_qty_by_idx
+                    st.session_state["restock_applying"] = True
+                    st.rerun()
 
-                # Always cleared, success or failure — otherwise a Sheets
-                # write failure would leave the button stuck disabled forever.
-                st.session_state["restock_applying"] = False
-                st.session_state["restock_messages"] = messages
-                st.session_state["restock_balloons"] = sheet_update_ok
+            if applying:
+                batch = st.session_state.pop("restock_batch_to_apply", None)
+                if not batch:
+                    # Already claimed and completed (or aborted) by an
+                    # earlier attempt at this same click — nothing left to do.
+                    st.session_state["restock_applying"] = False
+                else:
+                    messages = []
+                    sheet_update_ok = False
+                    with st.spinner("Updating Google Sheets…"):
+                        try:
+                            updates = [
+                                (items[idx][1]["row"], items[idx][1]["qty"] + delta)
+                                for idx, delta in batch.items()
+                            ]
+                            batch_update_qty(ws, updates)
+                            messages.append({"kind": "success", "text": f"{len(updates)} item(s) restocked!", "icon": ":material/check_circle:"})
+                            sheet_update_ok = True
+                        except Exception as e:
+                            messages.append({"kind": "error", "text": str(e)})
+
+                    if sheet_update_ok:
+                        with st.spinner("Adding restocked quantities to Shopify…"):
+                            try:
+                                variant_map = fetch_shopify_variant_map()
+                                location_id = get_primary_location_id()
+                                synced, unmatched, failed = 0, [], []
+                                for idx, delta in batch.items():
+                                    _, item = items[idx]
+                                    label = f"{item['product']} — {item['color']} / {item['size']}"
+                                    inv_item_id = find_shopify_inventory_item(
+                                        variant_map, item["product"], item["color"], item["size"]
+                                    )
+                                    if inv_item_id is None:
+                                        unmatched.append(label)
+                                        continue
+                                    try:
+                                        add_shopify_onhand_quantity(inv_item_id, location_id, delta)
+                                        synced += 1
+                                    except Exception as e:
+                                        failed.append(f"{label}: {e}")
+                                if synced:
+                                    messages.append({"kind": "success", "text": f"{synced} item(s) added to Shopify's on-hand quantity.", "icon": ":material/sync:"})
+                                if unmatched:
+                                    messages.append({"kind": "warning", "text":
+                                        "Couldn't match to a Shopify variant (Sheet quantity was still "
+                                        "updated) — check these manually in Shopify:\n\n"
+                                        + "\n".join(f"- {m}" for m in unmatched)
+                                    })
+                                if failed:
+                                    messages.append({"kind": "error", "text":
+                                        "Matched in Shopify but the inventory update failed:\n\n"
+                                        + "\n".join(f"- {f}" for f in failed)
+                                    })
+                            except Exception as e:
+                                messages.append({"kind": "error", "text": str(e)})
+
+                    # Always cleared, success or failure — otherwise a Sheets
+                    # write failure would leave the button stuck disabled forever.
+                    st.session_state["restock_applying"] = False
+                    st.session_state["restock_messages"] = messages
+                    st.session_state["restock_balloons"] = sheet_update_ok
                 st.rerun()
 
         # Changing the product filter, typing in a quantity box, or clicking

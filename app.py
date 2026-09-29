@@ -1188,7 +1188,7 @@ def determine_fulfillable(orders, inv):
     working = deepcopy(inv)
     fulfillable, skipped = [], []
     for order in orders:
-        ok, reason, reqs = True, None, {}
+        reasons, reqs = [], {}
         for item in order["line_items"]:
             if item["name"].strip() == PICKUP_ITEM_NAME:
                 # Courier pickup marker, not a real product — doesn't need
@@ -1196,29 +1196,31 @@ def determine_fulfillable(orders, inv):
                 continue
             p, c, s = parse_lineitem_name(item["name"])
             if not p or not s:
-                ok, reason = False, f"Can't parse: '{item['name']}'"
-                break
+                reasons.append(f"Can't parse: '{item['name']}'")
+                continue
             if not c:
-                ok, reason = False, f"No color in: '{item['name']}'"
-                break
+                reasons.append(f"No color in: '{item['name']}'")
+                continue
             k = find_key(working, p, c, s)
             if k is None:
-                ok, reason = False, f"Not in inventory: {p} — {c} / {s}"
-                break
+                reasons.append(f"Not in inventory: {p} — {c} / {s}")
+                continue
             reqs[k] = reqs.get(k, 0) + item["quantity"]
-        if ok:
-            for k, need in reqs.items():
-                have = working[k]["qty"]
-                if have < need:
-                    v = working[k]
-                    ok, reason = False, f"Low stock: {v['product']} — {v['color']} / {v['size']} (need {need}, have {have})"
-                    break
-        if ok:
+        # Checked for every item that did resolve, regardless of whether some
+        # other item on the same order failed to parse — one order can have
+        # several different problems and all of them should be reported, not
+        # just whichever came first.
+        for k, need in reqs.items():
+            have = working[k]["qty"]
+            if have < need:
+                v = working[k]
+                reasons.append(f"Low stock: {v['product']} — {v['color']} / {v['size']} (need {need}, have {have})")
+        if not reasons:
             for k, q in reqs.items():
                 working[k]["qty"] -= q
             fulfillable.append(order)
         else:
-            order["skip_reason"] = reason
+            order["skip_reason"] = "; ".join(reasons)
             skipped.append(order)
     return fulfillable, skipped, working
 

@@ -79,6 +79,9 @@ def _resilient_google_call(fn):
             for name in (
                 "_gc", "_drive", "_spreadsheet", "_shipment_tracker_spreadsheet",
                 "_refunds_spreadsheet", "_cancelled_orders_spreadsheet",
+                "get_ws", "get_users_ws", "get_refunds_ws", "get_co_ws",
+                "get_co_settings_ws", "get_product_prices_ws", "get_snapshot_ws",
+                "get_shipment_tracker_ws", "get_shipment_line_items_ws",
             ):
                 cache_fn = globals().get(name)
                 if cache_fn is not None:
@@ -99,6 +102,7 @@ def _resilient_shopify_call(fn):
             return fn(*args, **kwargs)
     return wrapper
 
+@st.cache_resource
 @_resilient_google_call
 def get_ws():
     return _spreadsheet().get_worksheet(0)
@@ -146,6 +150,7 @@ def page_label(p):
 PAGE_SLUGS = {p: re.sub(r"[^a-z0-9]+", "-", page_label(p).lower()).strip("-") for p in ALL_PAGES + [ADMIN_PAGE]}
 SLUG_TO_PAGE = {v: k for k, v in PAGE_SLUGS.items()}
 
+@st.cache_resource
 @_resilient_google_call
 def get_users_ws():
     sh = _spreadsheet()
@@ -246,6 +251,7 @@ REFUND_STATUSES = ["Pending", "Refunded", "Rejected"]
 def _refunds_spreadsheet():
     return _gc().open_by_key(REFUNDS_SHEET_ID)
 
+@st.cache_resource
 @_resilient_google_call
 def get_refunds_ws():
     sh = _refunds_spreadsheet()
@@ -325,6 +331,7 @@ CO_SETTINGS_COLUMNS = [
 def _cancelled_orders_spreadsheet():
     return _gc().open_by_key(CANCELLED_ORDERS_SHEET_ID)
 
+@st.cache_resource
 @_resilient_google_call
 def get_co_ws():
     sh = _cancelled_orders_spreadsheet()
@@ -335,6 +342,7 @@ def get_co_ws():
         ws.append_row(CO_COLUMNS)
         return ws
 
+@st.cache_resource
 @_resilient_google_call
 def get_co_settings_ws():
     sh = _cancelled_orders_spreadsheet()
@@ -765,6 +773,7 @@ def batch_update_qty(ws, updates):
 
 PRODUCT_PRICES_TAB = "Product Prices"
 
+@st.cache_resource
 @_resilient_google_call
 def get_product_prices_ws():
     sh = _spreadsheet()
@@ -1435,6 +1444,7 @@ def render_shipment_table(df):
 SNAPSHOT_SHEET_NAME = "InventorySnapshots"
 MIN_TRACKED_DAYS = 5  # minimum days of stock-history before trusting the adjusted rate
 
+@st.cache_resource
 @_resilient_google_call
 def get_snapshot_ws():
     sh = _spreadsheet()
@@ -1462,12 +1472,22 @@ def _match_shopify_available(available_by_key, product, color, size):
             ratio, best_val = r, info
     return best_val
 
+@st.cache_data(ttl=600)
+def _snapshot_dates_logged():
+    return set(get_snapshot_ws().col_values(1))
+
 def record_snapshot_if_needed(inv):
     """Log today's Shopify Available quantity per variant, once per day —
     Available (not the Studio Inventory count) is what actually blocks a
     sale, so it's the correct signal for whether a variant was genuinely
-    out of stock that day, feeding Demand & Reorder's OOS-adjusted demand."""
+    out of stock that day, feeding Demand & Reorder's OOS-adjusted demand.
+    The "already logged today" check is cached, since otherwise it's a full
+    Google Sheets column read on every single Demand & Reorder page load —
+    a real (if small) network round-trip paid uselessly ~all day, every day,
+    once today's snapshot already exists."""
     today = datetime.now().strftime("%Y-%m-%d")
+    if today in _snapshot_dates_logged():
+        return False
     ws = get_snapshot_ws()
     existing_dates = set(ws.col_values(1))
     if today in existing_dates:
@@ -1480,6 +1500,7 @@ def record_snapshot_if_needed(inv):
         rows.append([today, v["product"], v["color"], v["size"], qty])
     if rows:
         ws.append_rows(rows)
+        _snapshot_dates_logged.clear()
     return True
 
 @st.cache_data(ttl=600)
@@ -1625,6 +1646,7 @@ SHIPMENT_TRACKER_TAB = "Shipments Tracker"
 def _shipment_tracker_spreadsheet():
     return _gc().open_by_key(SHIPMENT_TRACKER_SHEET_ID)
 
+@st.cache_resource
 @_resilient_google_call
 def get_shipment_tracker_ws():
     return _shipment_tracker_spreadsheet().worksheet(SHIPMENT_TRACKER_TAB)
@@ -1880,6 +1902,7 @@ def delete_shipment_detail_file(file_id):
 
 SHIPMENT_LINE_ITEMS_TAB = "Shipment Line Items"
 
+@st.cache_resource
 @_resilient_google_call
 def get_shipment_line_items_ws():
     sh = _shipment_tracker_spreadsheet()

@@ -3014,14 +3014,6 @@ elif page == "🔄 Restock":
 
         items = list(inv.items())
 
-        restock_products = ["All"] + sorted({v["product"] for _, v in items})
-        restock_prod_filter = st.selectbox("Filter by Product", restock_products, key="restock_prod_filter")
-
-        visible_indices = [
-            idx for idx, (_, v) in enumerate(items)
-            if restock_prod_filter == "All" or v["product"] == restock_prod_filter
-        ]
-
         # Streamlit forgets a widget's session_state once it isn't rendered
         # on a run (e.g. filtered out) — a plain st.session_state.get() for a
         # hidden item's key would silently come back empty. Quantities are
@@ -3029,88 +3021,107 @@ elif page == "🔄 Restock":
         # switching the product filter back and forth doesn't lose them.
         pending = st.session_state.setdefault("restock_pending", {})
 
-        for idx in visible_indices:
-            _, item = items[idx]
-            with st.container(border=True):
-                st.markdown(f"**{item['product']}**")
-                st.caption(f"{item['color']} / {item['size']} · Current: {item['qty']}")
-                entered = st.number_input(
-                    f"Add qty — {item['product']} {item['color']} {item['size']}",
-                    min_value=0, step=1, value=pending.get(item["row"]),
-                    key=f"restock_qty_{item['row']}",
-                    label_visibility="collapsed",
-                    placeholder="0",
-                )
-                pending[item["row"]] = int(entered) if entered else 0
+        @st.fragment
+        def _render_restock_items():
+            restock_products = ["All"] + sorted({v["product"] for _, v in items})
+            restock_prod_filter = st.selectbox("Filter by Product", restock_products, key="restock_prod_filter")
 
-        add_qty_by_idx = {}
-        for idx, (_, item) in enumerate(items):
-            qty = pending.get(item["row"], 0)
-            if qty and qty > 0:
-                add_qty_by_idx[idx] = int(qty)
+            visible_indices = [
+                idx for idx, (_, v) in enumerate(items)
+                if restock_prod_filter == "All" or v["product"] == restock_prod_filter
+            ]
 
-        if add_qty_by_idx:
-            st.info(f"{len(add_qty_by_idx)} item(s) with quantities to add.")
+            for idx in visible_indices:
+                _, item = items[idx]
+                with st.container(border=True):
+                    st.markdown(f"**{item['product']}**")
+                    st.caption(f"{item['color']} / {item['size']} · Current: {item['qty']}")
+                    entered = st.number_input(
+                        f"Add qty — {item['product']} {item['color']} {item['size']}",
+                        min_value=0, step=1, value=pending.get(item["row"]),
+                        key=f"restock_qty_{item['row']}",
+                        label_visibility="collapsed",
+                        placeholder="0",
+                    )
+                    pending[item["row"]] = int(entered) if entered else 0
 
-        if st.button("Apply Restock", type="primary", use_container_width=True):
-            if not add_qty_by_idx:
-                st.warning("No quantities entered. Tap a quantity box first.")
-            else:
-                messages = []
-                with st.spinner("Updating Google Sheets…"):
-                    try:
-                        updates = [
-                            (items[idx][1]["row"], items[idx][1]["qty"] + delta)
-                            for idx, delta in add_qty_by_idx.items()
-                        ]
-                        batch_update_qty(ws, updates)
-                        messages.append({"kind": "success", "text": f"{len(updates)} item(s) restocked!", "icon": ":material/check_circle:"})
-                    except Exception as e:
-                        st.error(str(e))
-                        st.stop()
+            add_qty_by_idx = {}
+            for idx, (_, item) in enumerate(items):
+                qty = pending.get(item["row"], 0)
+                if qty and qty > 0:
+                    add_qty_by_idx[idx] = int(qty)
 
-                with st.spinner("Adding restocked quantities to Shopify…"):
-                    try:
-                        variant_map = fetch_shopify_variant_map()
-                        location_id = get_primary_location_id()
-                        synced, unmatched, failed = 0, [], []
-                        for idx, delta in add_qty_by_idx.items():
-                            _, item = items[idx]
-                            label = f"{item['product']} — {item['color']} / {item['size']}"
-                            inv_item_id = find_shopify_inventory_item(
-                                variant_map, item["product"], item["color"], item["size"]
-                            )
-                            if inv_item_id is None:
-                                unmatched.append(label)
-                                continue
-                            try:
-                                add_shopify_onhand_quantity(inv_item_id, location_id, delta)
-                                synced += 1
-                            except Exception as e:
-                                failed.append(f"{label}: {e}")
-                        if synced:
-                            messages.append({"kind": "success", "text": f"{synced} item(s) added to Shopify's on-hand quantity.", "icon": ":material/sync:"})
-                        if unmatched:
-                            messages.append({"kind": "warning", "text":
-                                "Couldn't match to a Shopify variant (Sheet quantity was still "
-                                "updated) — check these manually in Shopify:\n\n"
-                                + "\n".join(f"- {m}" for m in unmatched)
-                            })
-                        if failed:
-                            messages.append({"kind": "error", "text":
-                                "Matched in Shopify but the inventory update failed:\n\n"
-                                + "\n".join(f"- {f}" for f in failed)
-                            })
-                    except Exception as e:
-                        messages.append({"kind": "error", "text": str(e)})
+            if add_qty_by_idx:
+                st.info(f"{len(add_qty_by_idx)} item(s) with quantities to add.")
 
-                for idx in add_qty_by_idx:
-                    row = items[idx][1]["row"]
-                    st.session_state.pop(f"restock_qty_{row}", None)
-                    pending.pop(row, None)
-                st.session_state["restock_messages"] = messages
-                st.session_state["restock_balloons"] = True
-                st.rerun()
+            if st.button("Apply Restock", type="primary", use_container_width=True):
+                if not add_qty_by_idx:
+                    st.warning("No quantities entered. Tap a quantity box first.")
+                else:
+                    messages = []
+                    with st.spinner("Updating Google Sheets…"):
+                        try:
+                            updates = [
+                                (items[idx][1]["row"], items[idx][1]["qty"] + delta)
+                                for idx, delta in add_qty_by_idx.items()
+                            ]
+                            batch_update_qty(ws, updates)
+                            messages.append({"kind": "success", "text": f"{len(updates)} item(s) restocked!", "icon": ":material/check_circle:"})
+                        except Exception as e:
+                            st.error(str(e))
+                            st.stop()
+
+                    with st.spinner("Adding restocked quantities to Shopify…"):
+                        try:
+                            variant_map = fetch_shopify_variant_map()
+                            location_id = get_primary_location_id()
+                            synced, unmatched, failed = 0, [], []
+                            for idx, delta in add_qty_by_idx.items():
+                                _, item = items[idx]
+                                label = f"{item['product']} — {item['color']} / {item['size']}"
+                                inv_item_id = find_shopify_inventory_item(
+                                    variant_map, item["product"], item["color"], item["size"]
+                                )
+                                if inv_item_id is None:
+                                    unmatched.append(label)
+                                    continue
+                                try:
+                                    add_shopify_onhand_quantity(inv_item_id, location_id, delta)
+                                    synced += 1
+                                except Exception as e:
+                                    failed.append(f"{label}: {e}")
+                            if synced:
+                                messages.append({"kind": "success", "text": f"{synced} item(s) added to Shopify's on-hand quantity.", "icon": ":material/sync:"})
+                            if unmatched:
+                                messages.append({"kind": "warning", "text":
+                                    "Couldn't match to a Shopify variant (Sheet quantity was still "
+                                    "updated) — check these manually in Shopify:\n\n"
+                                    + "\n".join(f"- {m}" for m in unmatched)
+                                })
+                            if failed:
+                                messages.append({"kind": "error", "text":
+                                    "Matched in Shopify but the inventory update failed:\n\n"
+                                    + "\n".join(f"- {f}" for f in failed)
+                                })
+                        except Exception as e:
+                            messages.append({"kind": "error", "text": str(e)})
+
+                    for idx in add_qty_by_idx:
+                        row = items[idx][1]["row"]
+                        st.session_state.pop(f"restock_qty_{row}", None)
+                        pending.pop(row, None)
+                    st.session_state["restock_messages"] = messages
+                    st.session_state["restock_balloons"] = True
+                    st.rerun()
+
+        # Changing the product filter, typing in a quantity box, or clicking
+        # Apply Restock all rerun just this fragment instead of the whole
+        # page (sidebar, CSS, the rest of the app) — with up to ~139
+        # individual widgets to redraw, that was the actual source of the
+        # lag when switching filters. st.rerun() above still forces a full
+        # app rerun as normal (its default behavior, even called from inside
+        # a fragment), so the success/balloons flow after Apply is unchanged.
+        _render_restock_items()
     except Exception as e:
         st.error(f"Could not load inventory: {e}")
 

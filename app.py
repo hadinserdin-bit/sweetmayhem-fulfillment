@@ -3066,7 +3066,11 @@ elif page == "🔄 Restock":
             # run interrupted partway through can't be redone by another one.
             applying = st.session_state.get("restock_applying", False)
 
-            if st.button("Apply Restock", type="primary", use_container_width=True, disabled=applying):
+            if st.button(
+                "Restocking…" if applying else "Apply Restock",
+                icon=":material/hourglass_top:" if applying else None,
+                type="primary", use_container_width=True, disabled=applying,
+            ):
                 if not add_qty_by_idx:
                     st.warning("No quantities entered. Tap a quantity box first.")
                 else:

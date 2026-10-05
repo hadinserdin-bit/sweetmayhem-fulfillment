@@ -2698,8 +2698,12 @@ button[data-testid="stNumberInputStepDown"] {
     border-radius: 0.5rem !important;
 }
 
-/* ── Hide Streamlit's own "Made with Streamlit" footer ── */
-footer, [data-testid="stFooter"] {
+/* ── Hide Streamlit's own chrome: the "Made with Streamlit" footer, the
+   hamburger menu (Rerun/Settings/Clear cache/etc.), and the Deploy button —
+   none of it is meaningful for staff using an already-deployed internal app. ── */
+footer, [data-testid="stFooter"],
+#MainMenu, [data-testid="stMainMenu"],
+[data-testid="stAppDeployButton"] {
     display: none !important;
 }
 </style>

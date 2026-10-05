@@ -2697,6 +2697,11 @@ button[data-testid="stNumberInputStepDown"] {
 [data-testid="stNumberInputContainer"] {
     border-radius: 0.5rem !important;
 }
+
+/* ── Hide Streamlit's own "Made with Streamlit" footer ── */
+footer, [data-testid="stFooter"] {
+    display: none !important;
+}
 </style>
 """, unsafe_allow_html=True)
 

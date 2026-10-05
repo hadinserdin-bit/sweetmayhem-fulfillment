@@ -12,6 +12,7 @@ from difflib import SequenceMatcher
 from datetime import datetime, date, timedelta
 from copy import deepcopy
 from urllib.parse import quote as url_quote
+import html
 import io
 import math
 import re
@@ -850,6 +851,7 @@ def _parse_order(o):
         "phone": _order_phone(o),
         "created_at": o["created_at"],
         "line_items": items,
+        "note": (o.get("note") or "").strip(),
     }
 
 def fetch_shopify_orders():
@@ -2887,12 +2889,24 @@ if page == "📦 Fulfillment":
                         icon=":material/phone_disabled:",
                     )
 
-                st.caption("Click :material/close: to remove an order from this run before fulfilling.")
-                hc = st.columns([2, 2, 1.3, 4, 1])
+                noted = [o for o in fulfillable if o.get("note")]
+                if noted:
+                    names = ", ".join(f"`{o['name']}`" for o in noted)
+                    st.warning(
+                        f"{len(noted)} order(s) have a note on Shopify — it may be a request to "
+                        f"hold or schedule the shipment, check before fulfilling: {names}",
+                        icon=":material/event_note:",
+                    )
+
+                st.caption(
+                    "Click :material/close: to remove an order from this run before fulfilling. "
+                    "Hover a flag for details."
+                )
+                hc = st.columns([1.4, 1.3, 3.6, 2, 0.8])
                 hc[0].markdown("**Order #**")
                 hc[1].markdown("**Date**")
-                hc[2].markdown("**Phone**")
-                hc[3].markdown("**Items**")
+                hc[2].markdown("**Items**")
+                hc[3].markdown("**Flags**")
                 hc[4].markdown("**Remove**")
 
                 for order in fulfillable:
@@ -2900,16 +2914,18 @@ if page == "📦 Fulfillment":
                     items_str = "  ·  ".join(
                         f"{i['name']} ×{i['quantity']}" for i in order["line_items"]
                     )
-                    if any(i["name"].strip() == PICKUP_ITEM_NAME for i in order["line_items"]):
-                        items_str = ":blue[:material/local_shipping: Driver pickup — no stock check]  ·  " + items_str
-                    rc = st.columns([2, 2, 1.3, 4, 1])
+
+                    flags = []
+                    if not order.get("phone"):
+                        flags.append('<span class="rr-pill rr-pill-red" style="cursor:help" title="No phone number on file — carriers can fail delivery without one">⚠ No phone</span>')
+                    if order.get("note"):
+                        flags.append(f'<span class="rr-pill rr-pill-amber" style="cursor:help" title="{html.escape(order["note"])}">📋 Note</span>')
+
+                    rc = st.columns([1.4, 1.3, 3.6, 2, 0.8])
                     rc[0].markdown(f"`{order['name']}`")
                     rc[1].markdown(date)
-                    if order.get("phone"):
-                        rc[2].markdown(":material/check_circle:")
-                    else:
-                        rc[2].markdown(":red[:material/warning: Missing]")
-                    rc[3].markdown(items_str)
+                    rc[2].markdown(items_str)
+                    rc[3].markdown(" ".join(flags) if flags else "—", unsafe_allow_html=True)
                     if rc[4].button("", icon=":material/close:", key=f"rm_{order['name']}"):
                         st.session_state.removed.add(order["name"])
                         st.rerun()

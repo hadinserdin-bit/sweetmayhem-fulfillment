@@ -2898,12 +2898,15 @@ if page == "📦 Fulfillment":
                         icon=":material/event_note:",
                     )
 
-                st.caption("Click :material/close: to remove an order from this run before fulfilling.")
-                hc = st.columns([2, 2, 1.3, 4, 1])
+                st.caption(
+                    "Click :material/close: to remove an order from this run before fulfilling. "
+                    "Hover a flag for details."
+                )
+                hc = st.columns([1.4, 1.3, 3.6, 2, 0.8])
                 hc[0].markdown("**Order #**")
                 hc[1].markdown("**Date**")
-                hc[2].markdown("**Phone**")
-                hc[3].markdown("**Items**")
+                hc[2].markdown("**Items**")
+                hc[3].markdown("**Flags**")
                 hc[4].markdown("**Remove**")
 
                 for order in fulfillable:
@@ -2911,26 +2914,24 @@ if page == "📦 Fulfillment":
                     items_str = "  ·  ".join(
                         f"{i['name']} ×{i['quantity']}" for i in order["line_items"]
                     )
-                    if any(i["name"].strip() == PICKUP_ITEM_NAME for i in order["line_items"]):
-                        items_str = ":blue[:material/local_shipping: Driver pickup — no stock check]  ·  " + items_str
-                    rc = st.columns([2, 2, 1.3, 4, 1])
+                    is_pickup = any(i["name"].strip() == PICKUP_ITEM_NAME for i in order["line_items"])
+
+                    flags = []
+                    if not order.get("phone"):
+                        flags.append('<span class="rr-pill rr-pill-red" style="cursor:help" title="No phone number on file — carriers can fail delivery without one">⚠ No phone</span>')
+                    if order.get("note"):
+                        flags.append(f'<span class="rr-pill rr-pill-amber" style="cursor:help" title="{html.escape(order["note"])}">📋 Note</span>')
+                    if is_pickup:
+                        flags.append('<span class="rr-pill rr-pill-blue" style="cursor:help" title="Driver pickup — no stock check">🚚 Pickup</span>')
+
+                    rc = st.columns([1.4, 1.3, 3.6, 2, 0.8])
                     rc[0].markdown(f"`{order['name']}`")
                     rc[1].markdown(date)
-                    if order.get("phone"):
-                        rc[2].markdown(":material/check_circle:")
-                    else:
-                        rc[2].markdown(":red[:material/warning: Missing]")
-                    rc[3].markdown(items_str)
+                    rc[2].markdown(items_str)
+                    rc[3].markdown(" ".join(flags) if flags else "—", unsafe_allow_html=True)
                     if rc[4].button("", icon=":material/close:", key=f"rm_{order['name']}"):
                         st.session_state.removed.add(order["name"])
                         st.rerun()
-                    if order.get("note"):
-                        st.markdown(
-                            f'<div style="margin:-4px 0 10px 0;padding:7px 11px;background:#fff6e0;'
-                            f'border-left:3px solid #966600;border-radius:4px;font-size:0.82rem;color:#966600">'
-                            f'⚠️ <strong>Shopify note:</strong> {html.escape(order["note"])}</div>',
-                            unsafe_allow_html=True,
-                        )
 
                 st.divider()
                 confirm = st.checkbox(

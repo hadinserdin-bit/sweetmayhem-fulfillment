@@ -2914,15 +2914,12 @@ if page == "📦 Fulfillment":
                     items_str = "  ·  ".join(
                         f"{i['name']} ×{i['quantity']}" for i in order["line_items"]
                     )
-                    is_pickup = any(i["name"].strip() == PICKUP_ITEM_NAME for i in order["line_items"])
 
                     flags = []
                     if not order.get("phone"):
                         flags.append('<span class="rr-pill rr-pill-red" style="cursor:help" title="No phone number on file — carriers can fail delivery without one">⚠ No phone</span>')
                     if order.get("note"):
                         flags.append(f'<span class="rr-pill rr-pill-amber" style="cursor:help" title="{html.escape(order["note"])}">📋 Note</span>')
-                    if is_pickup:
-                        flags.append('<span class="rr-pill rr-pill-blue" style="cursor:help" title="Driver pickup — no stock check">🚚 Pickup</span>')
 
                     rc = st.columns([1.4, 1.3, 3.6, 2, 0.8])
                     rc[0].markdown(f"`{order['name']}`")

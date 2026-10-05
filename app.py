@@ -12,6 +12,7 @@ from difflib import SequenceMatcher
 from datetime import datetime, date, timedelta
 from copy import deepcopy
 from urllib.parse import quote as url_quote
+import html
 import io
 import math
 import re
@@ -850,6 +851,7 @@ def _parse_order(o):
         "phone": _order_phone(o),
         "created_at": o["created_at"],
         "line_items": items,
+        "note": (o.get("note") or "").strip(),
     }
 
 def fetch_shopify_orders():
@@ -2887,6 +2889,15 @@ if page == "📦 Fulfillment":
                         icon=":material/phone_disabled:",
                     )
 
+                noted = [o for o in fulfillable if o.get("note")]
+                if noted:
+                    names = ", ".join(f"`{o['name']}`" for o in noted)
+                    st.warning(
+                        f"{len(noted)} order(s) have a note on Shopify — it may be a request to "
+                        f"hold or schedule the shipment, check before fulfilling: {names}",
+                        icon=":material/event_note:",
+                    )
+
                 st.caption("Click :material/close: to remove an order from this run before fulfilling.")
                 hc = st.columns([2, 2, 1.3, 4, 1])
                 hc[0].markdown("**Order #**")
@@ -2913,6 +2924,13 @@ if page == "📦 Fulfillment":
                     if rc[4].button("", icon=":material/close:", key=f"rm_{order['name']}"):
                         st.session_state.removed.add(order["name"])
                         st.rerun()
+                    if order.get("note"):
+                        st.markdown(
+                            f'<div style="margin:-4px 0 10px 0;padding:7px 11px;background:#fff6e0;'
+                            f'border-left:3px solid #966600;border-radius:4px;font-size:0.82rem;color:#966600">'
+                            f'⚠️ <strong>Shopify note:</strong> {html.escape(order["note"])}</div>',
+                            unsafe_allow_html=True,
+                        )
 
                 st.divider()
                 confirm = st.checkbox(

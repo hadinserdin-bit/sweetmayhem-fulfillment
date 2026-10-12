@@ -1600,8 +1600,9 @@ def aggregate_sales(orders, inv):
             sold[k] = sold.get(k, 0) + qty
     return sold, unmatched
 
-def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days, incoming=None, continue_oos=None):
+def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, coverage_days, incoming=None, continue_oos=None, stock_qty_by_key=None):
     incoming = incoming or {}
+    stock_qty_by_key = stock_qty_by_key or {}
     continue_oos = continue_oos or {}
     window_days = max(1, (end_date - start_date).days + 1)
     rows = []
@@ -1616,7 +1617,10 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
             # its demand calculation just because Available hit zero.
             days_in_stock = days_tracked
         days_oos = days_tracked - days_in_stock
-        cur_qty = max(0, v["qty"])
+        # Shopify's Available quantity when we have it (what actually blocks a
+        # sale), falling back to the Studio count only for variants Shopify lacks.
+        stock_qty = stock_qty_by_key.get(key, v["qty"])
+        cur_qty = max(0, stock_qty)
         incoming_qty = incoming.get(key, 0)
 
         adjusted = days_tracked >= MIN_TRACKED_DAYS and days_in_stock > 0
@@ -1632,7 +1636,7 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
         # this hits zero or below, the order is already overdue.
         reorder_in = days_left - lead_time
 
-        if v["qty"] <= 0:
+        if stock_qty <= 0:
             # Zero on hand is just the most urgent case of "reorder now", not
             # a separate status — showing both "Out of Stock" and "Reorder
             # Now" as different red labels in the same column was confusing.
@@ -1648,8 +1652,8 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
 
         rows.append({
             "Product": v["product"], "Color": v["color"], "Size": v["size"],
-            "Current Qty": v["qty"],
-            "Available": v["qty"] + incoming_qty,
+            "Current Qty": stock_qty,
+            "Available": cur_qty + incoming_qty,
             "Units Sold": total_sold,
             "Days OOS (window)": days_oos,
             "Daily Demand": round(daily_demand, 2),
@@ -3350,14 +3354,16 @@ elif page == "📊 Demand & Reorder":
         incoming_by_key, _incoming_detail, _open_batches = compute_incoming()
 
         available_data = fetch_shopify_available_by_key()
-        continue_oos_by_key = {}
+        continue_oos_by_key, shopify_qty_by_key = {}, {}
         for key, v in inv.items():
             info = _match_shopify_available(available_data, v["product"], v["color"], v["size"])
             continue_oos_by_key[key] = bool(info and info.get("continue_oos"))
+            if info:
+                shopify_qty_by_key[key] = info["available"]
 
         df = build_reorder_table(
             inv, sold, stock_days, start_date, end_date, lead_time, coverage_days,
-            incoming_by_key, continue_oos_by_key,
+            incoming_by_key, continue_oos_by_key, shopify_qty_by_key,
         )
 
         s1, s2, s3, s4 = st.columns(4)

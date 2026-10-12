@@ -12,12 +12,14 @@ from difflib import SequenceMatcher
 from datetime import datetime, date, timedelta
 from copy import deepcopy
 from urllib.parse import quote as url_quote
+import html
 import io
 import math
 import re
 import html as html_lib
 import functools
 import secrets
+import time
 import uuid
 import hashlib
 import bcrypt
@@ -198,14 +200,29 @@ def verify_password(password, password_hash):
 def _hash_token(token):
     return hashlib.sha256(token.encode()).hexdigest()
 
+# _resilient_google_call only covers dropped connections, not Google answering
+# with a real error. Sheets occasionally returns a transient 429/5xx, and a
+# one-cell write like the two below sets the same value every time — so
+# unlike retrying an append, a retry can't double-apply anything.
+def _retry_transient_api_error(fn, *args, **kwargs):
+    delay = 1.0
+    for attempt in range(3):
+        try:
+            return fn(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            if e.code not in (429, 500, 502, 503, 504) or attempt == 2:
+                raise
+            time.sleep(delay)
+            delay *= 2
+
 def issue_remember_token(row):
     token = secrets.token_urlsafe(32)
-    get_users_ws().update_cell(row, 6, _hash_token(token))
+    _retry_transient_api_error(get_users_ws().update_cell, row, 6, _hash_token(token))
     load_users.clear()
     return token
 
 def revoke_remember_token(row):
-    get_users_ws().update_cell(row, 6, "")
+    _retry_transient_api_error(get_users_ws().update_cell, row, 6, "")
     load_users.clear()
 
 def create_user(username, password, role, permissions):
@@ -850,6 +867,7 @@ def _parse_order(o):
         "phone": _order_phone(o),
         "created_at": o["created_at"],
         "line_items": items,
+        "note": (o.get("note") or "").strip(),
     }
 
 def fetch_shopify_orders():
@@ -2781,13 +2799,21 @@ with st.sidebar:
     st.divider()
     st.caption(f"Signed in as **{st.session_state.username}**  ·  {st.session_state.role}")
     if st.button("Sign Out", use_container_width=True):
-        me = load_users().get(st.session_state.username.lower())
-        if me:
-            revoke_remember_token(me["row"])
-        st.query_params.pop("t", None)
-        for k in ("authenticated", "username", "role", "pages"):
-            st.session_state.pop(k, None)
-        st.rerun()
+        try:
+            me = load_users().get(st.session_state.username.lower())
+            if me:
+                revoke_remember_token(me["row"])
+        except gspread.exceptions.APIError as e:
+            # Stay signed in rather than half-signing-out: the saved-login link
+            # in the URL isn't actually dead until the revoke succeeds. Caught
+            # here (instead of crashing) so the real Google error shows on
+            # screen — Streamlit Cloud redacts uncaught ones.
+            st.error(f"Couldn't sign out — please try again. ({e})")
+        else:
+            st.query_params.pop("t", None)
+            for k in ("authenticated", "username", "role", "pages"):
+                st.session_state.pop(k, None)
+            st.rerun()
 
 # ─── Header ───────────────────────────────────────────────────────────────────
 
@@ -2894,12 +2920,24 @@ if page == "📦 Fulfillment":
                         icon=":material/phone_disabled:",
                     )
 
-                st.caption("Click :material/close: to remove an order from this run before fulfilling.")
-                hc = st.columns([2, 2, 1.3, 4, 1])
+                noted = [o for o in fulfillable if o.get("note")]
+                if noted:
+                    names = ", ".join(f"`{o['name']}`" for o in noted)
+                    st.warning(
+                        f"{len(noted)} order(s) have a note on Shopify — it may be a request to "
+                        f"hold or schedule the shipment, check before fulfilling: {names}",
+                        icon=":material/event_note:",
+                    )
+
+                st.caption(
+                    "Click :material/close: to remove an order from this run before fulfilling. "
+                    "Hover a flag for details."
+                )
+                hc = st.columns([1.4, 1.3, 3.6, 2, 0.8])
                 hc[0].markdown("**Order #**")
                 hc[1].markdown("**Date**")
-                hc[2].markdown("**Phone**")
-                hc[3].markdown("**Items**")
+                hc[2].markdown("**Items**")
+                hc[3].markdown("**Flags**")
                 hc[4].markdown("**Remove**")
 
                 for order in fulfillable:
@@ -2907,16 +2945,18 @@ if page == "📦 Fulfillment":
                     items_str = "  ·  ".join(
                         f"{i['name']} ×{i['quantity']}" for i in order["line_items"]
                     )
-                    if any(i["name"].strip() == PICKUP_ITEM_NAME for i in order["line_items"]):
-                        items_str = ":blue[:material/local_shipping: Driver pickup — no stock check]  ·  " + items_str
-                    rc = st.columns([2, 2, 1.3, 4, 1])
+
+                    flags = []
+                    if not order.get("phone"):
+                        flags.append('<span class="rr-pill rr-pill-red" style="cursor:help" title="No phone number on file — carriers can fail delivery without one">⚠ No phone</span>')
+                    if order.get("note"):
+                        flags.append(f'<span class="rr-pill rr-pill-amber" style="cursor:help" title="{html.escape(order["note"])}">📋 Note</span>')
+
+                    rc = st.columns([1.4, 1.3, 3.6, 2, 0.8])
                     rc[0].markdown(f"`{order['name']}`")
                     rc[1].markdown(date)
-                    if order.get("phone"):
-                        rc[2].markdown(":material/check_circle:")
-                    else:
-                        rc[2].markdown(":red[:material/warning: Missing]")
-                    rc[3].markdown(items_str)
+                    rc[2].markdown(items_str)
+                    rc[3].markdown(" ".join(flags) if flags else "—", unsafe_allow_html=True)
                     if rc[4].button("", icon=":material/close:", key=f"rm_{order['name']}"):
                         st.session_state.removed.add(order["name"])
                         st.rerun()

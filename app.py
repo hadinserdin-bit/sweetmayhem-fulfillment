@@ -959,6 +959,47 @@ def fetch_shopify_variant_map():
 
 @st.cache_data(ttl=600)
 @_resilient_shopify_call
+def fetch_shopify_color_images():
+    """(product title, color) [lowercased] -> that color's own variant image URL."""
+    result = {}
+    url = f"{_SHOPIFY_BASE}/products.json"
+    params = {"limit": 250, "fields": "title,status,images,variants"}
+    while url:
+        resp = requests.get(url, headers=_SHOPIFY_HEADERS, params=params)
+        resp.raise_for_status()
+        for p in resp.json().get("products", []):
+            if p.get("status") != "active":
+                continue
+            srcs = {i["id"]: i["src"] for i in p.get("images", [])}
+            for v in p.get("variants", []):
+                parts = (v.get("title") or "").split(" / ", 1)
+                src = srcs.get(v.get("image_id"))
+                if len(parts) == 2 and src:
+                    result.setdefault((p["title"].lower(), parts[0].strip().lower()), src)
+        next_url = None
+        for part in resp.headers.get("Link", "").split(","):
+            if 'rel="next"' in part and "<" in part:
+                next_url = part[part.find("<") + 1:part.find(">")]
+        url, params = next_url, None
+    return result
+
+def _match_color_image(color_images, product, color):
+    """That color's own photo, matching the product title the same
+    exact-then-fuzzy way as _match_product_image. None if there isn't one."""
+    pk, ck = product.lower(), color.lower()
+    if (pk, ck) in color_images:
+        return color_images[(pk, ck)]
+    best, ratio = None, 0.75
+    for (p, c), src in color_images.items():
+        if c != ck:
+            continue
+        r = SequenceMatcher(None, pk, p).ratio()
+        if r > ratio:
+            ratio, best = r, src
+    return best
+
+@st.cache_data(ttl=600)
+@_resilient_shopify_call
 def fetch_shopify_product_images():
     """product title (lowercased) -> featured image URL, for small thumbnails
     in Purchase Orders. Missing/never-set images just come back absent."""
@@ -1309,7 +1350,7 @@ def style_status(df, column="Status"):
     return df.style.map(_color, subset=[column])
 
 
-def render_reorder_table(df, product_images=None, lead_time=None):
+def render_reorder_table(df, product_images=None, lead_time=None, color_images=None):
     """Dashboard-style table for Demand & Reorder — same rationale as
     render_shipment_table: pill badges and right-aligned tabular numbers instead
     of a plain st.dataframe grid."""
@@ -1351,12 +1392,16 @@ def render_reorder_table(df, product_images=None, lead_time=None):
         return f'{pill}<div class="rr-t-sub">{target_date}</div>'
 
     product_images = product_images or {}
+    color_images = color_images or {}
     lead_time_html = (
         f'<span class="rr-pill rr-pill-gray">Lead time: {int(lead_time)}d</span>' if lead_time else ""
     )
     rows_html = []
     for _, r in df.iterrows():
-        img_src = _match_product_image(product_images, str(r["Product"]))
+        img_src = (
+            _match_color_image(color_images, str(r["Product"]), str(r["Color"]))
+            or _match_product_image(product_images, str(r["Product"]))
+        )
         img_html = (
             f'<img src="{html_lib.escape(img_src)}" width="32" height="32" '
             f'style="width:32px;height:32px;object-fit:cover;border-radius:6px;display:block;" '
@@ -3405,7 +3450,11 @@ elif page == "📊 Demand & Reorder":
                     "Shopify returned no product photos at all (0 products with an "
                     "image) — check that your products have a featured image set."
                 )
-        render_reorder_table(fdf, reorder_product_images, lead_time)
+        try:
+            reorder_color_images = fetch_shopify_color_images()
+        except Exception:
+            reorder_color_images = {}
+        render_reorder_table(fdf, reorder_product_images, lead_time, reorder_color_images)
         st.caption(
             f"{len(fdf)} variant(s) shown  |  Sales data: {start_date.strftime('%b %d, %Y')} – "
             f"{end_date.strftime('%b %d, %Y')}  |  Lead time: {lead_time} days  |  "

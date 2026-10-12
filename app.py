@@ -917,11 +917,13 @@ def fetch_shopify_variant_map():
     """(product, color, size) [lowercased] -> inventory_item_id, for restock syncing."""
     result = {}
     url = f"{_SHOPIFY_BASE}/products.json"
-    params = {"limit": 250, "fields": "id,title,variants"}
+    params = {"limit": 250, "fields": "id,title,status,variants"}
     while url:
         resp = requests.get(url, headers=_SHOPIFY_HEADERS, params=params)
         resp.raise_for_status()
         for p in resp.json().get("products", []):
+            if p.get("status") != "active":
+                continue  # a draft/archived copy with the same title would shadow the live one
             for v in p.get("variants", []):
                 parts = (v.get("title") or "").split(" / ", 1)
                 if len(parts) != 2:
@@ -944,11 +946,13 @@ def fetch_shopify_product_images():
     in Purchase Orders. Missing/never-set images just come back absent."""
     result = {}
     url = f"{_SHOPIFY_BASE}/products.json"
-    params = {"limit": 250, "fields": "title,image"}
+    params = {"limit": 250, "fields": "title,image,status"}
     while url:
         resp = requests.get(url, headers=_SHOPIFY_HEADERS, params=params)
         resp.raise_for_status()
         for p in resp.json().get("products", []):
+            if p.get("status") != "active":
+                continue
             img = p.get("image")
             if img and img.get("src"):
                 result[p["title"].lower()] = img["src"]
@@ -993,6 +997,7 @@ def fetch_shopify_available_by_key():
         edges {
           node {
             title
+            status
             variants(first: 100) {
               edges {
                 node {
@@ -1024,6 +1029,8 @@ def fetch_shopify_available_by_key():
         products_page = data["data"]["products"]
         for edge in products_page["edges"]:
             p = edge["node"]
+            if p.get("status") != "ACTIVE":
+                continue
             for ve in p["variants"]["edges"]:
                 v = ve["node"]
                 parts = (v.get("title") or "").split(" / ", 1)

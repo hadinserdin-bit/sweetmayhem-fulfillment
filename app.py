@@ -1630,7 +1630,9 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
             daily_demand = total_sold / window_days
 
         days_left = (cur_qty / daily_demand) if daily_demand > 0 else float("inf")
-        reorder_qty = max(0, math.ceil(daily_demand * coverage_days) - cur_qty - incoming_qty)
+        # Uses the raw (possibly negative) stock, not cur_qty: units already
+        # oversold on Shopify have to be covered by this order too.
+        reorder_qty = max(0, math.ceil(daily_demand * coverage_days) - stock_qty - incoming_qty)
         # How many days from today you'd need to place the order to have it
         # land before you actually run out — stockout minus lead time. Once
         # this hits zero or below, the order is already overdue.
@@ -1653,7 +1655,7 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
         rows.append({
             "Product": v["product"], "Color": v["color"], "Size": v["size"],
             "Current Qty": stock_qty,
-            "Available": cur_qty + incoming_qty,
+            "Available": stock_qty + incoming_qty,
             "Units Sold": total_sold,
             "Days OOS (window)": days_oos,
             "Daily Demand": round(daily_demand, 2),

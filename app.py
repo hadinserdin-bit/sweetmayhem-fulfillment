@@ -4530,35 +4530,33 @@ elif page == "🎬 Influencer Scripts":
                 with c[5]:
                     _pdf_button(r, key=f"inf_dl_{r['row']}")
 
-    # ── All scripts: used or not ─────────────────────────────────────────────
+    # ── All scripts: who each one is assigned to ─────────────────────────────
     with tab_all:
         if not scripts:
             st.info("No scripts yet.")
         else:
-            used_n = sum(1 for r in scripts if r["status"] == "Used")
-            st.caption(f"{len(scripts)} scripts · {used_n} used · {len(scripts) - used_n} not used yet")
-            for r in reversed(scripts):
-                used = r["status"] == "Used"
-                who = r["influencer"] + (f" · {r['product']}" if r["product"] else "")
-                badge = ":green[Used]" if used else ":gray[Not used]"
-                with st.expander(f"#{r['number']} · {who}  —  {badge}"):
-                    st.code(r["script"], language=None, wrap_lines=True)
-                    b1, b2, b3 = st.columns([1.4, 1, 1.4])
-                    if used:
-                        b1.button("Mark not used", key=f"inf_unuse_{r['row']}", on_click=_set_status,
-                                  args=(r["row"], "Unused"))
-                    else:
-                        b1.button("Mark used", type="primary", key=f"inf_use_{r['row']}", on_click=_set_status,
-                                  args=(r["row"], "Used"))
-                    with b2:
-                        _pdf_button(r, key=f"inf_dl_all_{r['row']}")
-                    if is_admin:
+            # The same script text sent to several influencers is one entry listing all of them.
+            groups = {}
+            for r in scripts:
+                groups.setdefault((" ".join(r["script"].split()).lower(), r["product"]), []).append(r)
+            st.caption(f"{len(groups)} scripts")
+            for members in sorted(groups.values(), key=lambda g: -max(r["number"] for r in g)):
+                first = members[0]
+                names = ", ".join(dict.fromkeys(r["influencer"] for r in members))
+                with st.expander(f"{first['product'] + ' · ' if first['product'] else ''}Assigned to: {names}"):
+                    st.code(first["script"], language=None, wrap_lines=True)
+                    st.caption("ASSIGNED TO")
+                    for r in members:
                         dkey = f"inf_del_{r['row']}"
-                        if not st.session_state.get(dkey):
-                            if b3.button("Delete", icon=":material/delete:", key=f"{dkey}_ask"):
-                                st.session_state[dkey] = True
-                                st.rerun()
-                        else:
+                        c = st.columns([0.9, 3, 1, 0.7], vertical_alignment="center")
+                        c[0].markdown(f"**#{r['number']}**")
+                        c[1].write(r["influencer"] + (f"  ·  {r['campaign']}" if r["campaign"] else ""))
+                        with c[2]:
+                            _pdf_button(r, key=f"inf_dl_all_{r['row']}")
+                        if is_admin and c[3].button("", icon=":material/delete:", key=f"{dkey}_ask", help="Delete"):
+                            st.session_state[dkey] = True
+                            st.rerun()
+                        if is_admin and st.session_state.get(dkey):
                             st.warning(f"Permanently delete script #{r['number']} for {r['influencer']}? This can't be undone.")
                             d1, d2 = st.columns(2)
                             if d1.button("Yes, delete", type="primary", use_container_width=True, key=f"{dkey}_y"):

@@ -529,17 +529,59 @@ INFLUENCER_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 _PDF_ACCENT = (0xC5, 0x8D, 0x74)
 _PDF_NOTE = "Deliver lines naturally in your own voice/dialect — bracketed directions are shot guidance, not spoken."
 
+_BRACKET = re.compile(r"\[[^\]]*\]")
+_QUOTES = "\"“”"
+
 def _is_direction(line):
-    # A [bracketed] line is a shot direction whatever its case; so is an ALL-CAPS line.
-    if line.startswith("[") and line.endswith("]"):
-        return True
+    # A line with no brackets is a shot direction when it is ALL CAPS.
     return not line[:1] in "\"“”'‘’" and bool(re.search(r"[A-Za-z]", line)) and line == line.upper()
 
-def _speech(line):
-    t = line.strip()
-    if len(t) > 1 and t[0] in "\"“" and t[-1] in "\"”":
-        t = t[1:-1].strip()
-    return "“" + t + "”"
+def _script_blocks(text):
+    """Splits a script into things to draw: ('dir', text) for a shot direction, or
+    ('say', [(kind, text), ...]) for spoken words with any [bracketed] bits kept
+    inline. Anything in [brackets] is a direction wherever it appears, even in
+    the middle of a spoken line or with quote marks or a full stop around it."""
+    text = _BRACKET.sub(lambda m: " ".join(m.group(0).split()), text)  # a [direction] split over lines
+    blocks = []
+    for raw in text.splitlines():
+        t = raw.strip()
+        if not t:
+            continue
+        inner = t[1:-1].strip() if len(t) > 1 and t[0] in "\"“" and t[-1] in "\"”" else t
+        if "[" not in inner:
+            blocks.append(("dir", t) if _is_direction(t) else ("say", [("say", inner.strip(_QUOTES + " "))]))
+            continue
+        segs, pos = [], 0
+
+        def _tidy(piece):
+            # punctuation right after a [direction] belongs to it, not to the spoken text
+            piece = piece.strip().strip(_QUOTES).strip()
+            lead = re.match(r"[.,;:!?…]+", piece)
+            if lead and segs and segs[-1][0] == "dir":
+                segs[-1] = ("dir", segs[-1][1] + lead.group())
+                piece = piece[lead.end():].strip()
+            return piece
+
+        for m in _BRACKET.finditer(inner):
+            before = _tidy(inner[pos:m.start()])
+            if before.strip(".,;:!?…- "):
+                segs.append(("say", before))
+            segs.append(("dir", m.group(0)))
+            pos = m.end()
+        rest = _tidy(inner[pos:])
+        if rest.strip(".,;:!?…- "):
+            segs.append(("say", rest))
+        says = [i for i, (k, _) in enumerate(segs) if k == "say"]
+        if not says:
+            blocks.append(("dir", " ".join(x for _, x in segs)))
+            continue
+        lead, trail = segs[:says[0]], segs[says[-1] + 1:]
+        if lead:
+            blocks.append(("dir", " ".join(x for _, x in lead)))
+        blocks.append(("say", segs[says[0]:says[-1] + 1]))
+        if trail:
+            blocks.append(("dir", " ".join(x for _, x in trail)))
+    return blocks
 
 def influencer_script_filename(script):
     """Sweet_Mayhem_Script_1000_Cross_Back_Posture_Bra.pdf"""
@@ -617,21 +659,28 @@ def build_influencer_script_pdf(script):
     pdf.ln(8)
 
     # script body
-    for line in (l.strip() for l in script["script"].splitlines()):
-        if not line:
-            continue
-        if _is_direction(line):
+    for kind, payload in _script_blocks(script["script"]):
+        if kind == "dir":
             if pdf.get_y() > 792 - 72 - 70:
                 pdf.add_page()
             pdf.ln(8)
             pdf.set_font("Gelasio", "BI", 10); pdf.set_text_color(0x55, 0x55, 0x55)
-            pdf.multi_cell(width, 12, line, align="L", new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(width, 12, payload, align="L", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(3)
         else:
-            pdf.set_font("Gelasio", "", 11); pdf.set_text_color(0, 0, 0)
+            pdf.set_left_margin(72 + 13)
             pdf.set_x(72 + 13)
-            pdf.multi_cell(width - 13, 13.5, _speech(line), align="L", new_x="LMARGIN", new_y="NEXT")
-            pdf.ln(5)
+            last = len(payload) - 1
+            for i, (k, t) in enumerate(payload):
+                gap = " " if i < last else ""
+                if k == "say":
+                    pdf.set_font("Gelasio", "", 11); pdf.set_text_color(0, 0, 0)
+                    pdf.write(13.5, ("“" if i == 0 else "") + t + ("”" if i == last else "") + gap)
+                else:  # a [direction] inside the spoken line
+                    pdf.set_font("Gelasio", "BI", 10); pdf.set_text_color(0x55, 0x55, 0x55)
+                    pdf.write(13.5, t + gap)
+            pdf.set_left_margin(72)
+            pdf.ln(13.5 + 5)
 
     # closing note
     if pdf.get_y() > 792 - 72 - 60:

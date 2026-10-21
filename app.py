@@ -530,6 +530,9 @@ _PDF_ACCENT = (0xC5, 0x8D, 0x74)
 _PDF_NOTE = "Deliver lines naturally in your own voice/dialect — bracketed directions are shot guidance, not spoken."
 
 def _is_direction(line):
+    # A [bracketed] line is a shot direction whatever its case; so is an ALL-CAPS line.
+    if line.startswith("[") and line.endswith("]"):
+        return True
     return not line[:1] in "\"“”'‘’" and bool(re.search(r"[A-Za-z]", line)) and line == line.upper()
 
 def _speech(line):
@@ -4789,7 +4792,7 @@ elif page == "🎬 Influencer Scripts":
                 )
                 st.text_area(
                     "Script", height=240, key="inf_s_body",
-                    help="One line each. An ALL-CAPS line is a shot direction; every other line is spoken "
+                    help="One line each. A [bracketed] or ALL-CAPS line is a shot direction; every other line is spoken "
                          "and gets quote marks in the PDF.",
                 )
                 c3, c4 = st.columns([3, 2])

@@ -4763,12 +4763,15 @@ elif page == "🎬 Influencer Scripts":
                 _delete_button(f"inf_del_s_{n}", "Delete script", f"script #{n} and its assignments",
                                lambda n=n: delete_inf_script(n))
 
-    tab_scripts, tab_people, tab_track = st.tabs([
-        ":material/description: Scripts", ":material/groups: Influencers", ":material/fact_check: Tracking",
-    ])
+    # A saved selector instead of st.tabs: st.tabs forgets which tab is open whenever the page
+    # redraws, which kept bouncing you back to the first tab.
+    _views = {"Scripts": ":material/description: Scripts", "Influencers": ":material/groups: Influencers",
+              "Tracking": ":material/fact_check: Tracking"}
+    view = st.segmented_control("View", list(_views), default="Scripts", required=True, key="inf_view",
+                                format_func=_views.get, label_visibility="collapsed")
 
     # ── Scripts: create, then assign ─────────────────────────────────────────
-    with tab_scripts:
+    if view == "Scripts":
         ss = st.session_state
         for _k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
             ss.setdefault(_k, "")
@@ -4834,7 +4837,7 @@ elif page == "🎬 Influencer Scripts":
                 _script_card(s["number"])
 
     # ── Influencers: add, see who's worked on what ───────────────────────────
-    with tab_people:
+    if view == "Influencers":
         ss = st.session_state
         for _k in ("inf_p_name", "inf_p_handle", "inf_p_contact", "inf_p_notes"):
             ss.setdefault(_k, "")
@@ -4947,13 +4950,14 @@ elif page == "🎬 Influencer Scripts":
 
         todo = [r for r in shown if r["status"] != "Done"]
         done = [r for r in shown if r["status"] == "Done"]
-        st.caption(f"{len(todo)} in progress · {len(done)} done")
-        tab_todo, tab_done = st.tabs(["In progress", "Done"])
+        _stages = {"In progress": f"In progress ({len(todo)})", "Done": f"Done ({len(done)})"}
+        stage = st.segmented_control("Stage", list(_stages), default="In progress", required=True,
+                                     key="inf_t_view", format_func=_stages.get, label_visibility="collapsed")
 
         def _pill(r):
             return f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>'
 
-        with tab_todo:
+        if stage == "In progress":
             widths = [0.9, 2, 2.4, 1.1, 1.6, 1.4, 0.9]
             head = st.columns(widths)
             for col, label in zip(head, ("SCRIPT #", "INFLUENCER", "SCRIPT / CAMPAIGN", "STATUS", "SENT", "DONE", "")):
@@ -4979,7 +4983,7 @@ elif page == "🎬 Influencer Scripts":
                 with c[6]:
                     _pdf_button(r, key=f"inf_dl_{r['row']}")
 
-        with tab_done:
+        if stage == "Done":
             widths = [0.9, 2, 2.4, 1.4, 1.6, 0.9]
             head = st.columns(widths)
             for col, label in zip(head, ("SCRIPT #", "INFLUENCER", "SCRIPT / CAMPAIGN", "SENT", "DONE", "")):
@@ -4998,7 +5002,7 @@ elif page == "🎬 Influencer Scripts":
                 with c[5]:
                     _pdf_button(r, key=f"inf_dl_d_{r['row']}")
 
-    with tab_track:
+    if view == "Tracking":
         _tracking()
 
 # ─────────────────────────────────────────────────────────────────────────────

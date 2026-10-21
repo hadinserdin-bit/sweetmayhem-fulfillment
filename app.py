@@ -85,7 +85,7 @@ def _resilient_google_call(fn):
                 "get_ws", "get_users_ws", "get_refunds_ws", "get_co_ws",
                 "get_co_settings_ws", "get_product_prices_ws", "get_snapshot_ws",
                 "get_shipment_tracker_ws", "get_shipment_line_items_ws",
-                "get_influencer_ws",
+                "get_inf_library_ws", "get_inf_people_ws", "get_inf_assign_ws",
             ):
                 cache_fn = globals().get(name)
                 if cache_fn is not None:
@@ -324,92 +324,176 @@ def delete_refund(row):
     load_refunds.clear()
 
 # ─── Influencer Scripts ───────────────────────────────────────────────────────
-# Each script is written for one influencer: creating it saves a record (with
-# the next script number, starting at 1000) and produces the PDF to send them.
-# Records live in their own spreadsheet to keep the Drive tidy, so you can see
-# which script went to which influencer, for which product or campaign, and
-# whether it ended up being used.
+# Three lists, kept in their own spreadsheet to keep the Drive tidy:
+#   Influencers     — who you work with
+#   Script Library  — every script, numbered from 1000
+#   Assignments     — which script is assigned to which influencer (and for what
+#                     campaign), and whether it has been sent
+# One script can be assigned to many influencers; each assignment has its own PDF.
 
 INFLUENCER_SHEET_ID = "18rAUERGi2tRvDM-VFpoX5eAhXpxZCpvpM3pH36QSKBU"
-INFLUENCER_TAB = "Scripts"
-INFLUENCER_HEADERS = [
-    "Script #", "Influencer", "Product", "Campaign", "Format", "Script",
-    "Status", "Notes", "Created By", "Created At", "Sent At", "Used At",
-]
-INFLUENCER_STATUSES = ["Created", "Sent", "Used"]
+INF_LIBRARY_TAB = "Script Library"
+INF_LIBRARY_HEADERS = ["Script #", "Title", "Product", "Format", "Script", "Created By", "Created At"]
+INF_PEOPLE_TAB = "Influencers"
+INF_PEOPLE_HEADERS = ["Name", "Platform / Handle", "Contact", "Notes", "Added At"]
+INF_ASSIGN_TAB = "Assignments"
+INF_ASSIGN_HEADERS = ["Script #", "Influencer", "Campaign", "Status", "Assigned At", "Sent At", "Assigned By"]
+INFLUENCER_STATUSES = ["Assigned", "Sent"]
 INFLUENCER_FIRST_NUMBER = 1000
 
 @st.cache_resource
 def _influencer_spreadsheet():
     return _gc().open_by_key(INFLUENCER_SHEET_ID)
 
-@st.cache_resource
-@_resilient_google_call
-def get_influencer_ws():
+def _influencer_tab(title, headers):
     sh = _influencer_spreadsheet()
     try:
-        return sh.worksheet(INFLUENCER_TAB)
+        return sh.worksheet(title)
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=INFLUENCER_TAB, rows=500, cols=len(INFLUENCER_HEADERS))
-        ws.append_row(INFLUENCER_HEADERS)
+        ws = sh.add_worksheet(title=title, rows=500, cols=len(headers))
+        ws.append_row(headers)
         return ws
+
+@st.cache_resource
+@_resilient_google_call
+def get_inf_library_ws():
+    return _influencer_tab(INF_LIBRARY_TAB, INF_LIBRARY_HEADERS)
+
+@st.cache_resource
+@_resilient_google_call
+def get_inf_people_ws():
+    return _influencer_tab(INF_PEOPLE_TAB, INF_PEOPLE_HEADERS)
+
+@st.cache_resource
+@_resilient_google_call
+def get_inf_assign_ws():
+    return _influencer_tab(INF_ASSIGN_TAB, INF_ASSIGN_HEADERS)
+
+def _inf_pad(row, n):
+    return row + [""] * (n - len(row))
+
+def _inf_now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 @st.cache_data(ttl=30)
 @_resilient_google_call
-def load_influencer_scripts():
+def load_inf_library():
     out = []
-    for i, row in enumerate(get_influencer_ws().get_all_values()[1:], start=2):
-        row = row + [""] * (12 - len(row))
+    for i, row in enumerate(get_inf_library_ws().get_all_values()[1:], start=2):
+        row = _inf_pad(row, 7)
         if not row[0].strip().isdigit():
             continue
-        status = row[6].strip()
         out.append({
-            "row": i, "number": int(row[0]), "influencer": row[1].strip(), "product": row[2].strip(),
-            "campaign": row[3].strip(), "format": row[4].strip(), "script": row[5],
-            "status": status if status in INFLUENCER_STATUSES else "Created",
-            "notes": row[7], "created_by": row[8].strip(), "created": row[9].strip(),
-            "sent_at": row[10].strip(), "used_at": row[11].strip(),
+            "row": i, "number": int(row[0]), "title": row[1].strip(), "product": row[2].strip(),
+            "format": row[3].strip(), "script": row[4], "created_by": row[5].strip(), "created": row[6].strip(),
         })
     return out
 
-def next_influencer_number(scripts):
-    return max([INFLUENCER_FIRST_NUMBER] + [s["number"] + 1 for s in scripts])
+@st.cache_data(ttl=30)
+@_resilient_google_call
+def load_inf_people():
+    out = []
+    for i, row in enumerate(get_inf_people_ws().get_all_values()[1:], start=2):
+        row = _inf_pad(row, 5)
+        if not row[0].strip():
+            continue
+        out.append({
+            "row": i, "name": row[0].strip(), "handle": row[1].strip(), "contact": row[2].strip(),
+            "notes": row[3].strip(), "added": row[4].strip(),
+        })
+    return out
 
-def add_influencer_script(influencer, product, campaign, fmt, script, created_by):
-    """Saves the record under the next free number and returns it."""
-    number = next_influencer_number(load_influencer_scripts())
-    created = datetime.now().strftime("%Y-%m-%d %H:%M")
-    get_influencer_ws().append_row(
-        [number, influencer, product, campaign, fmt, script, "Created", "", created_by, created, "", ""])
-    load_influencer_scripts.clear()
-    return {
-        "number": number, "influencer": influencer, "product": product, "campaign": campaign,
-        "format": fmt, "script": script, "status": "Created", "notes": "",
-        "created_by": created_by, "created": created, "sent_at": "", "used_at": "",
-    }
+@st.cache_data(ttl=30)
+@_resilient_google_call
+def load_inf_assignments():
+    out = []
+    for i, row in enumerate(get_inf_assign_ws().get_all_values()[1:], start=2):
+        row = _inf_pad(row, 7)
+        if not row[0].strip().isdigit() or not row[1].strip():
+            continue
+        out.append({
+            "row": i, "number": int(row[0]), "influencer": row[1].strip(), "campaign": row[2].strip(),
+            "status": "Sent" if row[3].strip() in ("Sent", "Used") else "Assigned",
+            "assigned_at": row[4].strip(), "sent_at": row[5].strip(), "assigned_by": row[6].strip(),
+        })
+    return out
 
-def set_influencer_status(rec, status):
-    """status: Sent, Used, Unused (back to Sent, or Created if it was never sent) or Created."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    sent_at, used_at = rec["sent_at"], ""
-    if status == "Sent":
-        new, sent_at = "Sent", now
-    elif status == "Used":
-        new, used_at = "Used", now
-    elif status == "Unused":
-        new = "Sent" if sent_at else "Created"
-    else:
-        new, sent_at = "Created", ""
-    row = rec["row"]
-    get_influencer_ws().batch_update([
-        {"range": f"G{row}", "values": [[new]]},
-        {"range": f"K{row}:L{row}", "values": [[sent_at, used_at]]},
+def _inf_fresh(loader):
+    loader.clear()
+    return loader()
+
+def next_inf_number(library):
+    return max([INFLUENCER_FIRST_NUMBER] + [s["number"] + 1 for s in library])
+
+def add_inf_script(title, product, fmt, script, created_by):
+    """Saves a script under the next free number and returns it."""
+    number = next_inf_number(_inf_fresh(load_inf_library))
+    rec = {"number": number, "title": title or product or f"Script {number}", "product": product,
+           "format": fmt, "script": script, "created_by": created_by, "created": _inf_now()}
+    get_inf_library_ws().append_row(
+        [number, rec["title"], product, fmt, script, created_by, rec["created"]])
+    load_inf_library.clear()
+    return rec
+
+def add_inf_person(name, handle, contact, notes):
+    """Adds an influencer; False if someone with that name is already in the list."""
+    if any(p["name"].lower() == name.lower() for p in _inf_fresh(load_inf_people)):
+        return False
+    get_inf_people_ws().append_row([name, handle, contact, notes, _inf_now()])
+    load_inf_people.clear()
+    return True
+
+def assign_inf_script(number, names, campaign, by):
+    """Assigns a script to each influencer not already holding it; returns who was added."""
+    have = {(a["number"], a["influencer"].lower()) for a in _inf_fresh(load_inf_assignments)}
+    now, rows, added = _inf_now(), [], []
+    for n in names:
+        if (number, n.lower()) in have:
+            continue
+        rows.append([number, n, campaign, "Assigned", now, "", by])
+        added.append(n)
+    if rows:
+        get_inf_assign_ws().append_rows(rows)
+        load_inf_assignments.clear()
+    return added
+
+def _inf_find(number, name):
+    return next((a for a in _inf_fresh(load_inf_assignments)
+                 if a["number"] == number and a["influencer"].lower() == name.lower()), None)
+
+def set_inf_sent(number, name, sent):
+    a = _inf_find(number, name)
+    if not a:
+        return False
+    get_inf_assign_ws().batch_update([
+        {"range": f"D{a['row']}", "values": [["Sent" if sent else "Assigned"]]},
+        {"range": f"F{a['row']}", "values": [[_inf_now() if sent else ""]]},
     ])
-    load_influencer_scripts.clear()
+    load_inf_assignments.clear()
+    return True
 
-def delete_influencer_script(row):
-    get_influencer_ws().delete_rows(row)
-    load_influencer_scripts.clear()
+def delete_inf_assignment(number, name):
+    a = _inf_find(number, name)
+    if a:
+        get_inf_assign_ws().delete_rows(a["row"])
+        load_inf_assignments.clear()
+
+def delete_inf_script(number):
+    for a in sorted((a for a in _inf_fresh(load_inf_assignments) if a["number"] == number),
+                    key=lambda a: -a["row"]):
+        get_inf_assign_ws().delete_rows(a["row"])
+    for s in _inf_fresh(load_inf_library):
+        if s["number"] == number:
+            get_inf_library_ws().delete_rows(s["row"])
+            break
+    load_inf_assignments.clear(); load_inf_library.clear()
+
+def delete_inf_person(name):
+    for p in _inf_fresh(load_inf_people):
+        if p["name"].lower() == name.lower():
+            get_inf_people_ws().delete_rows(p["row"])
+            break
+    load_inf_people.clear()
 
 # ── The PDF ─────────────────────────────────────────────────────────────────
 # Laid out like the Sweet Mayhem script document: title block, an info table
@@ -4382,9 +4466,8 @@ elif page == "💸 Refunds":
 elif page == "🎬 Influencer Scripts":
     st.subheader("Influencer Scripts")
     st.caption(
-        "Write a script for an influencer, create it, and download the PDF to send them. "
-        "Every script is numbered automatically and tracked, so you can see which script "
-        "went to which influencer, for which product or campaign, and whether it was used."
+        "Add your influencers, write a script, assign it to one or more influencers, then download "
+        "each one's PDF to send. Press Sent in Tracking once it has gone out."
     )
 
     if "inf_msg" in st.session_state:
@@ -4393,14 +4476,18 @@ elif page == "🎬 Influencer Scripts":
 
     try:
         with st.spinner("Loading…"):
-            scripts = load_influencer_scripts()
+            library = load_inf_library()
+            people = load_inf_people()
+            assigns = load_inf_assignments()
             inv_products = sorted({v["product"] for v in load_inventory().values()})
     except gspread.exceptions.APIError as e:
         if getattr(e.response, "status_code", None) == 403:
             st.error(
-                "Google refused to create the tab this page stores its data in. Add a tab named "
-                f"**{INFLUENCER_TAB}** to the Influencer Scripts spreadsheet with this header in row 1, "
-                "then reload:\n\n" + ", ".join(INFLUENCER_HEADERS)
+                "Google refused to create the tabs this page stores its data in. Add these tabs to the "
+                "Influencer Scripts spreadsheet, each with its header in row 1, then reload:\n\n"
+                f"**{INF_PEOPLE_TAB}**: " + ", ".join(INF_PEOPLE_HEADERS) + "\n\n"
+                f"**{INF_LIBRARY_TAB}**: " + ", ".join(INF_LIBRARY_HEADERS) + "\n\n"
+                f"**{INF_ASSIGN_TAB}**: " + ", ".join(INF_ASSIGN_HEADERS)
             )
         else:
             st.error(f"Could not load influencer data: {e}")
@@ -4412,7 +4499,16 @@ elif page == "🎬 Influencer Scripts":
     me = st.session_state.get("username", "")
     is_admin = st.session_state.role == "admin"
     product_options = [""] + inv_products
-    pill_class = {"Created": "rr-pill-gray", "Sent": "rr-pill-blue", "Used": "rr-pill-green"}
+    pill_class = {"Assigned": "rr-pill-gray", "Sent": "rr-pill-blue"}
+
+    lib_by_num = {s["number"]: s for s in library}
+    # One record per assignment: the assignment's own fields over the script's.
+    records = [{**lib_by_num[a["number"]], **a} for a in assigns if a["number"] in lib_by_num]
+    recs_by_num, recs_by_person = {}, {}
+    for r in records:
+        recs_by_num.setdefault(r["number"], []).append(r)
+        recs_by_person.setdefault(r["influencer"].lower(), []).append(r)
+    people_names = sorted((p["name"] for p in people), key=str.lower)
 
     def _fmt_product(p):
         return p or "— none / general —"
@@ -4425,89 +4521,276 @@ elif page == "🎬 Influencer Scripts":
             icon=":material/picture_as_pdf:", key=key, type="primary" if primary else "secondary",
         )
 
-    def _set_status(row, status):
-        rec = next((r for r in load_influencer_scripts() if r["row"] == row), None)
-        if not rec:
-            return
-        set_influencer_status(rec, status)
-        wording = {"Sent": "marked as sent", "Used": "marked as used",
-                   "Created": "marked as not sent", "Unused": "marked as not used"}
-        st.session_state["inf_msg"] = ("success", f"Script #{rec['number']} {wording.get(status, 'updated')}.")
+    def _what(r):
+        return " · ".join(x for x in (r["product"] or r["title"], r["campaign"]) if x) or "—"
 
-    tab_new, tab_track, tab_all = st.tabs([
-        ":material/add_circle: New script", ":material/fact_check: Tracking", ":material/description: Scripts",
+    # ── actions (callbacks run before the page redraws, so they read fresh state) ──
+    def _create_script():
+        ss = st.session_state
+        body = (ss.get("inf_s_body") or "").strip()
+        if not body:
+            ss["inf_msg"] = ("warning", "Write the script first.")
+            return
+        title = (ss.get("inf_s_title") or "").strip()
+        prod = ss.get("inf_s_product") or ""
+        fmt = (ss.get("inf_s_format") or "").strip()
+        camp = (ss.get("inf_s_camp") or "").strip()
+        names = list(ss.get("inf_s_assign") or [])
+        sig = (title.lower(), prod, fmt, body, tuple(names))
+        last = ss.get("inf_last_sig")
+        if last and last[0] == sig and time.time() - last[1] < 20:
+            return  # the same script submitted moments ago — a double click
+        rec = add_inf_script(title, prod, fmt, body, me)
+        added = assign_inf_script(rec["number"], names, camp, me) if names else []
+        ss["inf_last_sig"] = (sig, time.time())
+        ss["inf_msg"] = ("success", f"Script #{rec['number']} created"
+                         + (f" and assigned to {', '.join(added)}" if added else "") + ".")
+        for k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
+            ss[k] = ""
+        ss["inf_s_assign"] = []
+
+    def _add_person():
+        ss = st.session_state
+        name = " ".join((ss.get("inf_p_name") or "").split())
+        if not name:
+            ss["inf_msg"] = ("warning", "Enter the influencer's name.")
+            return
+        if not add_inf_person(name, (ss.get("inf_p_handle") or "").strip(),
+                              (ss.get("inf_p_contact") or "").strip(), (ss.get("inf_p_notes") or "").strip()):
+            ss["inf_msg"] = ("warning", f"{name} is already in your list.")
+            return
+        for k in ("inf_p_name", "inf_p_handle", "inf_p_contact", "inf_p_notes"):
+            ss[k] = ""
+        ss["inf_p_pick"] = name
+        ss["inf_msg"] = ("success", f"{name} added.")
+
+    def _assign_script(number):
+        ss = st.session_state
+        names = list(ss.get(f"inf_asg_{number}") or [])
+        if not names:
+            ss["inf_msg"] = ("warning", "Pick at least one influencer to assign.")
+            return
+        added = assign_inf_script(number, names, (ss.get(f"inf_asgc_{number}") or "").strip(), me)
+        ss.pop(f"inf_asg_{number}", None)
+        ss.pop(f"inf_asgc_{number}", None)
+        ss["inf_msg"] = ("success", f"Script #{number} assigned to {', '.join(added)}.") if added else \
+                        ("info", "They already have that script.")
+
+    def _assign_to_person(name, prow):
+        ss = st.session_state
+        number = ss.get(f"inf_pa_pick_{prow}")
+        if number is None:
+            ss["inf_msg"] = ("warning", "Choose a script to assign.")
+            return
+        added = assign_inf_script(number, [name], (ss.get(f"inf_pa_camp_{prow}") or "").strip(), me)
+        ss.pop(f"inf_pa_pick_{prow}", None)
+        ss.pop(f"inf_pa_camp_{prow}", None)
+        ss["inf_msg"] = ("success", f"Script #{number} assigned to {name}.") if added else \
+                        ("info", f"{name} already has script #{number}.")
+
+    def _set_sent(number, name, sent):
+        if set_inf_sent(number, name, sent):
+            st.session_state["inf_msg"] = (
+                "success", f"Script #{number} for {name} " + ("marked as sent." if sent else "set back to not sent."))
+
+    def _unassign(number, name):
+        delete_inf_assignment(number, name)
+        st.session_state["inf_msg"] = ("success", f"Script #{number} unassigned from {name}.")
+
+    def _delete_button(key, label, what, do):
+        """Two-step delete: the button asks, then Yes/Cancel."""
+        if not st.session_state.get(key):
+            if st.button(label, icon=":material/delete:", key=f"{key}_ask"):
+                st.session_state[key] = True
+                st.rerun()
+            return
+        st.warning(f"Permanently delete {what}? This can't be undone.")
+        d1, d2 = st.columns(2)
+        if d1.button("Yes, delete", type="primary", use_container_width=True, key=f"{key}_y"):
+            do()
+            st.session_state.pop(key, None)
+            st.session_state["inf_msg"] = ("success", f"Deleted {what}.")
+            st.rerun()
+        if d2.button("Cancel", use_container_width=True, key=f"{key}_n"):
+            st.session_state.pop(key, None)
+            st.rerun()
+
+    tab_scripts, tab_people, tab_track = st.tabs([
+        ":material/description: Scripts", ":material/groups: Influencers", ":material/fact_check: Tracking",
     ])
 
-    # ── New script ───────────────────────────────────────────────────────────
-    with tab_new:
+    # ── Scripts: create, then assign ─────────────────────────────────────────
+    with tab_scripts:
         ss = st.session_state
-        for _k in ("inf_new_influencer", "inf_new_campaign", "inf_new_format", "inf_new_script"):
+        for _k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
             ss.setdefault(_k, "")
-        ss.setdefault("inf_new_product", "")
+        ss.setdefault("inf_s_assign", [])
 
-        created = ss.get("inf_last_created")
-        if created:
-            with st.container(border=True):
-                st.success(
-                    f"Script #{created['number']} created for {created['influencer']}.",
-                    icon=":material/check_circle:",
+        with st.expander(":material/add_circle: Create a new script", expanded=not library):
+            with st.form("inf_script_form"):
+                st.caption(f"This will be script **#{next_inf_number(library)}**.")
+                st.text_input("Title", placeholder="e.g. Cross-Back Posture Bra — hook v1", key="inf_s_title")
+                c1, c2 = st.columns(2)
+                c1.selectbox("Product", product_options, format_func=_fmt_product, key="inf_s_product")
+                c2.text_input(
+                    "Format", placeholder="Vertical video / UGC", key="inf_s_format",
+                    help="Shown in the PDF. Left blank, it's filled in from the product.",
                 )
-                _pdf_button(created, key="inf_dl_created", label="Download PDF to send", primary=True)
+                st.text_area(
+                    "Script", height=240, key="inf_s_body",
+                    help="One line each. An ALL-CAPS line is a shot direction; every other line is spoken "
+                         "and gets quote marks in the PDF.",
+                )
+                c3, c4 = st.columns([3, 2])
+                c3.multiselect(
+                    "Assign to (optional)", people_names, key="inf_s_assign",
+                    placeholder="Pick influencers…" if people_names else "Add influencers in the Influencers tab first",
+                )
+                c4.text_input("Campaign (optional)", placeholder="e.g. Winter launch", key="inf_s_camp")
+                st.form_submit_button("Create script", type="primary", use_container_width=True, on_click=_create_script)
 
-        def _create_script():
-            ss = st.session_state
-            who = (ss.get("inf_new_influencer") or "").strip()
-            body = (ss.get("inf_new_script") or "").strip()
-            if not who or not body:
-                ss["inf_msg"] = ("warning", "Enter the influencer's name and the script first.")
-                return
-            prod = ss.get("inf_new_product") or ""
-            camp = (ss.get("inf_new_campaign") or "").strip()
-            fmt = (ss.get("inf_new_format") or "").strip()
-            sig = (who.lower(), prod, camp, body)
-            last = ss.get("inf_last_sig")
-            if last and last[0] == sig and time.time() - last[1] < 20:
-                return  # the same script submitted moments ago — a double click
-            ss["inf_last_created"] = add_influencer_script(who, prod, camp, fmt, body, me)
-            ss["inf_last_sig"] = (sig, time.time())
-            for k in ("inf_new_influencer", "inf_new_campaign", "inf_new_format", "inf_new_script", "inf_new_product"):
-                ss[k] = ""
-
-        with st.form("inf_new_form"):
-            st.caption(f"This will be script **#{next_influencer_number(scripts)}**.")
-            st.text_input("Influencer name", placeholder="e.g. Sara Khoury", key="inf_new_influencer")
-            c1, c2 = st.columns(2)
-            c1.selectbox("Product", product_options, format_func=_fmt_product, key="inf_new_product")
-            c2.text_input("Campaign", placeholder="e.g. Winter launch", key="inf_new_campaign")
-            st.text_input(
-                "Format", placeholder="Vertical video / UGC — Cross-Back Posture Jelly Bra feature",
-                help="Shown in the PDF. Left blank, it's filled in from the product.", key="inf_new_format",
-            )
-            st.text_area(
-                "Script", height=260, key="inf_new_script",
-                help="One line each. An ALL-CAPS line is a shot direction; every other line is spoken "
-                     "and gets quote marks in the PDF.",
-            )
-            st.form_submit_button(
-                "Create script", type="primary", use_container_width=True, on_click=_create_script,
-            )
-
-    # ── Tracking ─────────────────────────────────────────────────────────────
-    with tab_track:
-        if not scripts:
-            st.info("Nothing here yet — create a script and it'll show up here.")
+        if not library:
+            st.info("No scripts yet — create your first one above.")
         else:
-            f1, f2, f3, f4 = st.columns([2, 1.5, 1.5, 2])
-            q = f1.text_input("Search influencer", placeholder="Name")
-            prod_f = f2.selectbox("Product", ["All"] + sorted({r["product"] for r in scripts if r["product"]}))
-            camp_f = f3.selectbox("Campaign", ["All"] + sorted({r["campaign"] for r in scripts if r["campaign"]}))
-            stat_f = f4.multiselect("Status", INFLUENCER_STATUSES, default=INFLUENCER_STATUSES)
+            q = st.text_input("Search scripts", placeholder="Title, product or influencer", key="inf_s_search")
+            shown = [
+                s for s in reversed(library)
+                if not q.strip() or q.strip().lower() in " ".join(
+                    [s["title"], s["product"]] + [r["influencer"] for r in recs_by_num.get(s["number"], [])]).lower()
+            ]
+            st.caption(f"{len(shown)} script{'s' if len(shown) != 1 else ''}")
+            for s in shown:
+                n = s["number"]
+                members = recs_by_num.get(n, [])
+                who = ", ".join(r["influencer"] for r in members) or "not assigned yet"
+                with st.expander(f"#{n} · {s['title']}  —  {who}"):
+                    meta = " · ".join(x for x in (s["product"], s["format"]) if x)
+                    if meta:
+                        st.caption(meta)
+                    st.code(s["script"], language=None, wrap_lines=True)
+
+                    st.caption("ASSIGNED TO")
+                    if not members:
+                        st.write("Nobody yet.")
+                    for r in members:
+                        c = st.columns([2.2, 2, 1.1, 1.3, 0.7], vertical_alignment="center")
+                        c[0].write(r["influencer"])
+                        c[1].write(r["campaign"] or "—")
+                        c[2].markdown(f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>', unsafe_allow_html=True)
+                        with c[3]:
+                            _pdf_button(r, key=f"inf_dl_s_{r['row']}")
+                        if r["status"] == "Assigned" or is_admin:
+                            c[4].button("", icon=":material/close:", key=f"inf_un_s_{r['row']}", help="Unassign",
+                                        on_click=_unassign, args=(n, r["influencer"]))
+
+                    free = [p for p in people_names if p.lower() not in {r["influencer"].lower() for r in members}]
+                    if free:
+                        a1, a2, a3 = st.columns([3, 2, 1.2], vertical_alignment="bottom")
+                        a1.multiselect("Assign to", free, key=f"inf_asg_{n}", placeholder="Pick influencers…")
+                        a2.text_input("Campaign (optional)", key=f"inf_asgc_{n}")
+                        a3.button("Assign", type="primary", icon=":material/person_add:", key=f"inf_asgb_{n}",
+                                  on_click=_assign_script, args=(n,), use_container_width=True)
+                    elif not people:
+                        st.caption("Add an influencer in the Influencers tab to assign this script.")
+                    if is_admin:
+                        _delete_button(f"inf_del_s_{n}", "Delete script", f"script #{n} and its assignments",
+                                       lambda n=n: delete_inf_script(n))
+
+    # ── Influencers: add, see who's worked on what ───────────────────────────
+    with tab_people:
+        ss = st.session_state
+        for _k in ("inf_p_name", "inf_p_handle", "inf_p_contact", "inf_p_notes"):
+            ss.setdefault(_k, "")
+
+        with st.expander(":material/person_add: Add an influencer", expanded=not people):
+            with st.form("inf_person_form"):
+                p1, p2 = st.columns(2)
+                p1.text_input("Name", placeholder="e.g. Sara Khoury", key="inf_p_name")
+                p2.text_input("Platform / handle", placeholder="@sara · Instagram", key="inf_p_handle")
+                p3, p4 = st.columns(2)
+                p3.text_input("Contact", placeholder="Email or phone", key="inf_p_contact")
+                p4.text_input("Notes", key="inf_p_notes")
+                st.form_submit_button("Add influencer", type="primary", use_container_width=True, on_click=_add_person)
+
+        if not people:
+            st.info("No influencers yet — add your first one above.")
+        else:
+            q = st.text_input("Search influencers", placeholder="Name, handle or product", key="inf_p_search")
+
+            def _person_products(p):
+                return sorted({r["product"] for r in recs_by_person.get(p["name"].lower(), []) if r["product"]})
+
+            shown_people = [
+                p for p in sorted(people, key=lambda p: p["name"].lower())
+                if not q.strip() or q.strip().lower() in " ".join([p["name"], p["handle"]] + _person_products(p)).lower()
+            ]
+            if not shown_people:
+                st.info("No influencers match.")
+            else:
+                st.dataframe(
+                    pd.DataFrame([{
+                        "Name": p["name"], "Platform / handle": p["handle"],
+                        "Products": ", ".join(_person_products(p)),
+                        "Scripts": len(recs_by_person.get(p["name"].lower(), [])),
+                        "Last sent": max([r["sent_at"][:10] for r in recs_by_person.get(p["name"].lower(), []) if r["sent_at"]] or [""]),
+                    } for p in shown_people]),
+                    use_container_width=True, hide_index=True,
+                )
+
+                pnames = [p["name"] for p in shown_people]
+                if st.session_state.get("inf_p_pick") not in pnames:
+                    st.session_state.pop("inf_p_pick", None)
+                pick = st.selectbox("Open an influencer", pnames, key="inf_p_pick")
+                p = next(x for x in shown_people if x["name"] == pick)
+                mine = recs_by_person.get(pick.lower(), [])
+                with st.container(border=True):
+                    st.markdown(f"#### {p['name']}")
+                    st.caption(" · ".join(x for x in (p["handle"], p["contact"], p["notes"]) if x) or "No details saved.")
+                    if not mine:
+                        st.write("No scripts assigned yet.")
+                    for r in reversed(mine):
+                        c = st.columns([0.9, 3, 1.1, 1.3, 0.7], vertical_alignment="center")
+                        c[0].markdown(f"**#{r['number']}**")
+                        c[1].write(_what(r))
+                        c[2].markdown(f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>', unsafe_allow_html=True)
+                        with c[3]:
+                            _pdf_button(r, key=f"inf_dl_p_{r['row']}")
+                        if r["status"] == "Assigned" or is_admin:
+                            c[4].button("", icon=":material/close:", key=f"inf_un_p_{r['row']}", help="Unassign",
+                                        on_click=_unassign, args=(r["number"], r["influencer"]))
+
+                    held = {r["number"] for r in mine}
+                    open_scripts = [s["number"] for s in reversed(library) if s["number"] not in held]
+                    if open_scripts:
+                        st.caption("ASSIGN A SCRIPT")
+                        b1, b2, b3 = st.columns([3, 2, 1.2], vertical_alignment="bottom")
+                        b1.selectbox(
+                            "Script", open_scripts, index=None, placeholder="Choose a script…", key=f"inf_pa_pick_{p['row']}",
+                            format_func=lambda n: f"#{n} · {lib_by_num[n]['title']}",
+                        )
+                        b2.text_input("Campaign (optional)", key=f"inf_pa_camp_{p['row']}")
+                        b3.button("Assign", type="primary", icon=":material/add_task:", key=f"inf_pa_btn_{p['row']}",
+                                  on_click=_assign_to_person, args=(p["name"], p["row"]), use_container_width=True)
+                    elif not library:
+                        st.caption("Create a script in the Scripts tab to assign it.")
+                    if is_admin:
+                        _delete_button(f"inf_del_p_{p['row']}", "Delete influencer", f"influencer {p['name']}",
+                                       lambda name=p["name"]: delete_inf_person(name))
+
+    # ── Tracking: what's been sent ───────────────────────────────────────────
+    with tab_track:
+        if not records:
+            st.info("Nothing here yet — assign a script to an influencer and it'll show up here.")
+        else:
+            f1, f2, f3 = st.columns([2, 2, 2])
+            q = f1.text_input("Search influencer", placeholder="Name", key="inf_t_search")
+            prod_f = f2.selectbox("Product", ["All"] + sorted({r["product"] for r in records if r["product"]}), key="inf_t_prod")
+            stat_f = f3.multiselect("Status", INFLUENCER_STATUSES, default=INFLUENCER_STATUSES, key="inf_t_stat")
 
             shown = [
-                r for r in reversed(scripts)
+                r for r in reversed(records)
                 if r["status"] in stat_f
                 and (prod_f == "All" or r["product"] == prod_f)
-                and (camp_f == "All" or r["campaign"] == camp_f)
                 and (not q.strip() or q.strip().lower() in r["influencer"].lower())
             ]
             widths = [0.9, 2, 2.6, 1.1, 1.8, 0.9]
@@ -4520,53 +4803,17 @@ elif page == "🎬 Influencer Scripts":
                 c = st.columns(widths, vertical_alignment="center")
                 c[0].markdown(f"**#{r['number']}**")
                 c[1].write(r["influencer"])
-                c[2].write(" · ".join(x for x in (r["product"], r["campaign"]) if x) or "—")
+                c[2].write(_what(r))
                 c[3].markdown(f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>', unsafe_allow_html=True)
-                if r["status"] == "Created":
+                if r["status"] == "Assigned":
                     c[4].button("Sent", icon=":material/send:", key=f"inf_sent_{r['row']}",
-                                on_click=_set_status, args=(r["row"], "Sent"))
+                                on_click=_set_sent, args=(r["number"], r["influencer"], True))
                 else:
-                    c[4].caption(f"Sent {r['sent_at'][:10]}" if r["sent_at"] else "—")
+                    c[4].button(f"Sent {r['sent_at'][:10]}" if r["sent_at"] else "Sent", icon=":material/undo:",
+                                key=f"inf_unsent_{r['row']}", help="Click to set back to not sent",
+                                on_click=_set_sent, args=(r["number"], r["influencer"], False), type="tertiary")
                 with c[5]:
                     _pdf_button(r, key=f"inf_dl_{r['row']}")
-
-    # ── All scripts: who each one is assigned to ─────────────────────────────
-    with tab_all:
-        if not scripts:
-            st.info("No scripts yet.")
-        else:
-            # The same script text sent to several influencers is one entry listing all of them.
-            groups = {}
-            for r in scripts:
-                groups.setdefault((" ".join(r["script"].split()).lower(), r["product"]), []).append(r)
-            st.caption(f"{len(groups)} scripts")
-            for members in sorted(groups.values(), key=lambda g: -max(r["number"] for r in g)):
-                first = members[0]
-                names = ", ".join(dict.fromkeys(r["influencer"] for r in members))
-                with st.expander(f"{first['product'] + ' · ' if first['product'] else ''}Assigned to: {names}"):
-                    st.code(first["script"], language=None, wrap_lines=True)
-                    st.caption("ASSIGNED TO")
-                    for r in members:
-                        dkey = f"inf_del_{r['row']}"
-                        c = st.columns([0.9, 3, 1, 0.7], vertical_alignment="center")
-                        c[0].markdown(f"**#{r['number']}**")
-                        c[1].write(r["influencer"] + (f"  ·  {r['campaign']}" if r["campaign"] else ""))
-                        with c[2]:
-                            _pdf_button(r, key=f"inf_dl_all_{r['row']}")
-                        if is_admin and c[3].button("", icon=":material/delete:", key=f"{dkey}_ask", help="Delete"):
-                            st.session_state[dkey] = True
-                            st.rerun()
-                        if is_admin and st.session_state.get(dkey):
-                            st.warning(f"Permanently delete script #{r['number']} for {r['influencer']}? This can't be undone.")
-                            d1, d2 = st.columns(2)
-                            if d1.button("Yes, delete", type="primary", use_container_width=True, key=f"{dkey}_y"):
-                                delete_influencer_script(r["row"])
-                                st.session_state.pop(dkey, None)
-                                st.session_state["inf_msg"] = ("success", f"Script #{r['number']} deleted.")
-                                st.rerun()
-                            if d2.button("Cancel", use_container_width=True, key=f"{dkey}_n"):
-                                st.session_state.pop(dkey, None)
-                                st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: MANAGE USERS (admin only)

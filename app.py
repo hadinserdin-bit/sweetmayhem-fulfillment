@@ -4494,6 +4494,7 @@ elif page == "🎬 Influencer Scripts":
         _kind, _text = st.session_state.pop("inf_msg")
         getattr(st, _kind)(_text)
     _flush_toast()
+    st.session_state.pop("inf_dirty", None)  # a full run already redraws everything
 
     try:
         with st.spinner("Loading…"):
@@ -4594,6 +4595,7 @@ elif page == "🎬 Influencer Scripts":
         added = assign_inf_script(number, names, (ss.get(f"inf_asgc_{number}") or "").strip(), me)
         for k in (f"inf_asg_{number}", f"inf_asgc_{number}"):
             ss.pop(k, None)
+        ss["inf_dirty"] = bool(added)
         _toast(f"Script #{number} assigned to {', '.join(added)}." if added else "They already have that script.",
                  icon=":material/check_circle:")
 
@@ -4630,6 +4632,7 @@ elif page == "🎬 Influencer Scripts":
         update_inf_script(n, (ss.get(f"inf_e_title_{n}") or "").strip(), ss.get(f"inf_e_product_{n}") or "",
                           (ss.get(f"inf_e_format_{n}") or "").strip(), body)
         ss.pop(f"inf_edit_{n}", None)
+        ss["inf_dirty"] = True
         _toast(f"Script #{n} saved.", icon=":material/check_circle:")
 
     def _set_sent(number, name, sent):
@@ -4639,6 +4642,7 @@ elif page == "🎬 Influencer Scripts":
 
     def _unassign(number, name):
         delete_inf_assignment(number, name)
+        st.session_state["inf_dirty"] = True
         _toast(f"Script #{number} unassigned from {name}.", icon=":material/check_circle:")
 
     def _delete_button(key, label, what, do):
@@ -4663,6 +4667,10 @@ elif page == "🎬 Influencer Scripts":
     def _script_card(n):
         """One script's card. A fragment, so assigning, editing or unassigning inside it
         redraws just this card instead of the whole page."""
+        if st.session_state.pop("inf_dirty", None):
+            # Something changed in this card: redraw the whole page once so Tracking and
+            # Influencers show it straight away (the toast is shown by that full run).
+            st.rerun(scope="app")
         _flush_toast()
         s = next((x for x in load_inf_library() if x["number"] == n), None)
         if s is None:

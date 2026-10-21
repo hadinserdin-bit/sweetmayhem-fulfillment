@@ -4610,6 +4610,19 @@ elif page == "🎬 Influencer Scripts":
         _toast(f"Script #{number} assigned to {', '.join(added)}." if added else "They already have that script.",
                  icon=":material/check_circle:")
 
+    def _assign_bulk(numbers):
+        ss = st.session_state
+        names = list(ss.get("inf_bulk_who") or [])
+        if not names:
+            _toast("Pick at least one influencer.", icon=":material/warning:")
+            return
+        camp = (ss.get("inf_bulk_camp") or "").strip()
+        new = sum(len(assign_inf_script(n, names, camp, me)) for n in numbers)
+        ss.pop("inf_bulk_who", None)
+        ss.pop("inf_bulk_camp", None)
+        _toast(f"Assigned {len(numbers)} script{'s' if len(numbers) != 1 else ''} to {', '.join(names)}"
+               + (f" ({new} new)." if new != len(numbers) * len(names) else "."), icon=":material/check_circle:")
+
     def _assign_to_person(name, prow):
         ss = st.session_state
         number = ss.get(f"inf_pa_pick_{prow}")
@@ -4780,8 +4793,13 @@ elif page == "🎬 Influencer Scripts":
             st.info("No scripts yet — create your first one above.")
         else:
             sf1, sf2 = st.columns(2)
-            prod_q = sf1.selectbox("Product", sorted({x["product"] for x in library if x["product"]}, key=str.lower),
-                                   index=None, key="inf_s_prod_f", placeholder="All products")
+            n_by_prod = {}
+            for x in library:
+                n_by_prod[x["product"]] = n_by_prod.get(x["product"], 0) + 1
+            all_products = sorted({p for p in inv_products if p} | {p for p in n_by_prod if p}, key=str.lower)
+            prod_q = sf1.selectbox("Product", all_products, index=None, key="inf_s_prod_f",
+                                   placeholder="All products — type to search",
+                                   format_func=lambda p: f"{p}  ({n_by_prod.get(p, 0)})")
             who_q = sf2.selectbox("Influencer", sorted({r["influencer"] for r in records}, key=str.lower),
                                   index=None, key="inf_s_who_f", placeholder="All influencers")
             shown = [
@@ -4789,6 +4807,20 @@ elif page == "🎬 Influencer Scripts":
                 if (not prod_q or s["product"] == prod_q)
                 and (not who_q or any(r["influencer"] == who_q for r in recs_by_num.get(s["number"], [])))
             ]
+            if prod_q and not shown:
+                st.info(f"No scripts for {prod_q} yet — create one above.")
+            elif (prod_q or who_q) and shown and people_names:
+                # Found a set of scripts: assign all of them to the people you pick in one go.
+                with st.form("inf_bulk_form", border=True):
+                    st.caption(f"ASSIGN ALL {len(shown)} SCRIPT{'S' if len(shown) != 1 else ''} SHOWN")
+                    g1, g2, g3 = st.columns([3, 2, 1.4], vertical_alignment="bottom")
+                    g1.multiselect("Influencers", people_names, key="inf_bulk_who", placeholder="Pick influencers…",
+                                   label_visibility="collapsed")
+                    g2.text_input("Campaign (optional)", key="inf_bulk_camp", placeholder="Campaign (optional)",
+                                  label_visibility="collapsed")
+                    g3.form_submit_button(f"Assign all {len(shown)}", type="primary", icon=":material/group_add:",
+                                          on_click=_assign_bulk, args=(tuple(x["number"] for x in shown),),
+                                          use_container_width=True)
             st.caption(f"{len(shown)} script{'s' if len(shown) != 1 else ''}")
             for s in shown:
                 _script_card(s["number"])
@@ -4854,9 +4886,14 @@ elif page == "🎬 Influencer Scripts":
                     open_scripts = [s["number"] for s in reversed(library) if s["number"] not in held]
                     if open_scripts:
                         st.caption("ASSIGN A SCRIPT")
-                        b1, b2, b3 = st.columns([3, 2, 1.2], vertical_alignment="bottom")
+                        b0, b1, b2, b3 = st.columns([2, 2.4, 2, 1.2], vertical_alignment="bottom")
+                        pa_prods = sorted({lib_by_num[n]["product"] for n in open_scripts if lib_by_num[n]["product"]},
+                                          key=str.lower)
+                        pa_prod = b0.selectbox("Product", pa_prods, index=None, placeholder="Any product",
+                                               key=f"inf_pa_prod_{p['row']}")
+                        pa_options = [n for n in open_scripts if not pa_prod or lib_by_num[n]["product"] == pa_prod]
                         b1.selectbox(
-                            "Script", open_scripts, index=None, placeholder="Choose a script…", key=f"inf_pa_pick_{p['row']}",
+                            "Script", pa_options, index=None, placeholder="Choose a script…", key=f"inf_pa_pick_{p['row']}",
                             format_func=lambda n: f"#{n} · {lib_by_num[n]['product'] or 'General'}",
                         )
                         b2.text_input("Campaign (optional)", key=f"inf_pa_camp_{p['row']}")

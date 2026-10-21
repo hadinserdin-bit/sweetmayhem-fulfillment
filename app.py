@@ -4506,7 +4506,6 @@ elif page == "🎬 Influencer Scripts":
         _kind, _text = st.session_state.pop("inf_msg")
         getattr(st, _kind)(_text)
     _flush_toast()
-    st.session_state.pop("inf_dirty", None)  # a full run already redraws everything
 
     try:
         with st.spinner("Loading…"):
@@ -4553,6 +4552,7 @@ elif page == "🎬 Influencer Scripts":
             label, data=lambda rec=rec: build_influencer_script_pdf(rec),
             file_name=influencer_script_filename(rec), mime="application/pdf",
             icon=":material/picture_as_pdf:", key=key, type="primary" if primary else "secondary",
+            on_click="ignore",
         )
 
     def _what(r):
@@ -4606,7 +4606,6 @@ elif page == "🎬 Influencer Scripts":
         added = assign_inf_script(number, names, (ss.get(f"inf_asgc_{number}") or "").strip(), me)
         for k in (f"inf_asg_{number}", f"inf_asgc_{number}"):
             ss.pop(k, None)
-        ss["inf_dirty"] = bool(added)
         ss["inf_open_card"] = number
         _toast(f"Script #{number} assigned to {', '.join(added)}." if added else "They already have that script.",
                  icon=":material/check_circle:")
@@ -4644,7 +4643,6 @@ elif page == "🎬 Influencer Scripts":
         update_inf_script(n, "", ss.get(f"inf_e_product_{n}") or "",
                           (ss.get(f"inf_e_format_{n}") or "").strip(), body)
         ss.pop(f"inf_edit_{n}", None)
-        ss["inf_dirty"] = True
         ss["inf_open_card"] = n
         _toast(f"Script #{n} saved.", icon=":material/check_circle:")
 
@@ -4656,37 +4654,33 @@ elif page == "🎬 Influencer Scripts":
 
     def _unassign(number, name):
         delete_inf_assignment(number, name)
-        st.session_state["inf_dirty"] = True
         st.session_state["inf_open_card"] = number
         _toast(f"Script #{number} unassigned from {name}.", icon=":material/check_circle:")
 
+    def _ask_delete(key):
+        st.session_state[key] = True
+
+    def _cancel_delete(key):
+        st.session_state.pop(key, None)
+
+    def _confirm_delete(key, what, do):
+        do()
+        st.session_state.pop(key, None)
+        st.session_state["inf_msg"] = ("success", f"Deleted {what}.")
+
     def _delete_button(key, label, what, do):
-        """Two-step delete: the button asks, then Yes/Cancel."""
+        """Two-step delete: the button asks, then Yes/Cancel. All callbacks, so each click is one clean rerun."""
         if not st.session_state.get(key):
-            if st.button(label, icon=":material/delete:", key=f"{key}_ask"):
-                st.session_state[key] = True
-                st.rerun()
+            st.button(label, icon=":material/delete:", key=f"{key}_ask", on_click=_ask_delete, args=(key,))
             return
         st.warning(f"Permanently delete {what}? This can't be undone.")
         d1, d2 = st.columns(2)
-        if d1.button("Yes, delete", type="primary", use_container_width=True, key=f"{key}_y"):
-            do()
-            st.session_state.pop(key, None)
-            st.session_state["inf_msg"] = ("success", f"Deleted {what}.")
-            st.rerun(scope="app")
-        if d2.button("Cancel", use_container_width=True, key=f"{key}_n"):
-            st.session_state.pop(key, None)
-            st.rerun()
+        d1.button("Yes, delete", type="primary", use_container_width=True, key=f"{key}_y",
+                  on_click=_confirm_delete, args=(key, what, do))
+        d2.button("Cancel", use_container_width=True, key=f"{key}_n", on_click=_cancel_delete, args=(key,))
 
-    @st.fragment
     def _script_card(n):
-        """One script's card. A fragment, so assigning, editing or unassigning inside it
-        redraws just this card instead of the whole page."""
-        if st.session_state.pop("inf_dirty", None):
-            # Something changed in this card: redraw the whole page once so Tracking and
-            # Influencers show it straight away (the toast is shown by that full run).
-            st.rerun(scope="app")
-        _flush_toast()
+        """One script's card."""
         s = next((x for x in load_inf_library() if x["number"] == n), None)
         if s is None:
             return
@@ -4908,7 +4902,8 @@ elif page == "🎬 Influencer Scripts":
 
         todo = [r for r in shown if r["status"] != "Done"]
         done = [r for r in shown if r["status"] == "Done"]
-        tab_todo, tab_done = st.tabs([f"In progress ({len(todo)})", f"Done ({len(done)})"])
+        st.caption(f"{len(todo)} in progress · {len(done)} done")
+        tab_todo, tab_done = st.tabs(["In progress", "Done"])
 
         def _pill(r):
             return f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>'

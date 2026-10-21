@@ -80,7 +80,7 @@ def _resilient_google_call(fn):
             # crash with a NameError instead of actually retrying.
             for name in (
                 "_gc", "_drive", "_spreadsheet", "_shipment_tracker_spreadsheet",
-                "_refunds_spreadsheet", "_cancelled_orders_spreadsheet",
+                "_refunds_spreadsheet", "_cancelled_orders_spreadsheet", "_influencer_spreadsheet",
                 "get_ws", "get_users_ws", "get_refunds_ws", "get_co_ws",
                 "get_co_settings_ws", "get_product_prices_ws", "get_snapshot_ws",
                 "get_shipment_tracker_ws", "get_shipment_line_items_ws",
@@ -323,9 +323,12 @@ def delete_refund(row):
     load_refunds.clear()
 
 # ─── Influencer Scripts ───────────────────────────────────────────────────────
-# Three tabs in the main spreadsheet: the script library, a log of which script
-# went to which influencer (for which product/campaign, and whether it got
-# used), and the message template the library fills in.
+# Its own spreadsheet (kept out of the inventory file to keep the Drive tidy),
+# with three tabs: the script library, a log of which script went to which
+# influencer (for which product/campaign, and whether it got used), and the
+# message template the library fills in.
+
+INFLUENCER_SHEET_ID = "18rAUERGi2tRvDM-VFpoX5eAhXpxZCpvpM3pH36QSKBU"
 
 INFLUENCER_SCRIPTS_TAB = "Influencer Scripts"
 INFLUENCER_SENDS_TAB = "Influencer Sends"
@@ -344,8 +347,12 @@ INFLUENCER_DEFAULT_TEMPLATE = (
     "Let us know if you have any questions!"
 )
 
+@st.cache_resource
+def _influencer_spreadsheet():
+    return _gc().open_by_key(INFLUENCER_SHEET_ID)
+
 def _get_or_create_ws(tab, headers):
-    sh = _spreadsheet()
+    sh = _influencer_spreadsheet()
     try:
         return sh.worksheet(tab)
     except gspread.WorksheetNotFound:
@@ -4336,7 +4343,7 @@ elif page == "🎬 Influencer Scripts":
         if getattr(e.response, "status_code", None) == 403:
             st.error(
                 "Google refused to create the tabs this page stores its data in. Create them by hand "
-                "in the inventory spreadsheet (exact names, header in row 1), then reload:\n\n"
+                "in the Influencer Scripts spreadsheet (exact names, header in row 1), then reload:\n\n"
                 f"- **{INFLUENCER_SCRIPTS_TAB}**: " + ", ".join(INFLUENCER_SCRIPT_HEADERS) + "\n"
                 f"- **{INFLUENCER_SENDS_TAB}**: " + ", ".join(INFLUENCER_SEND_HEADERS) + "\n"
                 f"- **{INFLUENCER_SETTINGS_TAB}**: Key, Value"

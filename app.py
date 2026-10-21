@@ -3276,7 +3276,7 @@ with st.sidebar:
         "➕ Add Product": "INVENTORY", "📋 View Inventory": "INVENTORY",
         "📊 Demand & Reorder": "SHIPMENTS", "📥 Purchase Orders": "SHIPMENTS",
         "🚢 Shipment Tracker": "SHIPMENTS", "🧾 Shipment Details": "SHIPMENTS",
-        "🚫 Cancelled Orders": "SUPPORT", "💸 Refunds": "SUPPORT",
+        "🚫 Cancelled Orders": "SUPPORT", "💸 Refunds": "SUPPORT", "✅ Mark Paid": "SUPPORT",
         "🎬 Influencer Scripts": "MARKETING",
     }
     with st.container(key="sidebar_nav"):

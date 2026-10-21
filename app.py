@@ -4481,9 +4481,19 @@ elif page == "🎬 Influencer Scripts":
         "each one's PDF to send. Press Sent in Tracking once it has gone out."
     )
 
+    def _toast(text, icon=":material/check_circle:"):
+        # Queued rather than shown, because a callback can't display elements during a fragment rerun.
+        st.session_state["inf_toast"] = (text, icon)
+
+    def _flush_toast():
+        if "inf_toast" in st.session_state:
+            text, icon = st.session_state.pop("inf_toast")
+            st.toast(text, icon=icon)
+
     if "inf_msg" in st.session_state:
         _kind, _text = st.session_state.pop("inf_msg")
         getattr(st, _kind)(_text)
+    _flush_toast()
 
     try:
         with st.spinner("Loading…"):
@@ -4579,13 +4589,13 @@ elif page == "🎬 Influencer Scripts":
         ss = st.session_state
         names = list(ss.get(f"inf_asg_{number}") or [])
         if not names:
-            ss["inf_msg"] = ("warning", "Pick at least one influencer to assign.")
+            _toast("Pick at least one influencer to assign.", icon=":material/warning:")
             return
         added = assign_inf_script(number, names, (ss.get(f"inf_asgc_{number}") or "").strip(), me)
         for k in (f"inf_asg_{number}", f"inf_asgc_{number}"):
             ss.pop(k, None)
-        ss["inf_msg"] = ("success", f"Script #{number} assigned to {', '.join(added)}.") if added else \
-                        ("info", "They already have that script.")
+        _toast(f"Script #{number} assigned to {', '.join(added)}." if added else "They already have that script.",
+                 icon=":material/check_circle:")
 
     def _assign_to_person(name, prow):
         ss = st.session_state
@@ -4615,12 +4625,12 @@ elif page == "🎬 Influencer Scripts":
         ss = st.session_state
         body = (ss.get(f"inf_e_body_{n}") or "").strip()
         if not body:
-            ss["inf_msg"] = ("warning", "The script can't be empty.")
+            _toast("The script can't be empty.", icon=":material/warning:")
             return
         update_inf_script(n, (ss.get(f"inf_e_title_{n}") or "").strip(), ss.get(f"inf_e_product_{n}") or "",
                           (ss.get(f"inf_e_format_{n}") or "").strip(), body)
         ss.pop(f"inf_edit_{n}", None)
-        ss["inf_msg"] = ("success", f"Script #{n} saved.")
+        _toast(f"Script #{n} saved.", icon=":material/check_circle:")
 
     def _set_sent(number, name, sent):
         if set_inf_sent(number, name, sent):
@@ -4629,7 +4639,7 @@ elif page == "🎬 Influencer Scripts":
 
     def _unassign(number, name):
         delete_inf_assignment(number, name)
-        st.session_state["inf_msg"] = ("success", f"Script #{number} unassigned from {name}.")
+        _toast(f"Script #{number} unassigned from {name}.", icon=":material/check_circle:")
 
     def _delete_button(key, label, what, do):
         """Two-step delete: the button asks, then Yes/Cancel."""
@@ -4644,10 +4654,75 @@ elif page == "🎬 Influencer Scripts":
             do()
             st.session_state.pop(key, None)
             st.session_state["inf_msg"] = ("success", f"Deleted {what}.")
-            st.rerun()
+            st.rerun(scope="app")
         if d2.button("Cancel", use_container_width=True, key=f"{key}_n"):
             st.session_state.pop(key, None)
             st.rerun()
+
+    @st.fragment
+    def _script_card(n):
+        """One script's card. A fragment, so assigning, editing or unassigning inside it
+        redraws just this card instead of the whole page."""
+        _flush_toast()
+        s = next((x for x in load_inf_library() if x["number"] == n), None)
+        if s is None:
+            return
+        members = [{**s, **a} for a in load_inf_assignments() if a["number"] == n]
+        names = sorted((p["name"] for p in load_inf_people()), key=str.lower)
+        who = ", ".join(r["influencer"] for r in members) or "not assigned yet"
+        # A fixed key keeps the card open when its label changes (e.g. after assigning someone).
+        with st.expander(f"#{n} · {s['title']}  —  {who}", key=f"inf_card_{n}"):
+            if st.session_state.get(f"inf_edit_{n}"):
+                st.text_input("Title", key=f"inf_e_title_{n}")
+                e1, e2 = st.columns(2)
+                e1.selectbox("Product", list(dict.fromkeys(product_options + [s["product"]])),
+                             format_func=_fmt_product, key=f"inf_e_product_{n}")
+                e2.text_input("Format", key=f"inf_e_format_{n}")
+                st.text_area("Script", height=240, key=f"inf_e_body_{n}")
+                e3, e4, _sp = st.columns([1, 1, 3])
+                e3.button("Save", type="primary", icon=":material/check:", key=f"inf_e_save_{n}",
+                          on_click=_save_edit, args=(n,), use_container_width=True)
+                e4.button("Cancel", key=f"inf_e_cancel_{n}", on_click=_cancel_edit, args=(n,),
+                          use_container_width=True)
+            else:
+                meta = " · ".join(x for x in (s["product"], s["format"]) if x)
+                if meta:
+                    st.caption(meta)
+                st.code(s["script"], language=None, wrap_lines=True)
+                st.button("Edit script", icon=":material/edit:", key=f"inf_e_start_{n}",
+                          on_click=_start_edit, args=(s,))
+
+            st.caption("ASSIGNED TO")
+            if not members:
+                st.write("Nobody yet.")
+            for r in members:
+                c = st.columns([2.2, 2, 1.1, 1.3, 0.7], vertical_alignment="center")
+                c[0].write(r["influencer"])
+                c[1].write(r["campaign"])
+                c[2].markdown(f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>', unsafe_allow_html=True)
+                with c[3]:
+                    _pdf_button(r, key=f"inf_dl_s_{r['row']}")
+                if r["status"] == "Assigned" or is_admin:
+                    c[4].button("", icon=":material/close:", key=f"inf_un_s_{r['row']}", help="Unassign",
+                                on_click=_unassign, args=(n, r["influencer"]))
+
+            free = [p for p in names if p.lower() not in {r["influencer"].lower() for r in members}]
+            st.caption("ASSIGN TO")
+            if not names:
+                st.caption("Add an influencer in the Influencers tab first, then assign them here.")
+            elif not free:
+                st.caption("Every influencer already has this script.")
+            else:
+                a1, a2, a3 = st.columns([3, 2, 1.2], vertical_alignment="bottom")
+                a1.multiselect("Assign to", free, key=f"inf_asg_{n}", placeholder="Pick influencers…",
+                               label_visibility="collapsed")
+                a2.text_input("Campaign (optional)", key=f"inf_asgc_{n}", placeholder="Campaign (optional)",
+                              label_visibility="collapsed")
+                a3.button("Assign", type="primary", icon=":material/person_add:", key=f"inf_asgb_{n}",
+                          on_click=_assign_script, args=(n,), use_container_width=True)
+            if is_admin:
+                _delete_button(f"inf_del_s_{n}", "Delete script", f"script #{n} and its assignments",
+                               lambda n=n: delete_inf_script(n))
 
     tab_scripts, tab_people, tab_track = st.tabs([
         ":material/description: Scripts", ":material/groups: Influencers", ":material/fact_check: Tracking",
@@ -4696,59 +4771,7 @@ elif page == "🎬 Influencer Scripts":
             ]
             st.caption(f"{len(shown)} script{'s' if len(shown) != 1 else ''}")
             for s in shown:
-                n = s["number"]
-                members = recs_by_num.get(n, [])
-                who = ", ".join(r["influencer"] for r in members) or "not assigned yet"
-                with st.expander(f"#{n} · {s['title']}  —  {who}"):
-                    if st.session_state.get(f"inf_edit_{n}"):
-                        st.text_input("Title", key=f"inf_e_title_{n}")
-                        e1, e2 = st.columns(2)
-                        e1.selectbox("Product", list(dict.fromkeys(product_options + [s["product"]])),
-                                     format_func=_fmt_product, key=f"inf_e_product_{n}")
-                        e2.text_input("Format", key=f"inf_e_format_{n}")
-                        st.text_area("Script", height=240, key=f"inf_e_body_{n}")
-                        e3, e4, _sp = st.columns([1, 1, 3])
-                        e3.button("Save", type="primary", icon=":material/check:", key=f"inf_e_save_{n}",
-                                  on_click=_save_edit, args=(n,), use_container_width=True)
-                        e4.button("Cancel", key=f"inf_e_cancel_{n}", on_click=_cancel_edit, args=(n,),
-                                  use_container_width=True)
-                    else:
-                        meta = " · ".join(x for x in (s["product"], s["format"]) if x)
-                        if meta:
-                            st.caption(meta)
-                        st.code(s["script"], language=None, wrap_lines=True)
-                        st.button("Edit script", icon=":material/edit:", key=f"inf_e_start_{n}",
-                                  on_click=_start_edit, args=(s,))
-
-                    st.caption("ASSIGNED TO")
-                    if not members:
-                        st.write("Nobody yet.")
-                    for r in members:
-                        c = st.columns([2.2, 2, 1.1, 1.3, 0.7], vertical_alignment="center")
-                        c[0].write(r["influencer"])
-                        c[1].write(r["campaign"])
-                        c[2].markdown(f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>', unsafe_allow_html=True)
-                        with c[3]:
-                            _pdf_button(r, key=f"inf_dl_s_{r['row']}")
-                        if r["status"] == "Assigned" or is_admin:
-                            c[4].button("", icon=":material/close:", key=f"inf_un_s_{r['row']}", help="Unassign",
-                                        on_click=_unassign, args=(n, r["influencer"]))
-
-                    free = [p for p in people_names if p.lower() not in {r["influencer"].lower() for r in members}]
-                    st.caption("ASSIGN TO")
-                    if not people:
-                        st.caption("Add an influencer in the Influencers tab first, then assign them here.")
-                    elif not free:
-                        st.caption("Every influencer already has this script.")
-                    else:
-                        a1, a2, a3 = st.columns([3, 2, 1.2], vertical_alignment="bottom")
-                        a1.multiselect("Assign to", free, key=f"inf_asg_{n}", placeholder="Pick influencers…")
-                        a2.text_input("Campaign (optional)", key=f"inf_asgc_{n}")
-                        a3.button("Assign", type="primary", icon=":material/person_add:", key=f"inf_asgb_{n}",
-                                  on_click=_assign_script, args=(n,), use_container_width=True)
-                    if is_admin:
-                        _delete_button(f"inf_del_s_{n}", "Delete script", f"script #{n} and its assignments",
-                                       lambda n=n: delete_inf_script(n))
+                _script_card(s["number"])
 
     # ── Influencers: add, see who's worked on what ───────────────────────────
     with tab_people:

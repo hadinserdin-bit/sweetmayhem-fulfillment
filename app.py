@@ -84,6 +84,7 @@ def _resilient_google_call(fn):
                 "get_ws", "get_users_ws", "get_refunds_ws", "get_co_ws",
                 "get_co_settings_ws", "get_product_prices_ws", "get_snapshot_ws",
                 "get_shipment_tracker_ws", "get_shipment_line_items_ws",
+                "get_influencer_scripts_ws", "get_influencer_sends_ws", "get_influencer_settings_ws",
             ):
                 cache_fn = globals().get(name)
                 if cache_fn is not None:
@@ -115,7 +116,7 @@ USERS_SHEET_NAME = "Users"
 ALL_PAGES = [
     "📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory",
     "📊 Demand & Reorder", "📥 Purchase Orders", "🚢 Shipment Tracker", "🧾 Shipment Details",
-    "🚫 Cancelled Orders", "💸 Refunds",
+    "🚫 Cancelled Orders", "💸 Refunds", "🎬 Influencer Scripts",
 ]
 ADMIN_PAGE = "👤 Manage Users"
 
@@ -138,6 +139,7 @@ PAGE_ICONS = {
     "📥 Purchase Orders": ":material/move_to_inbox:",
     "🚫 Cancelled Orders": ":material/cancel:",
     "💸 Refunds": ":material/currency_exchange:",
+    "🎬 Influencer Scripts": ":material/campaign:",
     "🚢 Shipment Tracker": ":material/directions_boat:",
     "🧾 Shipment Details": ":material/receipt_long:",
     ADMIN_PAGE: ":material/group:",
@@ -319,6 +321,152 @@ def update_refund_status(row, status):
 def delete_refund(row):
     get_refunds_ws().delete_rows(row)
     load_refunds.clear()
+
+# ─── Influencer Scripts ───────────────────────────────────────────────────────
+# Three tabs in the main spreadsheet: the script library, a log of which script
+# went to which influencer (for which product/campaign, and whether it got
+# used), and the message template the library fills in.
+
+INFLUENCER_SCRIPTS_TAB = "Influencer Scripts"
+INFLUENCER_SENDS_TAB = "Influencer Sends"
+INFLUENCER_SETTINGS_TAB = "Influencer Settings"
+INFLUENCER_SCRIPT_HEADERS = ["Script ID", "Title", "Product", "Campaign", "Script", "Created At"]
+INFLUENCER_SEND_HEADERS = [
+    "Date", "Influencer", "Handle / Platform", "Script ID", "Script Title",
+    "Product", "Campaign", "Status", "Notes", "Sent By",
+]
+INFLUENCER_SEND_STATUSES = ["Sent", "Used", "Declined"]
+INFLUENCER_PLACEHOLDERS = ["{name}", "{handle}", "{product}", "{campaign}", "{title}", "{script}", "{sender}"]
+INFLUENCER_DEFAULT_TEMPLATE = (
+    "Hi {name}! 👋 This is {sender} from Sweet Mayhem.\n\n"
+    "We'd love to work with you on {product}.\n\n"
+    "Here's the script for the video:\n\n{script}\n\n"
+    "Let us know if you have any questions!"
+)
+
+def _get_or_create_ws(tab, headers):
+    sh = _spreadsheet()
+    try:
+        return sh.worksheet(tab)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=tab, rows=500, cols=len(headers))
+        ws.append_row(headers)
+        return ws
+
+@st.cache_resource
+@_resilient_google_call
+def get_influencer_scripts_ws():
+    return _get_or_create_ws(INFLUENCER_SCRIPTS_TAB, INFLUENCER_SCRIPT_HEADERS)
+
+@st.cache_resource
+@_resilient_google_call
+def get_influencer_sends_ws():
+    return _get_or_create_ws(INFLUENCER_SENDS_TAB, INFLUENCER_SEND_HEADERS)
+
+@st.cache_resource
+@_resilient_google_call
+def get_influencer_settings_ws():
+    return _get_or_create_ws(INFLUENCER_SETTINGS_TAB, ["Key", "Value"])
+
+@st.cache_data(ttl=30)
+@_resilient_google_call
+def load_influencer_scripts():
+    data = get_influencer_scripts_ws().get_all_values()
+    out = []
+    for i, row in enumerate(data[1:], start=2):
+        row = row + [""] * (6 - len(row))
+        if not row[0].strip():
+            continue
+        out.append({
+            "row": i, "id": row[0].strip(), "title": row[1].strip(), "product": row[2].strip(),
+            "campaign": row[3].strip(), "script": row[4], "created": row[5].strip(),
+        })
+    return out
+
+@st.cache_data(ttl=30)
+@_resilient_google_call
+def load_influencer_sends():
+    data = get_influencer_sends_ws().get_all_values()
+    out = []
+    for i, row in enumerate(data[1:], start=2):
+        row = row + [""] * (10 - len(row))
+        if not row[1].strip():
+            continue
+        status = row[7].strip()
+        out.append({
+            "row": i, "date": row[0].strip(), "influencer": row[1].strip(), "handle": row[2].strip(),
+            "script_id": row[3].strip(), "script_title": row[4].strip(), "product": row[5].strip(),
+            "campaign": row[6].strip(), "status": status if status in INFLUENCER_SEND_STATUSES else "Sent",
+            "notes": row[8], "sent_by": row[9].strip(),
+        })
+    return out
+
+@st.cache_data(ttl=30)
+@_resilient_google_call
+def load_influencer_template():
+    for row in get_influencer_settings_ws().get_all_values()[1:]:
+        if row and row[0].strip() == "template" and len(row) > 1 and row[1].strip():
+            return row[1]
+    return INFLUENCER_DEFAULT_TEMPLATE
+
+def save_influencer_template(text):
+    ws = get_influencer_settings_ws()
+    for i, row in enumerate(ws.get_all_values()[1:], start=2):
+        if row and row[0].strip() == "template":
+            ws.update_cell(i, 2, text)
+            break
+    else:
+        ws.append_row(["template", text])
+    load_influencer_template.clear()
+
+def next_influencer_script_id(scripts):
+    nums = [int(s["id"][1:]) for s in scripts if re.fullmatch(r"S\d+", s["id"])]
+    return f"S{max(nums, default=0) + 1}"
+
+def add_influencer_script(title, product, campaign, script):
+    scripts = load_influencer_scripts()
+    sid = next_influencer_script_id(scripts)
+    get_influencer_scripts_ws().append_row(
+        [sid, title, product, campaign, script, datetime.now().strftime("%Y-%m-%d %H:%M")])
+    load_influencer_scripts.clear()
+    return sid
+
+def update_influencer_script(row, title, product, campaign, script):
+    get_influencer_scripts_ws().update(f"B{row}:E{row}", [[title, product, campaign, script]])
+    load_influencer_scripts.clear()
+
+def delete_influencer_script(row):
+    get_influencer_scripts_ws().delete_rows(row)
+    load_influencer_scripts.clear()
+
+def add_influencer_send(influencer, handle, script, product, campaign, sent_by):
+    get_influencer_sends_ws().append_row([
+        datetime.now().strftime("%Y-%m-%d %H:%M"), influencer, handle, script["id"], script["title"],
+        product, campaign, "Sent", "", sent_by,
+    ])
+    load_influencer_sends.clear()
+
+def update_influencer_send(row, status, notes):
+    get_influencer_sends_ws().update(f"H{row}:I{row}", [[status, notes]])
+    load_influencer_sends.clear()
+
+def delete_influencer_send(row):
+    get_influencer_sends_ws().delete_rows(row)
+    load_influencer_sends.clear()
+
+def influencer_fill_template(tpl, name, handle, product, campaign, title, script, sender):
+    out = str(tpl or "")
+    for key, val in (("name", name), ("handle", handle), ("product", product),
+                     ("campaign", campaign), ("title", title), ("sender", sender)):
+        out = out.replace("{" + key + "}", val or "")
+    # Tidy what an empty placeholder leaves behind ("on  ." / stray blank
+    # lines) before the script goes in, so the script's own text is never
+    # touched, and a "{name}" typed inside it isn't mistaken for a placeholder.
+    out = re.sub(r"[ \t]+([.,!?])", r"\1", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.replace("{script}", script or "").strip()
 
 # ─── Cancelled Orders ───────────────────────────────────────────────────────────
 # Own separate spreadsheet, same reasoning as Refunds: the old tool kept
@@ -2810,6 +2958,7 @@ with st.sidebar:
         "📊 Demand & Reorder": "SHIPMENTS", "📥 Purchase Orders": "SHIPMENTS",
         "🚢 Shipment Tracker": "SHIPMENTS", "🧾 Shipment Details": "SHIPMENTS",
         "🚫 Cancelled Orders": "SUPPORT", "💸 Refunds": "SUPPORT",
+        "🎬 Influencer Scripts": "MARKETING",
     }
     with st.container(key="sidebar_nav"):
         last_section = None
@@ -4155,6 +4304,294 @@ elif page == "💸 Refunds":
                     if cc2.button("Cancel", use_container_width=True):
                         st.session_state.pop(confirm_key, None)
                         st.rerun()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE: INFLUENCER SCRIPTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+elif page == "🎬 Influencer Scripts":
+    st.subheader("Influencer Scripts")
+    st.caption(
+        "Keep your scripts here, generate a ready-to-send message for an influencer, "
+        "and log which script went to whom — for which product or campaign — and "
+        "whether it ended up being used."
+    )
+
+    if "inf_msg" in st.session_state:
+        _kind, _text = st.session_state.pop("inf_msg")
+        getattr(st, _kind)(_text)
+
+    try:
+        with st.spinner("Loading…"):
+            scripts = load_influencer_scripts()
+            sends = load_influencer_sends()
+            template = load_influencer_template()
+            inv_products = sorted({v["product"] for v in load_inventory().values()})
+    except gspread.exceptions.APIError as e:
+        if getattr(e.response, "status_code", None) == 403:
+            st.error(
+                "Google refused to create the tabs this page stores its data in. Create them by hand "
+                "in the inventory spreadsheet (exact names, header in row 1), then reload:\n\n"
+                f"- **{INFLUENCER_SCRIPTS_TAB}**: " + ", ".join(INFLUENCER_SCRIPT_HEADERS) + "\n"
+                f"- **{INFLUENCER_SENDS_TAB}**: " + ", ".join(INFLUENCER_SEND_HEADERS) + "\n"
+                f"- **{INFLUENCER_SETTINGS_TAB}**: Key, Value"
+            )
+        else:
+            st.error(f"Could not load influencer data: {e}")
+        st.stop()
+    except Exception as e:
+        st.error(f"Could not load influencer data: {e}")
+        st.stop()
+
+    by_id = {s["id"]: s for s in scripts}
+    sender = st.session_state.get("username", "")
+    is_admin = st.session_state.role == "admin"
+
+    def _product_options(current=""):
+        opts = [""] + inv_products
+        return opts + [current] if current and current not in opts else opts
+
+    def _fmt_product(p):
+        return p or "— none / general —"
+
+    def _script_label(sid):
+        s = by_id[sid]
+        extra = " · ".join(x for x in (s["product"], s["campaign"]) if x)
+        return f'{sid} — {s["title"]}' + (f"  ({extra})" if extra else "")
+
+    tab_send, tab_track, tab_scripts, tab_tpl = st.tabs([
+        ":material/send: Send", ":material/fact_check: Tracking",
+        ":material/description: Scripts", ":material/edit_note: Template",
+    ])
+
+    # ── Send ─────────────────────────────────────────────────────────────────
+    with tab_send:
+        if not scripts:
+            st.info("Add a script in the Scripts tab first.")
+        else:
+            sel = st.selectbox("Script", list(by_id), format_func=_script_label, key="inf_send_script")
+            sc = by_id[sel]
+            c1, c2 = st.columns(2)
+            name = c1.text_input("Influencer name", key="inf_send_name")
+            handle = c2.text_input("Handle / platform", placeholder="@name · Instagram", key="inf_send_handle")
+            c3, c4 = st.columns(2)
+            opts = _product_options(sc["product"])
+            product = c3.selectbox(
+                "Product", opts, index=opts.index(sc["product"]), format_func=_fmt_product,
+                key=f"inf_send_product_{sel}",
+            )
+            campaign = c4.text_input("Campaign", value=sc["campaign"], key=f"inf_send_campaign_{sel}")
+
+            message = influencer_fill_template(
+                template, name.strip() or "[influencer name]", handle.strip(), product, campaign.strip(),
+                sc["title"], sc["script"], sender,
+            )
+            st.markdown("##### Message")
+            st.caption("Copy it with the icon at the top-right of the box, send it, then log it below.")
+            st.code(message, language=None, wrap_lines=True)
+
+            def _log_send():
+                # Reads current widget values from session_state, not values
+                # captured when the button was drawn — callbacks run before the
+                # script body, so captured ones could be a keystroke behind.
+                ss = st.session_state
+                script = by_id.get(ss.get("inf_send_script"))
+                who = (ss.get("inf_send_name") or "").strip()
+                if not script or not who:
+                    ss["inf_msg"] = ("warning", "Enter the influencer's name before logging it.")
+                    return
+                prod = ss.get(f"inf_send_product_{script['id']}", script["product"])
+                camp = (ss.get(f"inf_send_campaign_{script['id']}", script["campaign"]) or "").strip()
+                sig = (script["id"], who.lower(), prod, camp)
+                last = ss.get("inf_last_send")
+                if last and last[0] == sig and time.time() - last[1] < 15:
+                    return  # same record logged moments ago — a double click
+                add_influencer_send(who, (ss.get("inf_send_handle") or "").strip(), script, prod, camp, sender)
+                ss["inf_last_send"] = (sig, time.time())
+                ss["inf_msg"] = ("success", f"Logged: {script['id']} sent to {who}.")
+                ss["inf_send_name"] = ""
+                ss["inf_send_handle"] = ""
+
+            st.button(
+                "Log as sent", icon=":material/check_circle:", type="primary",
+                use_container_width=True, on_click=_log_send,
+            )
+
+    # ── Tracking ─────────────────────────────────────────────────────────────
+    with tab_track:
+        if not sends:
+            st.info("Nothing logged yet — send a script from the Send tab and it'll show up here.")
+        else:
+            used_n = sum(1 for r in sends if r["status"] == "Used")
+            t1, t2, t3 = st.columns(3)
+            t1.markdown(f'<div class="stat"><p class="num">{len(sends)}</p><p class="lbl">Scripts sent</p></div>', unsafe_allow_html=True)
+            t2.markdown(f'<div class="stat"><p class="num">{used_n}</p><p class="lbl">Used</p></div>', unsafe_allow_html=True)
+            t3.markdown(f'<div class="stat"><p class="num">{len({r["influencer"].lower() for r in sends})}</p><p class="lbl">Influencers</p></div>', unsafe_allow_html=True)
+            st.markdown("")
+
+            f1, f2, f3, f4 = st.columns([2, 1.5, 1.5, 2])
+            q = f1.text_input("Search influencer", placeholder="Name or handle")
+            prod_f = f2.selectbox("Product", ["All"] + sorted({r["product"] for r in sends if r["product"]}))
+            camp_f = f3.selectbox("Campaign", ["All"] + sorted({r["campaign"] for r in sends if r["campaign"]}))
+            stat_f = f4.multiselect("Status", INFLUENCER_SEND_STATUSES, default=INFLUENCER_SEND_STATUSES)
+
+            shown = [
+                r for r in reversed(sends)
+                if r["status"] in stat_f
+                and (prod_f == "All" or r["product"] == prod_f)
+                and (camp_f == "All" or r["campaign"] == camp_f)
+                and (not q.strip() or q.strip().lower() in (r["influencer"] + " " + r["handle"]).lower())
+            ]
+            if not shown:
+                st.info("No records match these filters.")
+            else:
+                st.dataframe(
+                    pd.DataFrame([{
+                        "Date": r["date"], "Influencer": r["influencer"], "Handle": r["handle"],
+                        "Script": f'{r["script_id"]} — {r["script_title"]}', "Product": r["product"],
+                        "Campaign": r["campaign"], "Status": r["status"], "Notes": r["notes"],
+                    } for r in shown]),
+                    use_container_width=True, hide_index=True,
+                )
+
+                st.markdown("##### Update a record")
+                labels = {r["row"]: f'{r["date"]} · {r["influencer"]} · {r["script_id"]}' for r in shown}
+                pick = st.selectbox("Record", list(labels), format_func=labels.get, key="inf_track_pick")
+                rec = next(r for r in shown if r["row"] == pick)
+                with st.form(f"inf_upd_{rec['row']}"):
+                    new_status = st.selectbox(
+                        "Status", INFLUENCER_SEND_STATUSES,
+                        index=INFLUENCER_SEND_STATUSES.index(rec["status"]),
+                        help="Sent = message went out. Used = they posted with the script. Declined = they passed.",
+                    )
+                    new_notes = st.text_area("Notes", value=rec["notes"], height=90)
+                    if st.form_submit_button("Save changes", type="primary", use_container_width=True):
+                        update_influencer_send(rec["row"], new_status, new_notes.strip())
+                        st.session_state["inf_msg"] = ("success", "Record updated.")
+                        st.rerun()
+
+                if is_admin:
+                    del_key = f"inf_del_send_{rec['row']}"
+                    if not st.session_state.get(del_key):
+                        if st.button("Delete this record", icon=":material/delete:"):
+                            st.session_state[del_key] = True
+                            st.rerun()
+                    else:
+                        st.warning(f"Permanently delete the record for {rec['influencer']}? This can't be undone.")
+                        d1, d2 = st.columns(2)
+                        if d1.button("Yes, delete", type="primary", use_container_width=True, key=f"{del_key}_y"):
+                            delete_influencer_send(rec["row"])
+                            st.session_state.pop(del_key, None)
+                            st.session_state["inf_msg"] = ("success", "Record deleted.")
+                            st.rerun()
+                        if d2.button("Cancel", use_container_width=True, key=f"{del_key}_n"):
+                            st.session_state.pop(del_key, None)
+                            st.rerun()
+
+            st.markdown("##### Script usage")
+            usage = {}
+            for r in sends:
+                u = usage.setdefault(r["script_id"], {"title": r["script_title"], "sent": 0, "used": 0, "who": []})
+                u["sent"] += 1
+                u["used"] += r["status"] == "Used"
+                if r["influencer"] not in u["who"]:
+                    u["who"].append(r["influencer"])
+            st.dataframe(
+                pd.DataFrame([{
+                    "Script": f'{sid} — {by_id[sid]["title"] if sid in by_id else u["title"]}',
+                    "Times sent": u["sent"], "Used": u["used"], "Sent to": ", ".join(u["who"]),
+                } for sid, u in usage.items()]),
+                use_container_width=True, hide_index=True,
+            )
+
+    # ── Scripts ──────────────────────────────────────────────────────────────
+    with tab_scripts:
+        with st.expander("Add a new script", icon=":material/add_circle:", expanded=not scripts):
+            with st.form("inf_add_script", clear_on_submit=True):
+                n_title = st.text_input("Title", placeholder="e.g. Unboxing — Deep V Bra")
+                a1, a2 = st.columns(2)
+                n_product = a1.selectbox("Product", _product_options(), format_func=_fmt_product)
+                n_campaign = a2.text_input("Campaign", placeholder="e.g. Winter launch")
+                n_script = st.text_area("Script", height=220)
+                if st.form_submit_button("Save script", type="primary", use_container_width=True):
+                    if not n_title.strip() or not n_script.strip():
+                        st.session_state["inf_msg"] = ("warning", "A script needs a title and its text.")
+                    else:
+                        sid = add_influencer_script(n_title.strip(), n_product, n_campaign.strip(), n_script.strip())
+                        st.session_state["inf_msg"] = ("success", f"Saved as {sid}.")
+                    st.rerun()
+
+        sent_count = {}
+        for r in sends:
+            sent_count[r["script_id"]] = sent_count.get(r["script_id"], 0) + 1
+
+        for s in reversed(scripts):
+            n = sent_count.get(s["id"], 0)
+            with st.expander(f'{s["id"]} — {s["title"]}   ·   sent {n}×'):
+                with st.form(f"inf_edit_{s['row']}"):
+                    e_title = st.text_input("Title", value=s["title"])
+                    b1, b2 = st.columns(2)
+                    eopts = _product_options(s["product"])
+                    e_product = b1.selectbox(
+                        "Product", eopts, index=eopts.index(s["product"]), format_func=_fmt_product,
+                    )
+                    e_campaign = b2.text_input("Campaign", value=s["campaign"])
+                    e_script = st.text_area("Script", value=s["script"], height=200)
+                    if st.form_submit_button("Save changes", type="primary", use_container_width=True):
+                        if not e_title.strip() or not e_script.strip():
+                            st.session_state["inf_msg"] = ("warning", "A script needs a title and its text.")
+                        else:
+                            update_influencer_script(s["row"], e_title.strip(), e_product, e_campaign.strip(), e_script.strip())
+                            st.session_state["inf_msg"] = ("success", f"{s['id']} updated.")
+                        st.rerun()
+                if is_admin:
+                    dkey = f"inf_del_script_{s['row']}"
+                    if not st.session_state.get(dkey):
+                        if st.button("Delete script", icon=":material/delete:", key=f"{dkey}_ask"):
+                            st.session_state[dkey] = True
+                            st.rerun()
+                    else:
+                        st.warning(
+                            f"Delete {s['id']}? Past send records keep its title, but the script text is gone for good."
+                        )
+                        d1, d2 = st.columns(2)
+                        if d1.button("Yes, delete", type="primary", use_container_width=True, key=f"{dkey}_y"):
+                            delete_influencer_script(s["row"])
+                            st.session_state.pop(dkey, None)
+                            st.session_state["inf_msg"] = ("success", f"{s['id']} deleted.")
+                            st.rerun()
+                        if d2.button("Cancel", use_container_width=True, key=f"{dkey}_n"):
+                            st.session_state.pop(dkey, None)
+                            st.rerun()
+
+    # ── Template ─────────────────────────────────────────────────────────────
+    with tab_tpl:
+        st.caption(
+            "The message every script is dropped into. Placeholders filled in automatically: "
+            + ", ".join(f"`{p}`" for p in INFLUENCER_PLACEHOLDERS) + "."
+        )
+        tpl_text = st.text_area("Message template", value=template, height=260, key="inf_tpl_text")
+        st.markdown("##### Preview")
+        st.code(
+            influencer_fill_template(
+                tpl_text, "Sara", "@sara · Instagram", "Seamless Deep V Push-Up Bra", "Winter launch",
+                "Unboxing", "(your script text appears here)", sender,
+            ),
+            language=None, wrap_lines=True,
+        )
+
+        def _save_tpl():
+            save_influencer_template(st.session_state["inf_tpl_text"].strip() or INFLUENCER_DEFAULT_TEMPLATE)
+            st.session_state["inf_msg"] = ("success", "Template saved.")
+
+        def _reset_tpl():
+            st.session_state["inf_tpl_text"] = INFLUENCER_DEFAULT_TEMPLATE
+            save_influencer_template(INFLUENCER_DEFAULT_TEMPLATE)
+            st.session_state["inf_msg"] = ("success", "Template reset to the default.")
+
+        g1, g2 = st.columns(2)
+        g1.button("Save template", type="primary", icon=":material/save:", use_container_width=True, on_click=_save_tpl)
+        g2.button("Reset to default", icon=":material/restart_alt:", use_container_width=True, on_click=_reset_tpl)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: MANAGE USERS (admin only)

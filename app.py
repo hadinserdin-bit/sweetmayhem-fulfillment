@@ -15,7 +15,6 @@ from urllib.parse import quote as url_quote
 import html
 import io
 import os
-import zipfile
 import math
 import re
 import html as html_lib
@@ -86,7 +85,7 @@ def _resilient_google_call(fn):
                 "get_ws", "get_users_ws", "get_refunds_ws", "get_co_ws",
                 "get_co_settings_ws", "get_product_prices_ws", "get_snapshot_ws",
                 "get_shipment_tracker_ws", "get_shipment_line_items_ws",
-                "get_influencer_scripts_ws", "get_influencer_sends_ws", "get_influencer_settings_ws",
+                "get_influencer_ws",
             ):
                 cache_fn = globals().get(name)
                 if cache_fn is not None:
@@ -325,162 +324,87 @@ def delete_refund(row):
     load_refunds.clear()
 
 # ─── Influencer Scripts ───────────────────────────────────────────────────────
-# Its own spreadsheet (kept out of the inventory file to keep the Drive tidy),
-# with three tabs: the script library, a log of which script went to which
-# influencer (for which product/campaign, and whether it got used), and the
-# message template the library fills in.
+# Each script is written for one influencer: creating it saves a record (with
+# the next script number, starting at 1000) and produces the PDF to send them.
+# Records live in their own spreadsheet to keep the Drive tidy, so you can see
+# which script went to which influencer, for which product or campaign, and
+# whether it ended up being used.
 
 INFLUENCER_SHEET_ID = "18rAUERGi2tRvDM-VFpoX5eAhXpxZCpvpM3pH36QSKBU"
-
-INFLUENCER_SCRIPTS_TAB = "Influencer Scripts"
-INFLUENCER_SENDS_TAB = "Influencer Sends"
-INFLUENCER_SETTINGS_TAB = "Influencer Settings"
-INFLUENCER_SCRIPT_HEADERS = ["Script ID", "Title", "Product", "Campaign", "Format", "Script", "Created At"]
-INFLUENCER_SEND_HEADERS = [
-    "Date", "Influencer", "Handle / Platform", "Script ID", "Script Title",
-    "Product", "Campaign", "Status", "Notes", "Sent By",
+INFLUENCER_TAB = "Scripts"
+INFLUENCER_HEADERS = [
+    "Script #", "Influencer", "Product", "Campaign", "Format", "Script",
+    "Status", "Notes", "Created By", "Created At",
 ]
-INFLUENCER_SEND_STATUSES = ["Sent", "Used", "Declined"]
-INFLUENCER_PLACEHOLDERS = ["{name}", "{handle}", "{product}", "{campaign}", "{title}", "{script}", "{sender}"]
-INFLUENCER_DEFAULT_TEMPLATE = (
-    "Hi {name}! 👋 This is {sender} from Sweet Mayhem.\n\n"
-    "We'd love to work with you on {product}.\n\n"
-    "Here's the script for the video:\n\n{script}\n\n"
-    "Let us know if you have any questions!"
-)
+INFLUENCER_STATUSES = ["Created", "Sent", "Used", "Declined"]
+INFLUENCER_FIRST_NUMBER = 1000
 
 @st.cache_resource
 def _influencer_spreadsheet():
     return _gc().open_by_key(INFLUENCER_SHEET_ID)
 
-def _get_or_create_ws(tab, headers):
+@st.cache_resource
+@_resilient_google_call
+def get_influencer_ws():
     sh = _influencer_spreadsheet()
     try:
-        return sh.worksheet(tab)
+        return sh.worksheet(INFLUENCER_TAB)
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=tab, rows=500, cols=len(headers))
-        ws.append_row(headers)
+        ws = sh.add_worksheet(title=INFLUENCER_TAB, rows=500, cols=len(INFLUENCER_HEADERS))
+        ws.append_row(INFLUENCER_HEADERS)
         return ws
-
-@st.cache_resource
-@_resilient_google_call
-def get_influencer_scripts_ws():
-    return _get_or_create_ws(INFLUENCER_SCRIPTS_TAB, INFLUENCER_SCRIPT_HEADERS)
-
-@st.cache_resource
-@_resilient_google_call
-def get_influencer_sends_ws():
-    return _get_or_create_ws(INFLUENCER_SENDS_TAB, INFLUENCER_SEND_HEADERS)
-
-@st.cache_resource
-@_resilient_google_call
-def get_influencer_settings_ws():
-    return _get_or_create_ws(INFLUENCER_SETTINGS_TAB, ["Key", "Value"])
 
 @st.cache_data(ttl=30)
 @_resilient_google_call
 def load_influencer_scripts():
-    data = get_influencer_scripts_ws().get_all_values()
     out = []
-    for i, row in enumerate(data[1:], start=2):
-        row = row + [""] * (7 - len(row))
-        if not row[0].strip():
-            continue
-        out.append({
-            "row": i, "id": row[0].strip(), "title": row[1].strip(), "product": row[2].strip(),
-            "campaign": row[3].strip(), "format": row[4].strip(), "script": row[5],
-            "created": row[6].strip(),
-        })
-    return out
-
-@st.cache_data(ttl=30)
-@_resilient_google_call
-def load_influencer_sends():
-    data = get_influencer_sends_ws().get_all_values()
-    out = []
-    for i, row in enumerate(data[1:], start=2):
+    for i, row in enumerate(get_influencer_ws().get_all_values()[1:], start=2):
         row = row + [""] * (10 - len(row))
-        if not row[1].strip():
+        if not row[0].strip().isdigit():
             continue
-        status = row[7].strip()
+        status = row[6].strip()
         out.append({
-            "row": i, "date": row[0].strip(), "influencer": row[1].strip(), "handle": row[2].strip(),
-            "script_id": row[3].strip(), "script_title": row[4].strip(), "product": row[5].strip(),
-            "campaign": row[6].strip(), "status": status if status in INFLUENCER_SEND_STATUSES else "Sent",
-            "notes": row[8], "sent_by": row[9].strip(),
+            "row": i, "number": int(row[0]), "influencer": row[1].strip(), "product": row[2].strip(),
+            "campaign": row[3].strip(), "format": row[4].strip(), "script": row[5],
+            "status": status if status in INFLUENCER_STATUSES else "Created",
+            "notes": row[7], "created_by": row[8].strip(), "created": row[9].strip(),
         })
     return out
 
-@st.cache_data(ttl=30)
-@_resilient_google_call
-def load_influencer_template():
-    for row in get_influencer_settings_ws().get_all_values()[1:]:
-        if row and row[0].strip() == "template" and len(row) > 1 and row[1].strip():
-            return row[1]
-    return INFLUENCER_DEFAULT_TEMPLATE
+def next_influencer_number(scripts):
+    return max([INFLUENCER_FIRST_NUMBER] + [s["number"] + 1 for s in scripts])
 
-def save_influencer_template(text):
-    ws = get_influencer_settings_ws()
-    for i, row in enumerate(ws.get_all_values()[1:], start=2):
-        if row and row[0].strip() == "template":
-            ws.update_cell(i, 2, text)
-            break
-    else:
-        ws.append_row(["template", text])
-    load_influencer_template.clear()
-
-def next_influencer_script_id(scripts):
-    nums = [int(s["id"][1:]) for s in scripts if re.fullmatch(r"S\d+", s["id"])]
-    return f"S{max(nums, default=0) + 1}"
-
-def add_influencer_script(number, title, product, campaign, fmt, script):
-    """Returns the new script's ID, or None if that number is already taken."""
-    sid = f"S{int(number)}"
-    if any(s["id"] == sid for s in load_influencer_scripts()):
-        return None
-    get_influencer_scripts_ws().append_row(
-        [sid, title, product, campaign, fmt, script, datetime.now().strftime("%Y-%m-%d %H:%M")])
+def add_influencer_script(influencer, product, campaign, fmt, script, created_by):
+    """Saves the record under the next free number and returns it."""
+    number = next_influencer_number(load_influencer_scripts())
+    created = datetime.now().strftime("%Y-%m-%d %H:%M")
+    get_influencer_ws().append_row(
+        [number, influencer, product, campaign, fmt, script, "Created", "", created_by, created])
     load_influencer_scripts.clear()
-    return sid
+    return {
+        "number": number, "influencer": influencer, "product": product, "campaign": campaign,
+        "format": fmt, "script": script, "status": "Created", "notes": "",
+        "created_by": created_by, "created": created,
+    }
 
-def update_influencer_script(row, title, product, campaign, fmt, script):
-    get_influencer_scripts_ws().update(f"B{row}:F{row}", [[title, product, campaign, fmt, script]])
+def update_influencer_status(row, status, notes):
+    get_influencer_ws().update(f"G{row}:H{row}", [[status, notes]])
     load_influencer_scripts.clear()
 
 def delete_influencer_script(row):
-    get_influencer_scripts_ws().delete_rows(row)
+    get_influencer_ws().delete_rows(row)
     load_influencer_scripts.clear()
 
-def add_influencer_send(influencer, handle, script, product, campaign, sent_by):
-    get_influencer_sends_ws().append_row([
-        datetime.now().strftime("%Y-%m-%d %H:%M"), influencer, handle, script["id"], script["title"],
-        product, campaign, "Sent", "", sent_by,
-    ])
-    load_influencer_sends.clear()
+# ── The PDF ─────────────────────────────────────────────────────────────────
+# Laid out like the Sweet Mayhem script document: title block, an info table
+# (Influencer / Brand / Website / Format), then the script. An ALL-CAPS line is
+# a shot direction; every other line is spoken and gets quote marks. Georgia's
+# metric-compatible open font (Gelasio) is bundled so it looks the same on any
+# machine.
 
-def update_influencer_send(row, status, notes):
-    get_influencer_sends_ws().update(f"H{row}:I{row}", [[status, notes]])
-    load_influencer_sends.clear()
-
-def delete_influencer_send(row):
-    get_influencer_sends_ws().delete_rows(row)
-    load_influencer_sends.clear()
-
-# ── Word script (.docx) ──────────────────────────────────────────────────────
-# Built from the real Sweet Mayhem script document (assets/), so fonts, colors
-# and layout match it exactly: its header, title block and info table are kept
-# and only the values and the script body are swapped in. Script text is plain
-# lines — an ALL-CAPS line is a shot direction, anything else is spoken.
-
-INFLUENCER_DOCX_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "influencer_script_template.docx")
-_DOCX_FONT = '<w:rFonts w:ascii="Georgia" w:cs="Georgia" w:eastAsia="Georgia" w:hAnsi="Georgia"/>'
-_DOCX_NOTE = "Deliver lines naturally in your own voice/dialect — bracketed directions are shot guidance, not spoken."
-_DOCX_FOOTER = "www.sweetmayhemfit.com   •   Page"
-
-def _docx_run(text, size, color=None, bold=False, italic=False):
-    rpr = (_DOCX_FONT + ("<w:b/><w:bCs/>" if bold else "") + ("<w:i/><w:iCs/>" if italic else "")
-           + (f'<w:color w:val="{color}"/>' if color else "") + f'<w:sz w:val="{size}"/><w:szCs w:val="{size}"/>')
-    return f'<w:r><w:rPr>{rpr}</w:rPr><w:t xml:space="preserve">{html_lib.escape(str(text), quote=False)}</w:t></w:r>'
+INFLUENCER_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
+_PDF_ACCENT = (0xC5, 0x8D, 0x74)
+_PDF_NOTE = "Deliver lines naturally in your own voice/dialect — bracketed directions are shot guidance, not spoken."
 
 def _is_direction(line):
     return not line[:1] in "\"“”'‘’" and bool(re.search(r"[A-Za-z]", line)) and line == line.upper()
@@ -492,110 +416,106 @@ def _speech(line):
     return "“" + t + "”"
 
 def influencer_script_filename(script):
-    """Sweet_Mayhem_Script_3_Cross_Back_Posture_Bra.docx — the number is the script's
-    own ID, the rest is its product (or its title when it has none)."""
-    num = re.sub(r"\D", "", script["id"]) or "0"
-    words = re.sub(r"[^A-Za-z0-9]+", "_", script["product"] or script["title"]).strip("_") or "Script"
-    return f"Sweet_Mayhem_Script_{num}_{words}.docx"
+    """Sweet_Mayhem_Script_1000_Cross_Back_Posture_Bra.pdf"""
+    words = re.sub(r"[^A-Za-z0-9]+", "_", script["product"] or script["influencer"]).strip("_") or "Script"
+    return f"Sweet_Mayhem_Script_{script['number']}_{words}.pdf"
 
-def build_influencer_script_docx(script, influencer=""):
-    num = re.sub(r"\D", "", script["id"]) or "0"
+def build_influencer_script_pdf(script):
+    from fpdf import FPDF  # imported here so a missing package can't take the whole app down
+
+    class _PDF(FPDF):
+        def footer(self):
+            self.set_y(-46)
+            self.set_font("Gelasio", "", 9)
+            self.set_text_color(0x77, 0x77, 0x77)
+            self.cell(0, 10, f"www.sweetmayhemfit.com   •   Page {self.page_no()}", align="C")
+
+    pdf = _PDF(unit="pt", format="Letter")
+    pdf.set_margins(72, 72, 72)
+    pdf.set_auto_page_break(True, margin=72)
+    for style, fname in (("", "Regular"), ("B", "Bold"), ("I", "Italic"), ("BI", "BoldItalic")):
+        pdf.add_font("Gelasio", style, os.path.join(INFLUENCER_FONT_DIR, f"Gelasio-{fname}.ttf"))
+    pdf.add_page()
+    num, width = script["number"], 468
+
+    # header line
+    pdf.set_font("Gelasio", "B", 10); pdf.set_text_color(*_PDF_ACCENT)
+    pdf.write(12, "SWEET MAYHEM")
+    pdf.set_font("Gelasio", "", 10); pdf.set_text_color(0x44, 0x44, 0x44)
+    pdf.write(12, f"   |   Influencer Script #{num}")
+    y = pdf.get_y() + 12 + 8
+    pdf.set_draw_color(*_PDF_ACCENT); pdf.set_line_width(0.75)
+    pdf.line(72, y, 72 + width, y)
+    pdf.set_y(y + 16)
+
+    # title block
+    pdf.set_font("Gelasio", "B", 24); pdf.set_text_color(*_PDF_ACCENT)
+    pdf.cell(width, 28, "SWEET MAYHEM", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
+    pdf.set_font("Gelasio", "B", 13); pdf.set_text_color(0, 0, 0)
+    pdf.cell(width, 16, f"UGC / INFLUENCER SCRIPT #{num}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(11)
+
+    # info table
     fmt = script.get("format") or ("Vertical video / UGC" + (f" — {script['product']} feature" if script["product"] else ""))
-    zin = zipfile.ZipFile(INFLUENCER_DOCX_TEMPLATE)
-    x = zin.read("word/document.xml").decode("utf-8")
-    head = x[:x.index("<w:body>") + len("<w:body>")]
-    tail = x[x.index("<w:sectPr"):]
-    tbl = re.search(r"<w:tbl>.*?</w:tbl>", x, re.S).group(0)
-    esc = lambda t: html_lib.escape(str(t), quote=False)
-    tbl = tbl.replace('<w:t xml:space="preserve"></w:t>', f'<w:t xml:space="preserve">{esc(influencer)}</w:t>', 1)
-    tbl = re.sub(r"(Format</w:t></w:r></w:p></w:tc><w:tc>.*?<w:t xml:space=\"preserve\">)[^<]*(</w:t>)",
-                 lambda m: m.group(1) + esc(fmt) + m.group(2), tbl, count=1, flags=re.S)
-    body = [
-        '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:color="C58D74" w:sz="6" w:space="8"/></w:pBdr>'
-        '<w:spacing w:after="120"/></w:pPr>' + _docx_run("SWEET MAYHEM", 20, "C58D74", bold=True)
-        + _docx_run(f"   |   Influencer Script #{num}", 20, "444444") + "</w:p>",
-        '<w:p><w:pPr><w:spacing w:after="20" w:before="200"/><w:jc w:val="center"/></w:pPr>'
-        + _docx_run("SWEET MAYHEM", 48, "C58D74", bold=True) + "</w:p>",
-        '<w:p><w:pPr><w:spacing w:after="220"/><w:jc w:val="center"/></w:pPr>'
-        + _docx_run(f"UGC / INFLUENCER SCRIPT #{num}", 26, "000000", bold=True) + "</w:p>",
-        tbl,
-        '<w:p><w:pPr><w:spacing w:before="160"/></w:pPr></w:p>',
-    ]
+    rows = [("Influencer", script["influencer"], None), ("Brand", "Sweet Mayhem", None),
+            ("Website", "www.sweetmayhemfit.com", "https://www.sweetmayhemfit.com"), ("Format", fmt, None)]
+    lw, vw, pad, lh = 80, 235, 5, 12
+    pdf.set_line_width(0.5); pdf.set_draw_color(0, 0, 0)
+    for label, value, link in rows:
+        pdf.set_font("Gelasio", "", 10)
+        lines = pdf.multi_cell(vw - 2 * pad, lh, value or " ", split_only=True) or [" "]
+        h = len(lines) * lh + 6
+        if pdf.get_y() + h > 792 - 72:
+            pdf.add_page()
+        x, y = 72, pdf.get_y()
+        pdf.set_fill_color(0xF3, 0xE2, 0xD8)
+        pdf.rect(x, y, lw, h, style="DF")
+        pdf.rect(x + lw, y, vw, h, style="D")
+        pdf.set_xy(x + pad, y + 3)
+        pdf.set_font("Gelasio", "B", 10); pdf.set_text_color(*_PDF_ACCENT)
+        pdf.cell(lw - 2 * pad, lh, label)
+        pdf.set_xy(x + lw + pad, y + 3)
+        pdf.set_font("Gelasio", "", 10)
+        if link:
+            pdf.set_text_color(0x05, 0x63, 0xC1)
+            pdf.cell(vw - 2 * pad, lh, value, link=link)
+            tw = pdf.get_string_width(value)
+            pdf.set_draw_color(0x05, 0x63, 0xC1)
+            pdf.line(x + lw + pad, y + 3 + lh - 2.5, x + lw + pad + tw, y + 3 + lh - 2.5)
+            pdf.set_draw_color(0, 0, 0)
+        else:
+            pdf.set_text_color(0, 0, 0)
+            pdf.multi_cell(vw - 2 * pad, lh, value, align="L", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_y(y + h)
+    pdf.ln(8)
+
+    # script body
     for line in (l.strip() for l in script["script"].splitlines()):
         if not line:
             continue
         if _is_direction(line):
-            body.append('<w:p><w:pPr><w:spacing w:after="60" w:before="160"/></w:pPr>'
-                        + _docx_run(line, 20, "555555", bold=True, italic=True) + "</w:p>")
+            if pdf.get_y() > 792 - 72 - 70:
+                pdf.add_page()
+            pdf.ln(8)
+            pdf.set_font("Gelasio", "BI", 10); pdf.set_text_color(0x55, 0x55, 0x55)
+            pdf.multi_cell(width, 12, line, align="L", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(3)
         else:
-            body.append('<w:p><w:pPr><w:spacing w:after="100"/><w:ind w:left="260"/></w:pPr>'
-                        + _docx_run(_speech(line), 22) + "</w:p>")
-    body.append('<w:p><w:pPr><w:spacing w:after="200" w:before="200"/></w:pPr>'
-                + _docx_run("Note: ", 20, "C58D74", bold=True, italic=True)
-                + _docx_run(_DOCX_NOTE, 20, "444444", italic=True) + "</w:p>")
-    body.append('<w:p><w:pPr><w:jc w:val="center"/></w:pPr>' + _docx_run(_DOCX_FOOTER, 18, "777777") + "</w:p>")
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
-        for item in zin.infolist():
-            data = zin.read(item.filename)
-            if item.filename == "word/document.xml":
-                data = (head + "".join(body) + tail).encode("utf-8")
-            zout.writestr(item, data)
-    return out.getvalue()
+            pdf.set_font("Gelasio", "", 11); pdf.set_text_color(0, 0, 0)
+            pdf.set_x(72 + 13)
+            pdf.multi_cell(width - 13, 13.5, _speech(line), align="L", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(5)
 
-def parse_influencer_script_docx(data, filename=""):
-    """Reads a Sweet Mayhem script .docx back into {number, product_words, format, script}."""
-    x = zipfile.ZipFile(io.BytesIO(data)).read("word/document.xml").decode("utf-8")
-    text_of = lambda p: html_lib.unescape("".join(re.findall(r"<w:t(?:\s[^>]*)?>(.*?)</w:t>", p, re.S)))
-    tbl = re.search(r"<w:tbl>.*?</w:tbl>", x, re.S)
-    fmt, number = "", None
-    if tbl:
-        cells = [text_of(c) for c in re.findall(r"<w:tc>.*?</w:tc>", tbl.group(0), re.S)]
-        for k in range(0, len(cells) - 1, 2):
-            if cells[k].strip().lower() == "format":
-                fmt = cells[k + 1].strip()
-        after = x[tbl.end():]
-        before = x[:tbl.start()]
-    else:
-        after, before = x, ""
-    m = re.search(r"Script\s*#\s*(\d+)", text_of(before))
-    if m:
-        number = int(m.group(1))
-    lines = []
-    for p in re.findall(r"<w:p[ >].*?</w:p>", after, re.S):
-        t = text_of(p).strip()
-        if t.startswith("Note:"):
-            break
-        if not t:
-            continue
-        if _is_direction(t) and lines:
-            lines.append("")
-        lines.append(t)
-    fm = re.search(r"Script[_ ](\d+)[_ ](.+?)(?:\s*\(\d+\))?\.docx$", filename, re.I)
-    if fm and number is None:
-        number = int(fm.group(1))
-    return {
-        "number": number, "format": fmt, "script": "\n".join(lines),
-        "product_words": re.sub(r"[_\s]+", " ", fm.group(2)).strip() if fm else "",
-    }
-
-def _norm_words(t):
-    return re.sub(r"[^a-z0-9]+", " ", str(t).lower()).strip()
-
-
-def influencer_fill_template(tpl, name, handle, product, campaign, title, script, sender):
-    out = str(tpl or "")
-    for key, val in (("name", name), ("handle", handle), ("product", product),
-                     ("campaign", campaign), ("title", title), ("sender", sender)):
-        out = out.replace("{" + key + "}", val or "")
-    # Tidy what an empty placeholder leaves behind ("on  ." / stray blank
-    # lines) before the script goes in, so the script's own text is never
-    # touched, and a "{name}" typed inside it isn't mistaken for a placeholder.
-    out = re.sub(r"[ \t]+([.,!?])", r"\1", out)
-    out = re.sub(r"[ \t]{2,}", " ", out)
-    out = re.sub(r"[ \t]+\n", "\n", out)
-    out = re.sub(r"\n{3,}", "\n\n", out)
-    return out.replace("{script}", script or "").strip()
+    # closing note
+    if pdf.get_y() > 792 - 72 - 60:
+        pdf.add_page()
+    pdf.ln(10)
+    pdf.set_font("Gelasio", "BI", 10); pdf.set_text_color(*_PDF_ACCENT)
+    pdf.write(12, "Note: ")
+    pdf.set_font("Gelasio", "I", 10); pdf.set_text_color(0x44, 0x44, 0x44)
+    pdf.write(12, _PDF_NOTE)
+    return bytes(pdf.output())
 
 # ─── Cancelled Orders ───────────────────────────────────────────────────────────
 # Own separate spreadsheet, same reasoning as Refunds: the old tool kept
@@ -4446,9 +4366,9 @@ elif page == "💸 Refunds":
 elif page == "🎬 Influencer Scripts":
     st.subheader("Influencer Scripts")
     st.caption(
-        "Keep your scripts here, generate a ready-to-send message for an influencer, "
-        "and log which script went to whom — for which product or campaign — and "
-        "whether it ended up being used."
+        "Write a script for an influencer, create it, and download the PDF to send them. "
+        "Every script is numbered automatically and logged here, so you can see which "
+        "script went to which influencer, for which product or campaign, and whether it was used."
     )
 
     if "inf_msg" in st.session_state:
@@ -4458,17 +4378,13 @@ elif page == "🎬 Influencer Scripts":
     try:
         with st.spinner("Loading…"):
             scripts = load_influencer_scripts()
-            sends = load_influencer_sends()
-            template = load_influencer_template()
             inv_products = sorted({v["product"] for v in load_inventory().values()})
     except gspread.exceptions.APIError as e:
         if getattr(e.response, "status_code", None) == 403:
             st.error(
-                "Google refused to create the tabs this page stores its data in. Create them by hand "
-                "in the Influencer Scripts spreadsheet (exact names, header in row 1), then reload:\n\n"
-                f"- **{INFLUENCER_SCRIPTS_TAB}**: " + ", ".join(INFLUENCER_SCRIPT_HEADERS) + "\n"
-                f"- **{INFLUENCER_SENDS_TAB}**: " + ", ".join(INFLUENCER_SEND_HEADERS) + "\n"
-                f"- **{INFLUENCER_SETTINGS_TAB}**: Key, Value"
+                "Google refused to create the tab this page stores its data in. Add a tab named "
+                f"**{INFLUENCER_TAB}** to the Influencer Scripts spreadsheet with this header in row 1, "
+                "then reload:\n\n" + ", ".join(INFLUENCER_HEADERS)
             )
         else:
             st.error(f"Could not load influencer data: {e}")
@@ -4477,327 +4393,171 @@ elif page == "🎬 Influencer Scripts":
         st.error(f"Could not load influencer data: {e}")
         st.stop()
 
-    by_id = {s["id"]: s for s in scripts}
-    sender = st.session_state.get("username", "")
+    me = st.session_state.get("username", "")
     is_admin = st.session_state.role == "admin"
-
-    def _product_options(current=""):
-        opts = [""] + inv_products
-        return opts + [current] if current and current not in opts else opts
+    product_options = [""] + inv_products
 
     def _fmt_product(p):
         return p or "— none / general —"
 
-    def _script_label(sid):
-        s = by_id[sid]
-        extra = " · ".join(x for x in (s["product"], s["campaign"]) if x)
-        return f'{sid} — {s["title"]}' + (f"  ({extra})" if extra else "")
+    def _pdf_button(rec, key, label="Download PDF", primary=False):
+        try:
+            data = build_influencer_script_pdf(rec)
+        except Exception as e:
+            st.error(f"Couldn't build the PDF: {e}")
+            return
+        st.download_button(
+            label, data=data, file_name=influencer_script_filename(rec), mime="application/pdf",
+            icon=":material/picture_as_pdf:", key=key, type="primary" if primary else "secondary",
+        )
 
-    tab_send, tab_track, tab_scripts, tab_tpl = st.tabs([
-        ":material/send: Send", ":material/fact_check: Tracking",
-        ":material/description: Scripts", ":material/edit_note: Template",
-    ])
+    tab_new, tab_track = st.tabs([":material/add_circle: New script", ":material/fact_check: Tracking"])
 
-    # ── Send ─────────────────────────────────────────────────────────────────
-    with tab_send:
-        if not scripts:
-            st.info("Add a script in the Scripts tab first.")
-        else:
-            sel = st.selectbox("Script", list(by_id), format_func=_script_label, key="inf_send_script")
-            sc = by_id[sel]
+    # ── New script ───────────────────────────────────────────────────────────
+    with tab_new:
+        ss = st.session_state
+        for _k in ("inf_new_influencer", "inf_new_campaign", "inf_new_format", "inf_new_script"):
+            ss.setdefault(_k, "")
+        ss.setdefault("inf_new_product", "")
+
+        created = ss.get("inf_last_created")
+        if created:
+            with st.container(border=True):
+                st.success(
+                    f"Script #{created['number']} created for {created['influencer']}.",
+                    icon=":material/check_circle:",
+                )
+                _pdf_button(created, key="inf_dl_created", label="Download PDF to send", primary=True)
+
+        def _create_script():
+            ss = st.session_state
+            who = (ss.get("inf_new_influencer") or "").strip()
+            body = (ss.get("inf_new_script") or "").strip()
+            if not who or not body:
+                ss["inf_msg"] = ("warning", "Enter the influencer's name and the script first.")
+                return
+            prod = ss.get("inf_new_product") or ""
+            camp = (ss.get("inf_new_campaign") or "").strip()
+            fmt = (ss.get("inf_new_format") or "").strip()
+            sig = (who.lower(), prod, camp, body)
+            last = ss.get("inf_last_sig")
+            if last and last[0] == sig and time.time() - last[1] < 20:
+                return  # the same script submitted moments ago — a double click
+            ss["inf_last_created"] = add_influencer_script(who, prod, camp, fmt, body, me)
+            ss["inf_last_sig"] = (sig, time.time())
+            for k in ("inf_new_influencer", "inf_new_campaign", "inf_new_format", "inf_new_script", "inf_new_product"):
+                ss[k] = ""
+
+        with st.form("inf_new_form"):
+            st.caption(f"This will be script **#{next_influencer_number(scripts)}**.")
+            st.text_input("Influencer name", placeholder="e.g. Sara Khoury", key="inf_new_influencer")
             c1, c2 = st.columns(2)
-            name = c1.text_input("Influencer name", key="inf_send_name")
-            handle = c2.text_input("Handle / platform", placeholder="@name · Instagram", key="inf_send_handle")
-            c3, c4 = st.columns(2)
-            opts = _product_options(sc["product"])
-            product = c3.selectbox(
-                "Product", opts, index=opts.index(sc["product"]), format_func=_fmt_product,
-                key=f"inf_send_product_{sel}",
+            c1.selectbox("Product", product_options, format_func=_fmt_product, key="inf_new_product")
+            c2.text_input("Campaign", placeholder="e.g. Winter launch", key="inf_new_campaign")
+            st.text_input(
+                "Format", placeholder="Vertical video / UGC — Cross-Back Posture Jelly Bra feature",
+                help="Shown in the PDF. Left blank, it's filled in from the product.", key="inf_new_format",
             )
-            campaign = c4.text_input("Campaign", value=sc["campaign"], key=f"inf_send_campaign_{sel}")
-
-            message = influencer_fill_template(
-                template, name.strip() or "[influencer name]", handle.strip(), product, campaign.strip(),
-                sc["title"], sc["script"], sender,
+            st.text_area(
+                "Script", height=260, key="inf_new_script",
+                help="One line each. An ALL-CAPS line is a shot direction; every other line is spoken "
+                     "and gets quote marks in the PDF.",
             )
-            st.markdown("##### Message")
-            st.caption("Copy it with the icon at the top-right of the box, send it, then log it below.")
-            st.code(message, language=None, wrap_lines=True)
-            st.download_button(
-                "Download Word script for this influencer",
-                data=build_influencer_script_docx(sc, name.strip()),
-                file_name=influencer_script_filename(sc), mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                icon=":material/description:", key="inf_dl_send",
-                help="The same script as a formatted Word document, with the influencer's name filled in.",
-            )
-
-            def _log_send():
-                # Reads current widget values from session_state, not values
-                # captured when the button was drawn — callbacks run before the
-                # script body, so captured ones could be a keystroke behind.
-                ss = st.session_state
-                script = by_id.get(ss.get("inf_send_script"))
-                who = (ss.get("inf_send_name") or "").strip()
-                if not script or not who:
-                    ss["inf_msg"] = ("warning", "Enter the influencer's name before logging it.")
-                    return
-                prod = ss.get(f"inf_send_product_{script['id']}", script["product"])
-                camp = (ss.get(f"inf_send_campaign_{script['id']}", script["campaign"]) or "").strip()
-                sig = (script["id"], who.lower(), prod, camp)
-                last = ss.get("inf_last_send")
-                if last and last[0] == sig and time.time() - last[1] < 15:
-                    return  # same record logged moments ago — a double click
-                add_influencer_send(who, (ss.get("inf_send_handle") or "").strip(), script, prod, camp, sender)
-                ss["inf_last_send"] = (sig, time.time())
-                ss["inf_msg"] = ("success", f"Logged: {script['id']} sent to {who}.")
-                ss["inf_send_name"] = ""
-                ss["inf_send_handle"] = ""
-
-            st.button(
-                "Log as sent", icon=":material/check_circle:", type="primary",
-                use_container_width=True, on_click=_log_send,
+            st.form_submit_button(
+                "Create script", type="primary", use_container_width=True, on_click=_create_script,
             )
 
     # ── Tracking ─────────────────────────────────────────────────────────────
     with tab_track:
-        if not sends:
-            st.info("Nothing logged yet — send a script from the Send tab and it'll show up here.")
+        if not scripts:
+            st.info("Nothing here yet — create a script and it'll show up here.")
         else:
-            used_n = sum(1 for r in sends if r["status"] == "Used")
+            used_n = sum(1 for r in scripts if r["status"] == "Used")
             t1, t2, t3 = st.columns(3)
-            t1.markdown(f'<div class="stat"><p class="num">{len(sends)}</p><p class="lbl">Scripts sent</p></div>', unsafe_allow_html=True)
+            t1.markdown(f'<div class="stat"><p class="num">{len(scripts)}</p><p class="lbl">Scripts created</p></div>', unsafe_allow_html=True)
             t2.markdown(f'<div class="stat"><p class="num">{used_n}</p><p class="lbl">Used</p></div>', unsafe_allow_html=True)
-            t3.markdown(f'<div class="stat"><p class="num">{len({r["influencer"].lower() for r in sends})}</p><p class="lbl">Influencers</p></div>', unsafe_allow_html=True)
+            t3.markdown(f'<div class="stat"><p class="num">{len({r["influencer"].lower() for r in scripts})}</p><p class="lbl">Influencers</p></div>', unsafe_allow_html=True)
             st.markdown("")
 
             f1, f2, f3, f4 = st.columns([2, 1.5, 1.5, 2])
-            q = f1.text_input("Search influencer", placeholder="Name or handle")
-            prod_f = f2.selectbox("Product", ["All"] + sorted({r["product"] for r in sends if r["product"]}))
-            camp_f = f3.selectbox("Campaign", ["All"] + sorted({r["campaign"] for r in sends if r["campaign"]}))
-            stat_f = f4.multiselect("Status", INFLUENCER_SEND_STATUSES, default=INFLUENCER_SEND_STATUSES)
+            q = f1.text_input("Search influencer", placeholder="Name")
+            prod_f = f2.selectbox("Product", ["All"] + sorted({r["product"] for r in scripts if r["product"]}))
+            camp_f = f3.selectbox("Campaign", ["All"] + sorted({r["campaign"] for r in scripts if r["campaign"]}))
+            stat_f = f4.multiselect("Status", INFLUENCER_STATUSES, default=INFLUENCER_STATUSES)
 
             shown = [
-                r for r in reversed(sends)
+                r for r in reversed(scripts)
                 if r["status"] in stat_f
                 and (prod_f == "All" or r["product"] == prod_f)
                 and (camp_f == "All" or r["campaign"] == camp_f)
-                and (not q.strip() or q.strip().lower() in (r["influencer"] + " " + r["handle"]).lower())
+                and (not q.strip() or q.strip().lower() in r["influencer"].lower())
             ]
             if not shown:
-                st.info("No records match these filters.")
+                st.info("No scripts match these filters.")
             else:
                 st.dataframe(
                     pd.DataFrame([{
-                        "Date": r["date"], "Influencer": r["influencer"], "Handle": r["handle"],
-                        "Script": f'{r["script_id"]} — {r["script_title"]}', "Product": r["product"],
-                        "Campaign": r["campaign"], "Status": r["status"], "Notes": r["notes"],
+                        "Script #": r["number"], "Influencer": r["influencer"], "Product": r["product"],
+                        "Campaign": r["campaign"], "Status": r["status"], "Created": r["created"],
+                        "Notes": r["notes"],
                     } for r in shown]),
                     use_container_width=True, hide_index=True,
                 )
 
-                st.markdown("##### Update a record")
-                labels = {r["row"]: f'{r["date"]} · {r["influencer"]} · {r["script_id"]}' for r in shown}
-                pick = st.selectbox("Record", list(labels), format_func=labels.get, key="inf_track_pick")
+                st.markdown("##### Open a script")
+                labels = {r["row"]: f'#{r["number"]} · {r["influencer"]}' + (f' · {r["product"]}' if r["product"] else "") for r in shown}
+                pick = st.selectbox("Script", list(labels), format_func=labels.get, key="inf_track_pick")
                 rec = next(r for r in shown if r["row"] == pick)
+
                 with st.form(f"inf_upd_{rec['row']}"):
                     new_status = st.selectbox(
-                        "Status", INFLUENCER_SEND_STATUSES,
-                        index=INFLUENCER_SEND_STATUSES.index(rec["status"]),
-                        help="Sent = message went out. Used = they posted with the script. Declined = they passed.",
+                        "Status", INFLUENCER_STATUSES, index=INFLUENCER_STATUSES.index(rec["status"]),
+                        help="Created = made. Sent = you sent the PDF. Used = they posted with it. Declined = they passed.",
                     )
                     new_notes = st.text_area("Notes", value=rec["notes"], height=90)
                     if st.form_submit_button("Save changes", type="primary", use_container_width=True):
-                        update_influencer_send(rec["row"], new_status, new_notes.strip())
-                        st.session_state["inf_msg"] = ("success", "Record updated.")
+                        update_influencer_status(rec["row"], new_status, new_notes.strip())
+                        st.session_state["inf_msg"] = ("success", f"Script #{rec['number']} updated.")
                         st.rerun()
 
+                _pdf_button(rec, key=f"inf_dl_{rec['row']}")
+                with st.expander("Script text"):
+                    st.code(rec["script"], language=None, wrap_lines=True)
+
+                def _copy_script():
+                    ss = st.session_state
+                    who = (ss.get("inf_copy_name") or "").strip()
+                    src = next((r for r in load_influencer_scripts() if r["row"] == ss.get("inf_track_pick")), None)
+                    if not who or not src:
+                        ss["inf_msg"] = ("warning", "Enter the new influencer's name first.")
+                        return
+                    ss["inf_last_created"] = add_influencer_script(
+                        who, src["product"], src["campaign"], src["format"], src["script"], me)
+                    ss["inf_copy_name"] = ""
+                    ss["inf_msg"] = ("success", f"Created script #{ss['inf_last_created']['number']} for {who} — "
+                                                "open the New script tab to download its PDF.")
+
+                with st.expander("Send the same script to another influencer"):
+                    st.text_input("New influencer's name", key="inf_copy_name")
+                    st.button("Create a copy for them", icon=":material/content_copy:", on_click=_copy_script)
+
                 if is_admin:
-                    del_key = f"inf_del_send_{rec['row']}"
+                    del_key = f"inf_del_{rec['row']}"
                     if not st.session_state.get(del_key):
-                        if st.button("Delete this record", icon=":material/delete:"):
+                        if st.button("Delete this script", icon=":material/delete:"):
                             st.session_state[del_key] = True
                             st.rerun()
                     else:
-                        st.warning(f"Permanently delete the record for {rec['influencer']}? This can't be undone.")
+                        st.warning(f"Permanently delete script #{rec['number']} for {rec['influencer']}? This can't be undone.")
                         d1, d2 = st.columns(2)
                         if d1.button("Yes, delete", type="primary", use_container_width=True, key=f"{del_key}_y"):
-                            delete_influencer_send(rec["row"])
+                            delete_influencer_script(rec["row"])
                             st.session_state.pop(del_key, None)
-                            st.session_state["inf_msg"] = ("success", "Record deleted.")
+                            st.session_state["inf_msg"] = ("success", f"Script #{rec['number']} deleted.")
                             st.rerun()
                         if d2.button("Cancel", use_container_width=True, key=f"{del_key}_n"):
                             st.session_state.pop(del_key, None)
                             st.rerun()
-
-            st.markdown("##### Script usage")
-            usage = {}
-            for r in sends:
-                u = usage.setdefault(r["script_id"], {"title": r["script_title"], "sent": 0, "used": 0, "who": []})
-                u["sent"] += 1
-                u["used"] += r["status"] == "Used"
-                if r["influencer"] not in u["who"]:
-                    u["who"].append(r["influencer"])
-            st.dataframe(
-                pd.DataFrame([{
-                    "Script": f'{sid} — {by_id[sid]["title"] if sid in by_id else u["title"]}',
-                    "Times sent": u["sent"], "Used": u["used"], "Sent to": ", ".join(u["who"]),
-                } for sid, u in usage.items()]),
-                use_container_width=True, hide_index=True,
-            )
-
-    # ── Scripts ──────────────────────────────────────────────────────────────
-    with tab_scripts:
-        with st.expander("Add a new script", icon=":material/add_circle:", expanded=not scripts):
-            ss = st.session_state
-            next_num = int(next_influencer_script_id(scripts)[1:])
-            ss.setdefault("inf_new_number", next_num)
-            for _k in ("inf_new_title", "inf_new_campaign", "inf_new_format", "inf_new_script"):
-                ss.setdefault(_k, "")
-            ss.setdefault("inf_new_product", "")
-
-            up = st.file_uploader(
-                "Import a Word script (.docx)", type="docx",
-                help="Reads the script number, format and script text out of a Sweet Mayhem script "
-                     "document and fills the form below — review it, then save.",
-                key=f"inf_import_file_{ss.get('inf_import_n', 0)}",
-            )
-            if up is not None and ss.get("inf_imported_sig") != (up.name, up.size):
-                try:
-                    imp = parse_influencer_script_docx(up.getvalue(), up.name)
-                    match = next((p for p in inv_products if _norm_words(p) == _norm_words(imp["product_words"])), "")
-                    if imp["number"]:
-                        ss["inf_new_number"] = imp["number"]
-                    ss["inf_new_title"] = match or imp["product_words"]
-                    ss["inf_new_product"] = match
-                    ss["inf_new_format"] = imp["format"]
-                    ss["inf_new_script"] = imp["script"]
-                    ss["inf_imported_sig"] = (up.name, up.size)
-                    st.success("Imported — check the details below, then save.")
-                except Exception as e:
-                    st.warning(f"Couldn't read that file as a script document: {e}")
-
-            def _save_new_script():
-                ss = st.session_state
-                title = (ss.get("inf_new_title") or "").strip()
-                body = (ss.get("inf_new_script") or "").strip()
-                if not title or not body:
-                    ss["inf_msg"] = ("warning", "A script needs a title and its text.")
-                    return
-                number = int(ss.get("inf_new_number") or 1)
-                sid = add_influencer_script(
-                    number, title, ss.get("inf_new_product") or "",
-                    (ss.get("inf_new_campaign") or "").strip(), (ss.get("inf_new_format") or "").strip(), body,
-                )
-                if sid is None:
-                    ss["inf_msg"] = ("warning", f"S{number} already exists — pick a different script number.")
-                    return
-                ss["inf_msg"] = ("success", f"Saved as {sid}.")
-                for k in ("inf_new_title", "inf_new_campaign", "inf_new_format", "inf_new_script", "inf_new_product"):
-                    ss[k] = ""
-                ss["inf_new_number"] = int(next_influencer_script_id(load_influencer_scripts())[1:])
-                ss["inf_import_n"] = ss.get("inf_import_n", 0) + 1
-                ss.pop("inf_imported_sig", None)
-
-            with st.form("inf_add_script"):
-                f0, f1 = st.columns([1, 3])
-                f0.number_input("Script #", min_value=1, step=1, key="inf_new_number",
-                                help="Becomes the number in the Word document's title and file name.")
-                f1.text_input("Title", placeholder="e.g. Unboxing — Deep V Bra", key="inf_new_title")
-                a1, a2 = st.columns(2)
-                a1.selectbox(
-                    "Product", _product_options(ss.get("inf_new_product", "")),
-                    format_func=_fmt_product, key="inf_new_product",
-                )
-                a2.text_input("Campaign", placeholder="e.g. Winter launch", key="inf_new_campaign")
-                st.text_input(
-                    "Format", placeholder="Vertical video / UGC — Cross-Back Posture Jelly Bra feature",
-                    help="Shown in the Word document. Left blank, it's filled in from the product.",
-                    key="inf_new_format",
-                )
-                st.text_area(
-                    "Script", height=240, key="inf_new_script",
-                    help="One line each. An ALL-CAPS line is a shot direction; every other line is spoken "
-                         "and gets quote marks in the Word document.",
-                )
-                st.form_submit_button("Save script", type="primary", use_container_width=True, on_click=_save_new_script)
-
-        sent_count = {}
-        for r in sends:
-            sent_count[r["script_id"]] = sent_count.get(r["script_id"], 0) + 1
-
-        for s in reversed(scripts):
-            n = sent_count.get(s["id"], 0)
-            with st.expander(f'{s["id"]} — {s["title"]}   ·   sent {n}×'):
-                with st.form(f"inf_edit_{s['row']}"):
-                    e_title = st.text_input("Title", value=s["title"])
-                    b1, b2 = st.columns(2)
-                    eopts = _product_options(s["product"])
-                    e_product = b1.selectbox(
-                        "Product", eopts, index=eopts.index(s["product"]), format_func=_fmt_product,
-                    )
-                    e_campaign = b2.text_input("Campaign", value=s["campaign"])
-                    e_format = st.text_input("Format", value=s["format"])
-                    e_script = st.text_area("Script", value=s["script"], height=200)
-                    if st.form_submit_button("Save changes", type="primary", use_container_width=True):
-                        if not e_title.strip() or not e_script.strip():
-                            st.session_state["inf_msg"] = ("warning", "A script needs a title and its text.")
-                        else:
-                            update_influencer_script(s["row"], e_title.strip(), e_product, e_campaign.strip(), e_format.strip(), e_script.strip())
-                            st.session_state["inf_msg"] = ("success", f"{s['id']} updated.")
-                        st.rerun()
-                st.download_button(
-                    "Download Word script", data=build_influencer_script_docx(s),
-                    file_name=influencer_script_filename(s), mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    icon=":material/download:", key=f"inf_dl_{s['id']}",
-                )
-                if is_admin:
-                    dkey = f"inf_del_script_{s['row']}"
-                    if not st.session_state.get(dkey):
-                        if st.button("Delete script", icon=":material/delete:", key=f"{dkey}_ask"):
-                            st.session_state[dkey] = True
-                            st.rerun()
-                    else:
-                        st.warning(
-                            f"Delete {s['id']}? Past send records keep its title, but the script text is gone for good."
-                        )
-                        d1, d2 = st.columns(2)
-                        if d1.button("Yes, delete", type="primary", use_container_width=True, key=f"{dkey}_y"):
-                            delete_influencer_script(s["row"])
-                            st.session_state.pop(dkey, None)
-                            st.session_state["inf_msg"] = ("success", f"{s['id']} deleted.")
-                            st.rerun()
-                        if d2.button("Cancel", use_container_width=True, key=f"{dkey}_n"):
-                            st.session_state.pop(dkey, None)
-                            st.rerun()
-
-    # ── Template ─────────────────────────────────────────────────────────────
-    with tab_tpl:
-        st.caption(
-            "The message every script is dropped into. Placeholders filled in automatically: "
-            + ", ".join(f"`{p}`" for p in INFLUENCER_PLACEHOLDERS) + "."
-        )
-        tpl_text = st.text_area("Message template", value=template, height=260, key="inf_tpl_text")
-        st.markdown("##### Preview")
-        st.code(
-            influencer_fill_template(
-                tpl_text, "Sara", "@sara · Instagram", "Seamless Deep V Push-Up Bra", "Winter launch",
-                "Unboxing", "(your script text appears here)", sender,
-            ),
-            language=None, wrap_lines=True,
-        )
-
-        def _save_tpl():
-            save_influencer_template(st.session_state["inf_tpl_text"].strip() or INFLUENCER_DEFAULT_TEMPLATE)
-            st.session_state["inf_msg"] = ("success", "Template saved.")
-
-        def _reset_tpl():
-            st.session_state["inf_tpl_text"] = INFLUENCER_DEFAULT_TEMPLATE
-            save_influencer_template(INFLUENCER_DEFAULT_TEMPLATE)
-            st.session_state["inf_msg"] = ("success", "Template reset to the default.")
-
-        g1, g2 = st.columns(2)
-        g1.button("Save template", type="primary", icon=":material/save:", use_container_width=True, on_click=_save_tpl)
-        g2.button("Reset to default", icon=":material/restart_alt:", use_container_width=True, on_click=_reset_tpl)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: MANAGE USERS (admin only)

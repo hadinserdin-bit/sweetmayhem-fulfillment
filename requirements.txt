@@ -6,3 +6,4 @@ openpyxl
 requests
 bcrypt
 google-api-python-client
+fpdf2

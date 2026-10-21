@@ -439,15 +439,22 @@ def add_inf_script(title, product, fmt, script, created_by, avatar="", angle="")
     load_inf_library.clear()
     return rec
 
-def update_inf_script(number, title, product, fmt, script, avatar="", angle=""):
+def update_inf_script(number, title, product, fmt, script):
     """Rewrites a script's title, product, format and text in place."""
     for s in _inf_fresh(load_inf_library):
         if s["number"] == number:
             get_inf_library_ws().batch_update([
                 {"range": f"B{s['row']}:E{s['row']}",
                  "values": [[title or product or f"Script {number}", product, fmt, script]]},
-                {"range": f"H{s['row']}:I{s['row']}", "values": [[avatar, angle]]},
             ])
+            break
+    load_inf_library.clear()
+
+def set_inf_script_meta(number, avatar, angle):
+    """Sets a script's avatar and angle."""
+    for s in _inf_fresh(load_inf_library):
+        if s["number"] == number:
+            get_inf_library_ws().batch_update([{"range": f"H{s['row']}:I{s['row']}", "values": [[avatar, angle]]}])
             break
     load_inf_library.clear()
 
@@ -4709,9 +4716,13 @@ elif page == "🎬 Influencer Scripts":
         ss[f"inf_e_title_{n}"] = s["title"]
         ss[f"inf_e_product_{n}"] = s["product"]
         ss[f"inf_e_format_{n}"] = s["format"]
-        ss[f"inf_e_avatar_{n}"] = s["avatar"] or None
-        ss[f"inf_e_angle_{n}"] = s["angle"] or None
         ss[f"inf_e_body_{n}"] = s["script"]
+
+    def _save_meta(n):
+        ss = st.session_state
+        set_inf_script_meta(n, (ss.get(f"inf_m_avatar_{n}") or "").strip(), (ss.get(f"inf_m_angle_{n}") or "").strip())
+        ss["inf_open_card"] = n
+        _toast(f"Script #{n}: avatar and angle saved.", icon=":material/check_circle:")
 
     def _cancel_edit(n):
         st.session_state.pop(f"inf_edit_{n}", None)
@@ -4723,8 +4734,7 @@ elif page == "🎬 Influencer Scripts":
             _toast("The script can't be empty.", icon=":material/warning:")
             return
         update_inf_script(n, (ss.get(f"inf_e_title_{n}") or "").strip(), ss.get(f"inf_e_product_{n}") or "",
-                          (ss.get(f"inf_e_format_{n}") or "").strip(), body,
-                          (ss.get(f"inf_e_avatar_{n}") or "").strip(), (ss.get(f"inf_e_angle_{n}") or "").strip())
+                          (ss.get(f"inf_e_format_{n}") or "").strip(), body)
         ss.pop(f"inf_edit_{n}", None)
         ss["inf_open_card"] = n
         _toast(f"Script #{n} saved.", icon=":material/check_circle:")
@@ -4779,13 +4789,6 @@ elif page == "🎬 Influencer Scripts":
                 e1.selectbox("Product", list(dict.fromkeys(product_options + [s["product"]])),
                              format_func=_fmt_product, key=f"inf_e_product_{n}")
                 e2.text_input("Format", key=f"inf_e_format_{n}")
-                e5, e6 = st.columns(2)
-                e5.selectbox("Avatar", list(dict.fromkeys(avatar_opts + ([s["avatar"]] if s["avatar"] else []))),
-                             index=None, accept_new_options=True, key=f"inf_e_avatar_{n}",
-                             placeholder="Pick or type a new avatar")
-                e6.selectbox("Angle", list(dict.fromkeys(angle_opts + ([s["angle"]] if s["angle"] else []))),
-                             index=None, accept_new_options=True, key=f"inf_e_angle_{n}",
-                             placeholder="Pick or type a new angle")
                 st.text_area("Script", height=240, key=f"inf_e_body_{n}")
                 e3, e4, _sp = st.columns([1, 1, 3])
                 e3.button("Save", type="primary", icon=":material/check:", key=f"inf_e_save_{n}",
@@ -4793,14 +4796,22 @@ elif page == "🎬 Influencer Scripts":
                 e4.button("Cancel", key=f"inf_e_cancel_{n}", on_click=_cancel_edit, args=(n,),
                           use_container_width=True)
             else:
-                meta = " · ".join(x for x in (s["product"], s["format"],
-                                              f"Avatar: {s['avatar']}" if s["avatar"] else "",
-                                              f"Angle: {s['angle']}" if s["angle"] else "") if x)
+                meta = " · ".join(x for x in (s["product"], s["format"]) if x)
                 if meta:
                     st.caption(meta)
                 st.code(s["script"], language=None, wrap_lines=True)
                 st.button("Edit script", icon=":material/edit:", key=f"inf_e_start_{n}",
                           on_click=_start_edit, args=(s,))
+
+            st.session_state.setdefault(f"inf_m_avatar_{n}", s["avatar"] or None)
+            st.session_state.setdefault(f"inf_m_angle_{n}", s["angle"] or None)
+            m1, m2 = st.columns(2)
+            m1.selectbox("Avatar", list(dict.fromkeys(avatar_opts + ([s["avatar"]] if s["avatar"] else []))),
+                         index=None, accept_new_options=True, key=f"inf_m_avatar_{n}",
+                         placeholder="Pick or type a new avatar", on_change=_save_meta, args=(n,))
+            m2.selectbox("Angle", list(dict.fromkeys(angle_opts + ([s["angle"]] if s["angle"] else []))),
+                         index=None, accept_new_options=True, key=f"inf_m_angle_{n}",
+                         placeholder="Pick or type a new angle", on_change=_save_meta, args=(n,))
 
             st.caption("ASSIGNED TO")
             if not members:

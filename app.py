@@ -4607,6 +4607,7 @@ elif page == "🎬 Influencer Scripts":
         for k in (f"inf_asg_{number}", f"inf_asgc_{number}"):
             ss.pop(k, None)
         ss["inf_dirty"] = bool(added)
+        ss["inf_open_card"] = number
         _toast(f"Script #{number} assigned to {', '.join(added)}." if added else "They already have that script.",
                  icon=":material/check_circle:")
 
@@ -4626,6 +4627,7 @@ elif page == "🎬 Influencer Scripts":
         ss = st.session_state
         n = s["number"]
         ss[f"inf_edit_{n}"] = True
+        ss["inf_open_card"] = n
         ss[f"inf_e_product_{n}"] = s["product"]
         ss[f"inf_e_format_{n}"] = s["format"]
         ss[f"inf_e_body_{n}"] = s["script"]
@@ -4643,6 +4645,7 @@ elif page == "🎬 Influencer Scripts":
                           (ss.get(f"inf_e_format_{n}") or "").strip(), body)
         ss.pop(f"inf_edit_{n}", None)
         ss["inf_dirty"] = True
+        ss["inf_open_card"] = n
         _toast(f"Script #{n} saved.", icon=":material/check_circle:")
 
     def _set_status(number, name, status):
@@ -4654,6 +4657,7 @@ elif page == "🎬 Influencer Scripts":
     def _unassign(number, name):
         delete_inf_assignment(number, name)
         st.session_state["inf_dirty"] = True
+        st.session_state["inf_open_card"] = number
         _toast(f"Script #{number} unassigned from {name}.", icon=":material/check_circle:")
 
     def _delete_button(key, label, what, do):
@@ -4690,7 +4694,8 @@ elif page == "🎬 Influencer Scripts":
         names = sorted((p["name"] for p in load_inf_people()), key=str.lower)
         who = ", ".join(r["influencer"] for r in members) or "not assigned yet"
         # A fixed key keeps the card open when its label changes (e.g. after assigning someone).
-        with st.expander(f"#{n} · {s['product'] or 'General'}  —  {who}", key=f"inf_card_{n}"):
+        with st.expander(f"#{n} · {s['product'] or 'General'}  —  {who}", key=f"inf_card_{n}",
+                         expanded=st.session_state.get("inf_open_card") == n):
             if st.session_state.get(f"inf_edit_{n}"):
                 e1, e2 = st.columns(2)
                 e1.selectbox("Product", list(dict.fromkeys(product_options + [s["product"]])),
@@ -4731,13 +4736,15 @@ elif page == "🎬 Influencer Scripts":
             elif not free:
                 st.caption("Every influencer already has this script.")
             else:
-                a1, a2, a3 = st.columns([3, 2, 1.2], vertical_alignment="bottom")
-                a1.multiselect("Assign to", free, key=f"inf_asg_{n}", placeholder="Pick influencers…",
-                               label_visibility="collapsed")
-                a2.text_input("Campaign (optional)", key=f"inf_asgc_{n}", placeholder="Campaign (optional)",
-                              label_visibility="collapsed")
-                a3.button("Assign", type="primary", icon=":material/person_add:", key=f"inf_asgb_{n}",
-                          on_click=_assign_script, args=(n,), use_container_width=True)
+                # A form: picking names doesn't rerun anything; Assign submits the whole row at once.
+                with st.form(f"inf_asgf_{n}", border=False):
+                    a1, a2, a3 = st.columns([3, 2, 1.2], vertical_alignment="bottom")
+                    a1.multiselect("Assign to", free, key=f"inf_asg_{n}", placeholder="Pick influencers…",
+                                   label_visibility="collapsed")
+                    a2.text_input("Campaign (optional)", key=f"inf_asgc_{n}", placeholder="Campaign (optional)",
+                                  label_visibility="collapsed")
+                    a3.form_submit_button("Assign", type="primary", icon=":material/person_add:",
+                                          on_click=_assign_script, args=(n,), use_container_width=True)
             if is_admin:
                 _delete_button(f"inf_del_s_{n}", "Delete script", f"script #{n} and its assignments",
                                lambda n=n: delete_inf_script(n))

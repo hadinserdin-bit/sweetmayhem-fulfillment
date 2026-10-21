@@ -4675,6 +4675,24 @@ elif page == "✅ Mark Paid":
             hide_index=True, use_container_width=True,
         )
 
+    if not_delivered:
+        with st.expander(f"Skipped — not delivered ({not_delivered})", icon=":material/block:"):
+            def _rr_skip_reason(r):
+                squashed = re.sub(r"[^a-z]", "", r["status"].lower())
+                if not squashed:
+                    return "No status in the export"
+                if squashed.startswith("unpaid"):
+                    return f"Marked unpaid by Roadrunner ({r['status']})"
+                return f"Not delivered — Roadrunner status is {r['status']}"
+            st.dataframe(
+                pd.DataFrame([{
+                    "Reference": r["reference_id"], "Customer": r["customer"],
+                    "Roadrunner total": r["total_usd"], "Reason": _rr_skip_reason(r),
+                } for r in records if not r["delivered"]]),
+                hide_index=True, use_container_width=True,
+                column_config={"Roadrunner total": st.column_config.NumberColumn(format="$%.2f")},
+            )
+
     if not eligible:
         st.info("None of these orders are delivered, so there's nothing to mark on Shopify.")
         st.stop()
@@ -4693,6 +4711,8 @@ elif page == "✅ Mark Paid":
                 else:
                     row["name"] = "#1" + m.group(1)
                     if row["name"] in seen:
+                        row["verdict"] = "Duplicate row in the file (already handled above)"
+                        rows.append(row)
                         continue
                     seen.add(row["name"])
                     o = _resilient_shopify_call(shopify_lookup_for_mark_paid)(row["name"])
@@ -4738,19 +4758,30 @@ elif page == "✅ Mark Paid":
         )
     elif check is not None:
         ready = [r for r in check if r["ready"]]
-        st.markdown(f"**{len(ready)}** of {len(check)} ready to mark paid")
-        st.dataframe(
-            pd.DataFrame([{
-                "Order": r["name"] or "—", "Customer": r["customer"],
-                "Roadrunner total": r["rr_total"], "Shopify total": r["shop_total"],
-                "Shopify payment": r["shop_status"] or "—", "Result": r["verdict"],
-            } for r in check]),
-            hide_index=True, use_container_width=True,
-            column_config={
-                "Roadrunner total": st.column_config.NumberColumn(format="$%.2f"),
-                "Shopify total": st.column_config.NumberColumn(format="$%.2f"),
-            },
-        )
+        skipped = [r for r in check if not r["ready"]]
+        _cfg = {
+            "Roadrunner total": st.column_config.NumberColumn(format="$%.2f"),
+            "Shopify total": st.column_config.NumberColumn(format="$%.2f"),
+        }
+        st.markdown(f"**{len(ready)}** ready to mark paid · **{len(skipped)}** skipped")
+        if ready:
+            st.dataframe(
+                pd.DataFrame([{
+                    "Order": r["name"], "Customer": r["customer"],
+                    "Roadrunner total": r["rr_total"], "Shopify total": r["shop_total"],
+                } for r in ready]),
+                hide_index=True, use_container_width=True, column_config=_cfg,
+            )
+        if skipped:
+            st.markdown("**Skipped — will not be changed**")
+            st.dataframe(
+                pd.DataFrame([{
+                    "Order": r["name"] or r["reference"] or "—", "Customer": r["customer"],
+                    "Roadrunner total": r["rr_total"], "Shopify total": r["shop_total"],
+                    "Shopify payment": r["shop_status"] or "—", "Reason": r["verdict"],
+                } for r in skipped]),
+                hide_index=True, use_container_width=True, column_config=_cfg,
+            )
         if ready:
             confirm = st.checkbox(f"I confirm I want to mark {len(ready)} order(s) as paid on Shopify")
             if st.button("Mark as Paid on Shopify", type="primary", disabled=not confirm, icon=":material/check_circle:"):
@@ -4769,7 +4800,7 @@ elif page == "✅ Mark Paid":
                 st.session_state.pop("mp_check", None)
                 st.rerun()
         else:
-            st.info("Nothing here is ready to mark — see the Result column for why.")
+            st.info("Nothing here is ready to mark — see the reasons in the Skipped list above.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: INFLUENCER SCRIPTS

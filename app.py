@@ -339,7 +339,7 @@ INF_PEOPLE_HEADERS = ["Name", "Platform / Handle", "Contact", "Notes", "Added At
 INF_ASSIGN_TAB = "Assignments"
 INF_ASSIGN_HEADERS = ["Script #", "Influencer", "Campaign", "Status", "Assigned At", "Sent At", "Assigned By"]
 INFLUENCER_STATUSES = ["Assigned", "Sent"]
-INFLUENCER_FIRST_NUMBER = 1000
+INFLUENCER_FIRST_NUMBER = 1001
 
 @st.cache_resource
 def _influencer_spreadsheet():

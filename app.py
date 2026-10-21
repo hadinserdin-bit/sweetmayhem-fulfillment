@@ -4832,15 +4832,26 @@ elif page == "🎬 Influencer Scripts":
             f1, f2, f3 = st.columns([2, 2, 2])
             q = f1.selectbox("Influencer", ["All"] + sorted({r["influencer"] for r in records}, key=str.lower),
                              key="inf_t_search")
-            prod_f = f2.selectbox("Product", ["All"] + sorted({r["product"] for r in records if r["product"]}), key="inf_t_prod")
+            script_f = f2.selectbox("Script", [None] + [s["number"] for s in reversed(library)], key="inf_t_script",
+                                    format_func=lambda n: "All" if n is None else f"#{n} · {lib_by_num[n]['title']}")
             stat_f = f3.multiselect("Status", INFLUENCER_STATUSES, default=INFLUENCER_STATUSES, key="inf_t_stat")
 
             shown = [
                 r for r in reversed(records)
                 if r["status"] in stat_f
-                and (prod_f == "All" or r["product"] == prod_f)
+                and (script_f is None or r["number"] == script_f)
                 and (q == "All" or r["influencer"] == q)
             ]
+            if script_f is not None and q != "All":
+                # Both picked: answer "was this script sent to this person?" directly.
+                hit = next((r for r in records if r["number"] == script_f and r["influencer"] == q), None)
+                label = f"Script #{script_f} · {q}"
+                if hit and hit["status"] == "Sent":
+                    st.success(f"{label}: sent{' on ' + hit['sent_at'][:10] if hit['sent_at'] else ''}.", icon=":material/check_circle:")
+                elif hit:
+                    st.warning(f"{label}: assigned, not sent yet.", icon=":material/schedule:")
+                else:
+                    st.info(f"{label}: this script isn't assigned to {q}.", icon=":material/info:")
             widths = [0.9, 2, 2.6, 1.1, 1.8, 0.9]
             head = st.columns(widths)
             for col, label in zip(head, ("SCRIPT #", "INFLUENCER", "PRODUCT / CAMPAIGN", "STATUS", "SENT", "")):

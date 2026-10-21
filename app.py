@@ -333,7 +333,7 @@ def delete_refund(row):
 
 INFLUENCER_SHEET_ID = "18rAUERGi2tRvDM-VFpoX5eAhXpxZCpvpM3pH36QSKBU"
 INF_LIBRARY_TAB = "Script Library"
-INF_LIBRARY_HEADERS = ["Script #", "Title", "Product", "Format", "Script", "Created By", "Created At"]
+INF_LIBRARY_HEADERS = ["Script #", "Title", "Product", "Format", "Script", "Created By", "Created At", "Avatar", "Angle"]
 INF_PEOPLE_TAB = "Influencers"
 INF_PEOPLE_HEADERS = ["Name", "Platform / Handle", "Contact", "Notes", "Added At"]
 INF_ASSIGN_TAB = "Assignments"
@@ -380,12 +380,13 @@ def _inf_now():
 def load_inf_library():
     out = []
     for i, row in enumerate(get_inf_library_ws().get_all_values()[1:], start=2):
-        row = _inf_pad(row, 7)
+        row = _inf_pad(row, 9)
         if not row[0].strip().isdigit():
             continue
         out.append({
             "row": i, "number": int(row[0]), "title": row[1].strip(), "product": row[2].strip(),
             "format": row[3].strip(), "script": row[4], "created_by": row[5].strip(), "created": row[6].strip(),
+            "avatar": row[7].strip(), "angle": row[8].strip(),
         })
     return out
 
@@ -427,23 +428,25 @@ def _inf_fresh(loader):
 def next_inf_number(library):
     return max([INFLUENCER_FIRST_NUMBER] + [s["number"] + 1 for s in library])
 
-def add_inf_script(title, product, fmt, script, created_by):
+def add_inf_script(title, product, fmt, script, created_by, avatar="", angle=""):
     """Saves a script under the next free number and returns it."""
     number = next_inf_number(_inf_fresh(load_inf_library))
     rec = {"number": number, "title": title or product or f"Script {number}", "product": product,
-           "format": fmt, "script": script, "created_by": created_by, "created": _inf_now()}
+           "format": fmt, "script": script, "created_by": created_by, "created": _inf_now(),
+           "avatar": avatar, "angle": angle}
     get_inf_library_ws().append_row(
-        [number, rec["title"], product, fmt, script, created_by, rec["created"]])
+        [number, rec["title"], product, fmt, script, created_by, rec["created"], avatar, angle])
     load_inf_library.clear()
     return rec
 
-def update_inf_script(number, title, product, fmt, script):
+def update_inf_script(number, title, product, fmt, script, avatar="", angle=""):
     """Rewrites a script's title, product, format and text in place."""
     for s in _inf_fresh(load_inf_library):
         if s["number"] == number:
             get_inf_library_ws().batch_update([
                 {"range": f"B{s['row']}:E{s['row']}",
                  "values": [[title or product or f"Script {number}", product, fmt, script]]},
+                {"range": f"H{s['row']}:I{s['row']}", "values": [[avatar, angle]]},
             ])
             break
     load_inf_library.clear()
@@ -4587,6 +4590,8 @@ elif page == "🎬 Influencer Scripts":
     pill_class = {"Assigned": "rr-pill-gray", "Sent": "rr-pill-blue", "Done": "rr-pill-green"}
 
     lib_by_num = {s["number"]: s for s in library}
+    avatar_opts = sorted({s["avatar"] for s in library if s["avatar"]}, key=str.lower)
+    angle_opts = sorted({s["angle"] for s in library if s["angle"]}, key=str.lower)
     # One record per assignment: the assignment's own fields over the script's.
     records = [{**lib_by_num[a["number"]], **a} for a in assigns if a["number"] in lib_by_num]
     recs_by_num, recs_by_person = {}, {}
@@ -4624,19 +4629,23 @@ elif page == "🎬 Influencer Scripts":
         title = (ss.get("inf_s_title") or "").strip()
         prod = ss.get("inf_s_product") or ""
         fmt = (ss.get("inf_s_format") or "").strip()
+        avatar = (ss.get("inf_s_avatar") or "").strip()
+        angle = (ss.get("inf_s_angle") or "").strip()
         camp = (ss.get("inf_s_camp") or "").strip()
         names = list(ss.get("inf_s_assign") or [])
-        sig = (title.lower(), prod, fmt, body, tuple(names))
+        sig = (title.lower(), prod, fmt, avatar, angle, body, tuple(names))
         last = ss.get("inf_last_sig")
         if last and last[0] == sig and time.time() - last[1] < 20:
             return  # the same script submitted moments ago — a double click
-        rec = add_inf_script(title, prod, fmt, body, me)
+        rec = add_inf_script(title, prod, fmt, body, me, avatar, angle)
         added = assign_inf_script(rec["number"], names, camp, me) if names else []
         ss["inf_last_sig"] = (sig, time.time())
         ss["inf_msg"] = ("success", f"Script #{rec['number']} created"
                          + (f" and assigned to {', '.join(added)}" if added else "") + ".")
         for k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
             ss[k] = ""
+        ss["inf_s_avatar"] = None
+        ss["inf_s_angle"] = None
         ss["inf_s_assign"] = []
 
     def _add_person():
@@ -4700,6 +4709,8 @@ elif page == "🎬 Influencer Scripts":
         ss[f"inf_e_title_{n}"] = s["title"]
         ss[f"inf_e_product_{n}"] = s["product"]
         ss[f"inf_e_format_{n}"] = s["format"]
+        ss[f"inf_e_avatar_{n}"] = s["avatar"] or None
+        ss[f"inf_e_angle_{n}"] = s["angle"] or None
         ss[f"inf_e_body_{n}"] = s["script"]
 
     def _cancel_edit(n):
@@ -4712,7 +4723,8 @@ elif page == "🎬 Influencer Scripts":
             _toast("The script can't be empty.", icon=":material/warning:")
             return
         update_inf_script(n, (ss.get(f"inf_e_title_{n}") or "").strip(), ss.get(f"inf_e_product_{n}") or "",
-                          (ss.get(f"inf_e_format_{n}") or "").strip(), body)
+                          (ss.get(f"inf_e_format_{n}") or "").strip(), body,
+                          (ss.get(f"inf_e_avatar_{n}") or "").strip(), (ss.get(f"inf_e_angle_{n}") or "").strip())
         ss.pop(f"inf_edit_{n}", None)
         ss["inf_open_card"] = n
         _toast(f"Script #{n} saved.", icon=":material/check_circle:")
@@ -4767,6 +4779,13 @@ elif page == "🎬 Influencer Scripts":
                 e1.selectbox("Product", list(dict.fromkeys(product_options + [s["product"]])),
                              format_func=_fmt_product, key=f"inf_e_product_{n}")
                 e2.text_input("Format", key=f"inf_e_format_{n}")
+                e5, e6 = st.columns(2)
+                e5.selectbox("Avatar", list(dict.fromkeys(avatar_opts + ([s["avatar"]] if s["avatar"] else []))),
+                             index=None, accept_new_options=True, key=f"inf_e_avatar_{n}",
+                             placeholder="Pick or type a new avatar")
+                e6.selectbox("Angle", list(dict.fromkeys(angle_opts + ([s["angle"]] if s["angle"] else []))),
+                             index=None, accept_new_options=True, key=f"inf_e_angle_{n}",
+                             placeholder="Pick or type a new angle")
                 st.text_area("Script", height=240, key=f"inf_e_body_{n}")
                 e3, e4, _sp = st.columns([1, 1, 3])
                 e3.button("Save", type="primary", icon=":material/check:", key=f"inf_e_save_{n}",
@@ -4774,7 +4793,9 @@ elif page == "🎬 Influencer Scripts":
                 e4.button("Cancel", key=f"inf_e_cancel_{n}", on_click=_cancel_edit, args=(n,),
                           use_container_width=True)
             else:
-                meta = " · ".join(x for x in (s["product"], s["format"]) if x)
+                meta = " · ".join(x for x in (s["product"], s["format"],
+                                              f"Avatar: {s['avatar']}" if s["avatar"] else "",
+                                              f"Angle: {s['angle']}" if s["angle"] else "") if x)
                 if meta:
                     st.caption(meta)
                 st.code(s["script"], language=None, wrap_lines=True)
@@ -4839,6 +4860,13 @@ elif page == "🎬 Influencer Scripts":
                     "Format", placeholder="Vertical video / UGC", key="inf_s_format",
                     help="Shown in the PDF. Left blank, it's filled in from the product.",
                 )
+                c5, c6 = st.columns(2)
+                c5.selectbox("Avatar", avatar_opts, index=None, accept_new_options=True, key="inf_s_avatar",
+                             placeholder="Pick or type a new avatar",
+                             help="Who the script is aimed at, e.g. 'Busy mom' or 'Desk worker'.")
+                c6.selectbox("Angle", angle_opts, index=None, accept_new_options=True, key="inf_s_angle",
+                             placeholder="Pick or type a new angle",
+                             help="The hook or approach, e.g. 'Posture fix' or 'Comfort all day'.")
                 st.text_area(
                     "Script", height=240, key="inf_s_body",
                     help="One line each. A [bracketed] or ALL-CAPS line is a shot direction; every other line is spoken "
@@ -4855,7 +4883,7 @@ elif page == "🎬 Influencer Scripts":
         if not library:
             st.info("No scripts yet — create your first one above.")
         else:
-            sf1, sf2 = st.columns(2)
+            sf1, sf2, sf3, sf4 = st.columns(4)
             n_by_prod = {}
             for x in library:
                 n_by_prod[x["product"]] = n_by_prod.get(x["product"], 0) + 1
@@ -4865,14 +4893,18 @@ elif page == "🎬 Influencer Scripts":
                                    format_func=lambda p: f"{p}  ({n_by_prod.get(p, 0)})")
             who_q = sf2.selectbox("Influencer", sorted({r["influencer"] for r in records}, key=str.lower),
                                   index=None, key="inf_s_who_f", placeholder="All influencers")
+            avatar_q = sf3.selectbox("Avatar", avatar_opts, index=None, key="inf_s_avatar_f", placeholder="All avatars")
+            angle_q = sf4.selectbox("Angle", angle_opts, index=None, key="inf_s_angle_f", placeholder="All angles")
             shown = [
                 s for s in reversed(library)
                 if (not prod_q or s["product"] == prod_q)
+                and (not avatar_q or s["avatar"] == avatar_q)
+                and (not angle_q or s["angle"] == angle_q)
                 and (not who_q or any(r["influencer"] == who_q for r in recs_by_num.get(s["number"], [])))
             ]
             if prod_q and not shown:
                 st.info(f"No scripts for {prod_q} yet — create one above.")
-            elif (prod_q or who_q) and shown and people_names:
+            elif (prod_q or who_q or avatar_q or angle_q) and shown and people_names:
                 # Found a set of scripts: assign all of them to the people you pick in one go.
                 with st.form("inf_bulk_form", border=True):
                     st.caption(f"ASSIGN ALL {len(shown)} SCRIPT{'S' if len(shown) != 1 else ''} SHOWN")

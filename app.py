@@ -897,7 +897,12 @@ def login_screen():
                     st.session_state.username = u["username"]
                     st.session_state.role = u["role"]
                     st.session_state.pages = effective_pages(u)
-                    st.query_params["t"] = issue_remember_token(u["row"])
+                    # "Remember me" is a convenience — if saving it fails (e.g. the
+                    # sheet is temporarily read-only), still let the person in.
+                    try:
+                        st.query_params["t"] = issue_remember_token(u["row"])
+                    except Exception:
+                        pass
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")

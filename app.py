@@ -117,7 +117,7 @@ USERS_SHEET_NAME = "Users"
 ALL_PAGES = [
     "📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory",
     "📊 Demand & Reorder", "📥 Purchase Orders", "🚢 Shipment Tracker", "🧾 Shipment Details",
-    "🚫 Cancelled Orders", "💸 Refunds", "🎬 Influencer Scripts",
+    "🚫 Cancelled Orders", "💸 Refunds", "✅ Mark Paid", "🎬 Influencer Scripts",
 ]
 ADMIN_PAGE = "👤 Manage Users"
 
@@ -140,6 +140,7 @@ PAGE_ICONS = {
     "📥 Purchase Orders": ":material/move_to_inbox:",
     "🚫 Cancelled Orders": ":material/cancel:",
     "💸 Refunds": ":material/currency_exchange:",
+    "✅ Mark Paid": ":material/paid:",
     "🎬 Influencer Scripts": ":material/campaign:",
     "🚢 Shipment Tracker": ":material/directions_boat:",
     "🧾 Shipment Details": ":material/receipt_long:",
@@ -916,7 +917,7 @@ def co_payment_status(raw):
 # the header row (it isn't always row 0), maps columns by name, and returns
 # only rows whose Status contains "cancel". Cancelled-but-already-tracked
 # orders are filtered out by the caller against load_cancelled_orders().
-def parse_roadrunner_export(file):
+def _read_roadrunner_table(file):
     if file.name.lower().endswith(".csv"):
         raw = pd.read_csv(file, header=None, dtype=str, keep_default_na=False)
     else:
@@ -934,6 +935,10 @@ def parse_roadrunner_export(file):
     header = [str(v).strip() for v in raw.iloc[header_idx].tolist()]
     body = raw.iloc[header_idx + 1:].reset_index(drop=True)
     body.columns = header
+    return body
+
+def parse_roadrunner_export(file):
+    body = _read_roadrunner_table(file)
 
     def col(name):
         return name if name in body.columns else None
@@ -970,6 +975,81 @@ def parse_roadrunner_export(file):
             "creation_date": str(r.get(c_created, "")).strip() if c_created else "",
         })
     return records, len(body), skipped
+
+# Roadrunner's Status cell is two states run together with no separator —
+# "<payment state><delivery state>", e.g. "DeliveredDelivered" for a COD order
+# that was delivered and collected, "PaidCanceled", "CanceledCanceled". A
+# delivered order has been paid (the driver collected the cash), so delivery
+# is what counts. Anchor on the END ("delivered" also appears mid-string in
+# "DeliveredCanceled"-style states), and never trust an explicit "Unpaid…".
+def rr_is_delivered(raw):
+    s = re.sub(r"[^a-z]", "", str(raw or "").lower())
+    return s.endswith("delivered") and not s.startswith("unpaid")
+
+def parse_roadrunner_all_orders(file):
+    body = _read_roadrunner_table(file)
+    for needed in ("Order ID", "Reference ID", "Status"):
+        if needed not in body.columns:
+            raise ValueError(f'Couldn\'t find a "{needed}" column — is this the right export?')
+    get = lambda r, c: str(r.get(c, "")).strip() if c in body.columns else ""
+    records = []
+    for _, r in body.iterrows():
+        if not get(r, "Order ID"):
+            continue
+        records.append({
+            "order_id": get(r, "Order ID"),
+            "reference_id": get(r, "Reference ID"),
+            "customer": get(r, "Customer Name"),
+            "status": get(r, "Status"),
+            "total_usd": _parse_amount(get(r, "Total USD")),
+            "delivered": rr_is_delivered(get(r, "Status")),
+        })
+    return records
+
+def _shopify_request(method, url, **kwargs):
+    """requests wrapper that backs off on Shopify's rate limit (HTTP 429)."""
+    for attempt in range(4):
+        resp = requests.request(method, url, headers=_SHOPIFY_HEADERS, timeout=30, **kwargs)
+        if resp.status_code != 429 or attempt == 3:
+            return resp
+        time.sleep(float(resp.headers.get("Retry-After", 2)))
+
+def shopify_lookup_for_mark_paid(order_name):
+    """Look up one Shopify order by name; returns None if it doesn't exist."""
+    resp = _shopify_request(
+        "GET", f"{_SHOPIFY_BASE}/orders.json",
+        params={"name": f"#{order_name.lstrip('#')}", "status": "any", "limit": 5,
+                "fields": "id,name,financial_status,total_price,cancelled_at,admin_graphql_api_id"},
+    )
+    resp.raise_for_status()
+    for o in resp.json().get("orders", []):
+        if o["name"] == f"#{order_name.lstrip('#')}":
+            return o
+    return None
+
+def shopify_mark_order_paid(order_gid):
+    mutation = """
+    mutation($input: OrderMarkAsPaidInput!) {
+      orderMarkAsPaid(input: $input) {
+        order { displayFinancialStatus }
+        userErrors { message }
+      }
+    }"""
+    resp = _shopify_request(
+        "POST", f"{_SHOPIFY_BASE}/graphql.json",
+        json={"query": mutation, "variables": {"input": {"id": order_gid}}},
+    )
+    if not resp.ok:
+        raise Exception(f"{resp.status_code} {resp.text[:200]}")
+    body = resp.json()
+    if body.get("errors"):
+        msg = "; ".join(e.get("message", "") for e in body["errors"])
+        if "access denied" in msg.lower() or "write_orders" in msg.lower():
+            msg += " — the Shopify app token needs the write_orders scope."
+        raise Exception(msg)
+    errs = (body["data"]["orderMarkAsPaid"] or {}).get("userErrors") or []
+    if errs:
+        raise Exception("; ".join(e["message"] for e in errs))
 
 def add_cancelled_orders_batch(records, settings):
     ws = get_co_ws()
@@ -4543,6 +4623,153 @@ elif page == "💸 Refunds":
                     if cc2.button("Cancel", use_container_width=True):
                         st.session_state.pop(confirm_key, None)
                         st.rerun()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE: MARK PAID
+# ─────────────────────────────────────────────────────────────────────────────
+
+elif page == "✅ Mark Paid":
+    st.subheader("Mark Paid")
+    st.caption(
+        "Upload Roadrunner's all-orders export. Orders it shows as delivered get "
+        "marked as paid on Shopify (COD orders sit as Payment pending until then)."
+    )
+
+    mp_file = st.file_uploader("Roadrunner all-orders export (.xlsx or .csv)", type=["xlsx", "csv"], key="mp_file")
+    if mp_file is None:
+        st.session_state.pop("mp_check", None)
+        st.session_state.pop("mp_results", None)
+        st.stop()
+
+    sig = f"{mp_file.name}:{mp_file.size}"
+    try:
+        records = parse_roadrunner_all_orders(mp_file)
+    except Exception as e:
+        st.error(f"Couldn't read that file: {e}")
+        st.stop()
+    if not records:
+        st.warning("No orders found in that file.")
+        st.stop()
+    if st.session_state.get("mp_sig") != sig:
+        st.session_state.mp_sig = sig
+        st.session_state.pop("mp_check", None)
+        st.session_state.pop("mp_results", None)
+
+    eligible = [r for r in records if r["delivered"]]
+    not_delivered = len(records) - len(eligible)
+
+    s1, s2 = st.columns(2)
+    s1.markdown(f'<div class="stat"><p class="num" style="color:#227A55">{len(eligible)}</p><p class="lbl">Delivered</p></div>', unsafe_allow_html=True)
+    s2.markdown(f'<div class="stat"><p class="num" style="color:#966600">{not_delivered}</p><p class="lbl">Not delivered (skipped)</p></div>', unsafe_allow_html=True)
+
+    with st.expander("How Roadrunner statuses were read", icon=":material/rule:"):
+        counts = {}
+        for r in records:
+            counts[r["status"] or "(blank)"] = counts.get(r["status"] or "(blank)", 0) + 1
+        st.dataframe(
+            pd.DataFrame(
+                [{"Roadrunner status": k, "Orders": v,
+                  "Counted as": "Delivered" if rr_is_delivered(k) else "Skipped"}
+                 for k, v in sorted(counts.items(), key=lambda kv: -kv[1])]
+            ),
+            hide_index=True, use_container_width=True,
+        )
+
+    if not eligible:
+        st.info("None of these orders are delivered, so there's nothing to mark on Shopify.")
+        st.stop()
+
+    st.markdown("")
+    if st.button("Check these orders on Shopify", type="primary", icon=":material/search:"):
+        rows, seen = [], set()
+        bar = st.progress(0.0, text="Checking Shopify…")
+        for i, r in enumerate(eligible):
+            m = re.search(r"(\d+)\s*$", r["reference_id"])
+            row = {"reference": r["reference_id"], "customer": r["customer"], "rr_total": r["total_usd"],
+                   "name": "", "gid": "", "shop_total": None, "shop_status": "", "verdict": "", "ready": False}
+            try:
+                if not m:
+                    row["verdict"] = "No order number in Reference ID"
+                else:
+                    row["name"] = "#1" + m.group(1)
+                    if row["name"] in seen:
+                        continue
+                    seen.add(row["name"])
+                    o = _resilient_shopify_call(shopify_lookup_for_mark_paid)(row["name"])
+                    if o is None:
+                        row["verdict"] = "Not found on Shopify"
+                    else:
+                        row["gid"] = o["admin_graphql_api_id"]
+                        row["shop_total"] = _parse_amount(o["total_price"])
+                        row["shop_status"] = (o.get("financial_status") or "").replace("_", " ").title()
+                        if o.get("cancelled_at"):
+                            row["verdict"] = "Cancelled on Shopify"
+                        elif o["financial_status"] == "paid":
+                            row["verdict"] = "Already paid"
+                        elif o["financial_status"] != "pending":
+                            row["verdict"] = f"Review manually ({row['shop_status']})"
+                        elif row["rr_total"] is None or row["shop_total"] is None or abs(row["rr_total"] - row["shop_total"]) > 0.01:
+                            row["verdict"] = "Amount differs — review manually"
+                        else:
+                            row["verdict"] = "Ready"
+                            row["ready"] = True
+            except Exception as e:
+                row["verdict"] = f"Lookup failed: {e}"
+            rows.append(row)
+            bar.progress((i + 1) / len(eligible), text=f"Checking Shopify… {i + 1}/{len(eligible)}")
+            time.sleep(0.3)
+        bar.empty()
+        st.session_state.mp_check = rows
+        st.session_state.pop("mp_results", None)
+
+    results = st.session_state.get("mp_results")
+    check = st.session_state.get("mp_check")
+
+    if results is not None:
+        ok = [r for r in results if r["ok"]]
+        bad = [r for r in results if not r["ok"]]
+        if ok:
+            st.success(f"Marked {len(ok)} order(s) as paid on Shopify.")
+        if bad:
+            st.error(f"{len(bad)} order(s) failed — nothing was changed for these:")
+        st.dataframe(
+            pd.DataFrame([{"Order": r["name"], "Customer": r["customer"], "Result": "Marked paid" if r["ok"] else r["error"]} for r in results]),
+            hide_index=True, use_container_width=True,
+        )
+    elif check is not None:
+        ready = [r for r in check if r["ready"]]
+        st.markdown(f"**{len(ready)}** of {len(check)} ready to mark paid")
+        st.dataframe(
+            pd.DataFrame([{
+                "Order": r["name"] or "—", "Customer": r["customer"],
+                "Roadrunner total": r["rr_total"], "Shopify total": r["shop_total"],
+                "Shopify payment": r["shop_status"] or "—", "Result": r["verdict"],
+            } for r in check]),
+            hide_index=True, use_container_width=True,
+            column_config={
+                "Roadrunner total": st.column_config.NumberColumn(format="$%.2f"),
+                "Shopify total": st.column_config.NumberColumn(format="$%.2f"),
+            },
+        )
+        if ready:
+            confirm = st.checkbox(f"I confirm I want to mark {len(ready)} order(s) as paid on Shopify")
+            if st.button("Mark as Paid on Shopify", type="primary", disabled=not confirm, icon=":material/check_circle:"):
+                out = []
+                bar = st.progress(0.0, text="Marking paid…")
+                for i, r in enumerate(ready):
+                    try:
+                        shopify_mark_order_paid(r["gid"])
+                        out.append({"name": r["name"], "customer": r["customer"], "ok": True, "error": ""})
+                    except Exception as e:
+                        out.append({"name": r["name"], "customer": r["customer"], "ok": False, "error": str(e)})
+                    bar.progress((i + 1) / len(ready), text=f"Marking paid… {i + 1}/{len(ready)}")
+                    time.sleep(0.3)
+                bar.empty()
+                st.session_state.mp_results = out
+                st.session_state.pop("mp_check", None)
+                st.rerun()
+        else:
+            st.info("Nothing here is ready to mark — see the Result column for why.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: INFLUENCER SCRIPTS

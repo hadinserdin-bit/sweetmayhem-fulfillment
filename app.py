@@ -4651,8 +4651,8 @@ elif page == "🎬 Influencer Scripts":
                          + (f" and assigned to {', '.join(added)}" if added else "") + ".")
         for k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
             ss[k] = ""
-        ss["inf_s_avatar"] = None
-        ss["inf_s_angle"] = None
+        ss["inf_s_avatar"] = ""
+        ss["inf_s_angle"] = ""
         ss["inf_s_assign"] = []
 
     def _add_person():
@@ -4803,15 +4803,15 @@ elif page == "🎬 Influencer Scripts":
                 st.button("Edit script", icon=":material/edit:", key=f"inf_e_start_{n}",
                           on_click=_start_edit, args=(s,))
 
-            st.session_state.setdefault(f"inf_m_avatar_{n}", s["avatar"] or None)
-            st.session_state.setdefault(f"inf_m_angle_{n}", s["angle"] or None)
+            st.session_state.setdefault(f"inf_m_avatar_{n}", s["avatar"])
+            st.session_state.setdefault(f"inf_m_angle_{n}", s["angle"])
             m1, m2 = st.columns(2)
-            m1.selectbox("Avatar", list(dict.fromkeys(avatar_opts + ([s["avatar"]] if s["avatar"] else []))),
-                         index=None, accept_new_options=True, key=f"inf_m_avatar_{n}",
-                         placeholder="Pick or type a new avatar", on_change=_save_meta, args=(n,))
-            m2.selectbox("Angle", list(dict.fromkeys(angle_opts + ([s["angle"]] if s["angle"] else []))),
-                         index=None, accept_new_options=True, key=f"inf_m_angle_{n}",
-                         placeholder="Pick or type a new angle", on_change=_save_meta, args=(n,))
+            m1.text_input("Avatar", key=f"inf_m_avatar_{n}", placeholder="e.g. Busy mom",
+                          help="Who the script is aimed at. Saves when you press Enter or click away.",
+                          on_change=_save_meta, args=(n,))
+            m2.text_input("Angle", key=f"inf_m_angle_{n}", placeholder="e.g. Posture fix",
+                          help="The hook or approach. Saves when you press Enter or click away.",
+                          on_change=_save_meta, args=(n,))
 
             st.caption("ASSIGNED TO")
             if not members:
@@ -4857,7 +4857,7 @@ elif page == "🎬 Influencer Scripts":
     # ── Scripts: create, then assign ─────────────────────────────────────────
     if view == "Scripts":
         ss = st.session_state
-        for _k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
+        for _k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product", "inf_s_avatar", "inf_s_angle"):
             ss.setdefault(_k, "")
         ss.setdefault("inf_s_assign", [])
 
@@ -4872,12 +4872,10 @@ elif page == "🎬 Influencer Scripts":
                     help="Shown in the PDF. Left blank, it's filled in from the product.",
                 )
                 c5, c6 = st.columns(2)
-                c5.selectbox("Avatar", avatar_opts, index=None, accept_new_options=True, key="inf_s_avatar",
-                             placeholder="Pick or type a new avatar",
-                             help="Who the script is aimed at, e.g. 'Busy mom' or 'Desk worker'.")
-                c6.selectbox("Angle", angle_opts, index=None, accept_new_options=True, key="inf_s_angle",
-                             placeholder="Pick or type a new angle",
-                             help="The hook or approach, e.g. 'Posture fix' or 'Comfort all day'.")
+                c5.text_input("Avatar", placeholder="e.g. Busy mom", key="inf_s_avatar",
+                              help="Who the script is aimed at.")
+                c6.text_input("Angle", placeholder="e.g. Posture fix", key="inf_s_angle",
+                              help="The hook or approach.")
                 st.text_area(
                     "Script", height=240, key="inf_s_body",
                     help="One line each. A [bracketed] or ALL-CAPS line is a shot direction; every other line is spoken "

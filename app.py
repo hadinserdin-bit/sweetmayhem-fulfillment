@@ -976,13 +976,15 @@ def parse_roadrunner_export(file):
         })
     return records, len(body), skipped
 
-# Roadrunner's Status cell is the payment state and the delivery state run
-# together with no separator ("PaidDelivered", "PaidCanceled", "UnpaidPending"…).
-# Anchor on the start for payment — "Unpaid" contains "paid", so a substring
-# match would wrongly count it — and on the end for delivery.
-def rr_status_parts(raw):
+# Roadrunner's Status cell is two states run together with no separator —
+# "<payment state><delivery state>", e.g. "DeliveredDelivered" for a COD order
+# that was delivered and collected, "PaidCanceled", "CanceledCanceled". A
+# delivered order has been paid (the driver collected the cash), so delivery
+# is what counts. Anchor on the END ("delivered" also appears mid-string in
+# "DeliveredCanceled"-style states), and never trust an explicit "Unpaid…".
+def rr_is_delivered(raw):
     s = re.sub(r"[^a-z]", "", str(raw or "").lower())
-    return s.startswith("paid"), s.endswith("delivered")
+    return s.endswith("delivered") and not s.startswith("unpaid")
 
 def parse_roadrunner_all_orders(file):
     body = _read_roadrunner_table(file)
@@ -994,15 +996,13 @@ def parse_roadrunner_all_orders(file):
     for _, r in body.iterrows():
         if not get(r, "Order ID"):
             continue
-        is_paid, is_delivered = rr_status_parts(get(r, "Status"))
         records.append({
             "order_id": get(r, "Order ID"),
             "reference_id": get(r, "Reference ID"),
             "customer": get(r, "Customer Name"),
             "status": get(r, "Status"),
             "total_usd": _parse_amount(get(r, "Total USD")),
-            "paid": is_paid,
-            "delivered": is_delivered,
+            "delivered": rr_is_delivered(get(r, "Status")),
         })
     return records
 
@@ -4631,7 +4631,7 @@ elif page == "💸 Refunds":
 elif page == "✅ Mark Paid":
     st.subheader("Mark Paid")
     st.caption(
-        "Upload Roadrunner's all-orders export. Orders it shows as paid and delivered get "
+        "Upload Roadrunner's all-orders export. Orders it shows as delivered get "
         "marked as paid on Shopify (COD orders sit as Payment pending until then)."
     )
 
@@ -4655,14 +4655,12 @@ elif page == "✅ Mark Paid":
         st.session_state.pop("mp_check", None)
         st.session_state.pop("mp_results", None)
 
-    eligible = [r for r in records if r["paid"] and r["delivered"]]
-    paid_not_delivered = [r for r in records if r["paid"] and not r["delivered"]]
-    others = len(records) - len(eligible) - len(paid_not_delivered)
+    eligible = [r for r in records if r["delivered"]]
+    not_delivered = len(records) - len(eligible)
 
-    s1, s2, s3 = st.columns(3)
-    s1.markdown(f'<div class="stat"><p class="num" style="color:#227A55">{len(eligible)}</p><p class="lbl">Paid &amp; delivered</p></div>', unsafe_allow_html=True)
-    s2.markdown(f'<div class="stat"><p class="num" style="color:#966600">{len(paid_not_delivered)}</p><p class="lbl">Paid, not delivered</p></div>', unsafe_allow_html=True)
-    s3.markdown(f'<div class="stat"><p class="num" style="color:var(--rr-red)">{others}</p><p class="lbl">Unpaid / other</p></div>', unsafe_allow_html=True)
+    s1, s2 = st.columns(2)
+    s1.markdown(f'<div class="stat"><p class="num" style="color:#227A55">{len(eligible)}</p><p class="lbl">Delivered</p></div>', unsafe_allow_html=True)
+    s2.markdown(f'<div class="stat"><p class="num" style="color:#966600">{not_delivered}</p><p class="lbl">Not delivered (skipped)</p></div>', unsafe_allow_html=True)
 
     with st.expander("How Roadrunner statuses were read", icon=":material/rule:"):
         counts = {}
@@ -4671,14 +4669,14 @@ elif page == "✅ Mark Paid":
         st.dataframe(
             pd.DataFrame(
                 [{"Roadrunner status": k, "Orders": v,
-                  "Counted as": "Paid & delivered" if all(rr_status_parts(k)) else "Skipped"}
+                  "Counted as": "Delivered" if rr_is_delivered(k) else "Skipped"}
                  for k, v in sorted(counts.items(), key=lambda kv: -kv[1])]
             ),
             hide_index=True, use_container_width=True,
         )
 
     if not eligible:
-        st.info("None of these orders are both paid and delivered, so there's nothing to mark on Shopify.")
+        st.info("None of these orders are delivered, so there's nothing to mark on Shopify.")
         st.stop()
 
     st.markdown("")

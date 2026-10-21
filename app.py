@@ -4555,8 +4555,12 @@ elif page == "🎬 Influencer Scripts":
             on_click="ignore",
         )
 
+    def _sname(s):
+        return s["title"] or s["product"] or "General"
+
     def _what(r):
-        return " · ".join(x for x in (r["product"] or "General", r["campaign"]) if x)
+        title = r["title"] if r["title"] and r["title"] != r["product"] else ""
+        return " · ".join(x for x in (title, r["product"] or "General", r["campaign"]) if x)
 
     # ── actions (callbacks run before the page redraws, so they read fresh state) ──
     def _create_script():
@@ -4565,20 +4569,21 @@ elif page == "🎬 Influencer Scripts":
         if not body:
             ss["inf_msg"] = ("warning", "Write the script first.")
             return
+        title = (ss.get("inf_s_title") or "").strip()
         prod = ss.get("inf_s_product") or ""
         fmt = (ss.get("inf_s_format") or "").strip()
         camp = (ss.get("inf_s_camp") or "").strip()
         names = list(ss.get("inf_s_assign") or [])
-        sig = (prod, fmt, body, tuple(names))
+        sig = (title.lower(), prod, fmt, body, tuple(names))
         last = ss.get("inf_last_sig")
         if last and last[0] == sig and time.time() - last[1] < 20:
             return  # the same script submitted moments ago — a double click
-        rec = add_inf_script("", prod, fmt, body, me)
+        rec = add_inf_script(title, prod, fmt, body, me)
         added = assign_inf_script(rec["number"], names, camp, me) if names else []
         ss["inf_last_sig"] = (sig, time.time())
         ss["inf_msg"] = ("success", f"Script #{rec['number']} created"
                          + (f" and assigned to {', '.join(added)}" if added else "") + ".")
-        for k in ("inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
+        for k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
             ss[k] = ""
         ss["inf_s_assign"] = []
 
@@ -4640,6 +4645,7 @@ elif page == "🎬 Influencer Scripts":
         n = s["number"]
         ss[f"inf_edit_{n}"] = True
         ss["inf_open_card"] = n
+        ss[f"inf_e_title_{n}"] = s["title"]
         ss[f"inf_e_product_{n}"] = s["product"]
         ss[f"inf_e_format_{n}"] = s["format"]
         ss[f"inf_e_body_{n}"] = s["script"]
@@ -4653,7 +4659,7 @@ elif page == "🎬 Influencer Scripts":
         if not body:
             _toast("The script can't be empty.", icon=":material/warning:")
             return
-        update_inf_script(n, "", ss.get(f"inf_e_product_{n}") or "",
+        update_inf_script(n, (ss.get(f"inf_e_title_{n}") or "").strip(), ss.get(f"inf_e_product_{n}") or "",
                           (ss.get(f"inf_e_format_{n}") or "").strip(), body)
         ss.pop(f"inf_edit_{n}", None)
         ss["inf_open_card"] = n
@@ -4701,9 +4707,10 @@ elif page == "🎬 Influencer Scripts":
         names = sorted((p["name"] for p in load_inf_people()), key=str.lower)
         who = ", ".join(r["influencer"] for r in members) or "not assigned yet"
         # A fixed key keeps the card open when its label changes (e.g. after assigning someone).
-        with st.expander(f"#{n} · {s['product'] or 'General'}  —  {who}", key=f"inf_card_{n}",
+        with st.expander(f"#{n} · {_sname(s)}  —  {who}", key=f"inf_card_{n}",
                          expanded=st.session_state.get("inf_open_card") == n):
             if st.session_state.get(f"inf_edit_{n}"):
+                st.text_input("Title", key=f"inf_e_title_{n}")
                 e1, e2 = st.columns(2)
                 e1.selectbox("Product", list(dict.fromkeys(product_options + [s["product"]])),
                              format_func=_fmt_product, key=f"inf_e_product_{n}")
@@ -4763,13 +4770,14 @@ elif page == "🎬 Influencer Scripts":
     # ── Scripts: create, then assign ─────────────────────────────────────────
     with tab_scripts:
         ss = st.session_state
-        for _k in ("inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
+        for _k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
             ss.setdefault(_k, "")
         ss.setdefault("inf_s_assign", [])
 
         with st.expander(":material/add_circle: Create a new script", expanded=not library):
             with st.form("inf_script_form"):
                 st.caption(f"This will be script **#{next_inf_number(library)}**.")
+                st.text_input("Title", placeholder="e.g. Cross-Back Posture Bra — hook v1", key="inf_s_title")
                 c1, c2 = st.columns(2)
                 c1.selectbox("Product", product_options, format_func=_fmt_product, key="inf_s_product")
                 c2.text_input(
@@ -4894,7 +4902,7 @@ elif page == "🎬 Influencer Scripts":
                         pa_options = [n for n in open_scripts if not pa_prod or lib_by_num[n]["product"] == pa_prod]
                         b1.selectbox(
                             "Script", pa_options, index=None, placeholder="Choose a script…", key=f"inf_pa_pick_{p['row']}",
-                            format_func=lambda n: f"#{n} · {lib_by_num[n]['product'] or 'General'}",
+                            format_func=lambda n: f"#{n} · {_sname(lib_by_num[n])}",
                         )
                         b2.text_input("Campaign (optional)", key=f"inf_pa_camp_{p['row']}")
                         b3.button("Assign", type="primary", icon=":material/add_task:", key=f"inf_pa_btn_{p['row']}",
@@ -4920,7 +4928,7 @@ elif page == "🎬 Influencer Scripts":
         q = f1.selectbox("Influencer", ["All"] + sorted({r["influencer"] for r in records}, key=str.lower),
                          key="inf_t_search")
         script_f = f2.selectbox("Script", [None] + [s["number"] for s in reversed(library)], key="inf_t_script",
-                                format_func=lambda n: "All" if n is None else f"#{n} · {lib_by_num[n]['product'] or 'General'}")
+                                format_func=lambda n: "All" if n is None else f"#{n} · {_sname(lib_by_num[n])}")
 
         shown = [r for r in reversed(records)
                  if (script_f is None or r["number"] == script_f) and (q == "All" or r["influencer"] == q)]
@@ -4948,7 +4956,7 @@ elif page == "🎬 Influencer Scripts":
         with tab_todo:
             widths = [0.9, 2, 2.4, 1.1, 1.6, 1.4, 0.9]
             head = st.columns(widths)
-            for col, label in zip(head, ("SCRIPT #", "INFLUENCER", "PRODUCT / CAMPAIGN", "STATUS", "SENT", "DONE", "")):
+            for col, label in zip(head, ("SCRIPT #", "INFLUENCER", "SCRIPT / CAMPAIGN", "STATUS", "SENT", "DONE", "")):
                 col.caption(label)
             if not todo:
                 st.info("Nothing in progress here.")
@@ -4974,7 +4982,7 @@ elif page == "🎬 Influencer Scripts":
         with tab_done:
             widths = [0.9, 2, 2.4, 1.4, 1.6, 0.9]
             head = st.columns(widths)
-            for col, label in zip(head, ("SCRIPT #", "INFLUENCER", "PRODUCT / CAMPAIGN", "SENT", "DONE", "")):
+            for col, label in zip(head, ("SCRIPT #", "INFLUENCER", "SCRIPT / CAMPAIGN", "SENT", "DONE", "")):
                 col.caption(label)
             if not done:
                 st.info("Nothing is done yet — press Done on a sent script once the influencer has filmed it.")

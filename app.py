@@ -4686,11 +4686,13 @@ elif page == "🎬 Influencer Scripts":
         if not library:
             st.info("No scripts yet — create your first one above.")
         else:
-            q = st.text_input("Search scripts", placeholder="Title, product or influencer", key="inf_s_search")
+            find_opts = sorted({x for s in library for x in (s["title"], s["product"]) if x}
+                               | {r["influencer"] for r in records}, key=str.lower)
+            q = st.selectbox("Search scripts", find_opts, index=None, key="inf_s_search",
+                             placeholder="Type an influencer, product or title…")
             shown = [
                 s for s in reversed(library)
-                if not q.strip() or q.strip().lower() in " ".join(
-                    [s["title"], s["product"]] + [r["influencer"] for r in recs_by_num.get(s["number"], [])]).lower()
+                if not q or q in [s["title"], s["product"]] + [r["influencer"] for r in recs_by_num.get(s["number"], [])]
             ]
             st.caption(f"{len(shown)} script{'s' if len(shown) != 1 else ''}")
             for s in shown:
@@ -4767,18 +4769,11 @@ elif page == "🎬 Influencer Scripts":
         if not people:
             st.info("No influencers yet — add your first one above.")
         else:
-            q = st.text_input("Search influencers", placeholder="Name, handle or product", key="inf_p_search")
-
             def _person_products(p):
                 return sorted({r["product"] for r in recs_by_person.get(p["name"].lower(), []) if r["product"]})
 
-            shown_people = [
-                p for p in sorted(people, key=lambda p: p["name"].lower())
-                if not q.strip() or q.strip().lower() in " ".join([p["name"], p["handle"]] + _person_products(p)).lower()
-            ]
-            if not shown_people:
-                st.info("No influencers match.")
-            else:
+            shown_people = sorted(people, key=lambda p: p["name"].lower())
+            if True:
                 st.dataframe(
                     pd.DataFrame([{
                         "Name": p["name"], "Platform / handle": p["handle"],
@@ -4792,7 +4787,7 @@ elif page == "🎬 Influencer Scripts":
                 pnames = [p["name"] for p in shown_people]
                 if st.session_state.get("inf_p_pick") not in pnames:
                     st.session_state.pop("inf_p_pick", None)
-                pick = st.selectbox("Open an influencer", pnames, key="inf_p_pick")
+                pick = st.selectbox("Open an influencer", pnames, key="inf_p_pick", help="Click and type a name to find them.")
                 p = next(x for x in shown_people if x["name"] == pick)
                 mine = recs_by_person.get(pick.lower(), [])
                 with st.container(border=True):
@@ -4835,7 +4830,8 @@ elif page == "🎬 Influencer Scripts":
             st.info("Nothing here yet — assign a script to an influencer and it'll show up here.")
         else:
             f1, f2, f3 = st.columns([2, 2, 2])
-            q = f1.text_input("Search influencer", placeholder="Name", key="inf_t_search")
+            q = f1.selectbox("Influencer", ["All"] + sorted({r["influencer"] for r in records}, key=str.lower),
+                             key="inf_t_search")
             prod_f = f2.selectbox("Product", ["All"] + sorted({r["product"] for r in records if r["product"]}), key="inf_t_prod")
             stat_f = f3.multiselect("Status", INFLUENCER_STATUSES, default=INFLUENCER_STATUSES, key="inf_t_stat")
 
@@ -4843,7 +4839,7 @@ elif page == "🎬 Influencer Scripts":
                 r for r in reversed(records)
                 if r["status"] in stat_f
                 and (prod_f == "All" or r["product"] == prod_f)
-                and (not q.strip() or q.strip().lower() in r["influencer"].lower())
+                and (q == "All" or r["influencer"] == q)
             ]
             widths = [0.9, 2, 2.6, 1.1, 1.8, 0.9]
             head = st.columns(widths)

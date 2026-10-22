@@ -338,7 +338,7 @@ INF_LIBRARY_HEADERS = ["Script #", "Title", "Product", "Format", "Script", "Crea
 INF_PEOPLE_TAB = "Influencers"
 INF_PEOPLE_HEADERS = ["Name", "Platform / Handle", "Contact", "Notes", "Added At", "Rating"]
 INF_ASSIGN_TAB = "Assignments"
-INF_ASSIGN_HEADERS = ["Script #", "Influencer", "Campaign", "Status", "Assigned At", "Sent At", "Assigned By", "Done At"]
+INF_ASSIGN_HEADERS = ["Script #", "Influencer", "Campaign", "Status", "Assigned At", "Sent At", "Assigned By", "Done At", "Video ID"]
 INFLUENCER_STATUSES = ["Assigned", "Sent", "Done"]  # Done = the influencer has filmed it
 INFLUENCER_FIRST_NUMBER = 1001
 
@@ -411,7 +411,7 @@ def load_inf_people():
 def load_inf_assignments():
     out = []
     for i, row in enumerate(get_inf_assign_ws().get_all_values()[1:], start=2):
-        row = _inf_pad(row, 8)
+        row = _inf_pad(row, 9)
         if not row[0].strip().isdigit() or not row[1].strip():
             continue
         st_ = row[3].strip()
@@ -419,7 +419,7 @@ def load_inf_assignments():
             "row": i, "number": int(row[0]), "influencer": row[1].strip(), "campaign": row[2].strip(),
             "status": "Done" if st_ == "Done" else "Sent" if st_ in ("Sent", "Used") else "Assigned",
             "assigned_at": row[4].strip(), "sent_at": row[5].strip(), "assigned_by": row[6].strip(),
-            "done_at": row[7].strip(),
+            "done_at": row[7].strip(), "video": row[8].strip(),
         })
     return out
 
@@ -478,12 +478,17 @@ def set_inf_rating(name, stars):
 
 def assign_inf_script(number, names, campaign, by):
     """Assigns a script to each influencer not already holding it; returns who was added."""
-    have = {(a["number"], a["influencer"].lower()) for a in _inf_fresh(load_inf_assignments)}
+    existing = _inf_fresh(load_inf_assignments)
+    have = {(a["number"], a["influencer"].lower()) for a in existing}
+    # Each assignment is one video, numbered 1001-01, 1001-02 ... per script (never reused).
+    seq = max([int(a["video"].rsplit("-", 1)[1]) for a in existing
+               if a["number"] == number and re.fullmatch(r"\d+-\d+", a["video"])] + [0])
     now, rows, added = _inf_now(), [], []
     for n in names:
         if (number, n.lower()) in have:
             continue
-        rows.append([number, n, campaign, "Assigned", now, "", by, ""])
+        seq += 1
+        rows.append([number, n, campaign, "Assigned", now, "", by, "", f"{number}-{seq:02d}"])
         added.append(n)
     if rows:
         get_inf_assign_ws().append_rows(rows)
@@ -603,10 +608,18 @@ def _script_blocks(text):
             blocks.append(("dir", " ".join(x for _, x in trail)))
     return blocks
 
+def _name_words(text):
+    return re.sub(r"[^A-Za-z0-9]+", "_", text or "").strip("_")
+
 def influencer_script_filename(script):
-    """Sweet_Mayhem_Script_1000_Cross_Back_Posture_Bra.pdf"""
-    words = re.sub(r"[^A-Za-z0-9]+", "_", script["product"] or script["influencer"]).strip("_") or "Script"
-    return f"Sweet_Mayhem_Script_{script['number']}_{words}.pdf"
+    """Sweet_Mayhem_Script_1001-01_Cross_Back_Posture_Bra.pdf"""
+    words = _name_words(script["product"] or script["influencer"]) or "Script"
+    return f"Sweet_Mayhem_Script_{script.get('video') or script['number']}_{words}.pdf"
+
+def influencer_video_name(rec):
+    """What the influencer's finished video should be called: SM_1001-01_Maya_Cross_Back_Posture_Bra"""
+    return "_".join(x for x in ("SM", rec.get("video") or str(rec["number"]),
+                                _name_words(rec["influencer"]), _name_words(rec["product"])) if x)
 
 def build_influencer_script_pdf(script):
     from fpdf import FPDF  # imported here so a missing package can't take the whole app down
@@ -647,8 +660,23 @@ def build_influencer_script_pdf(script):
     # info table
     fmt = script.get("format") or ("Vertical video / UGC" + (f" — {script['product']} feature" if script["product"] else ""))
     rows = [("Influencer", script["influencer"], None), ("Brand", "Sweet Mayhem", None),
-            ("Website", "www.sweetmayhemfit.com", "https://www.sweetmayhemfit.com"), ("Format", fmt, None)]
+            ("Website", "www.sweetmayhemfit.com", "https://www.sweetmayhemfit.com"), ("Format", fmt, None),
+            ("Name video", influencer_video_name(script), None)]
     lw, vw, pad, lh = 80, 235, 5, 12
+
+    def _wrap_name(txt, maxw):  # break the video name at its underscores rather than mid-word
+        pdf.set_font("Gelasio", "", 10)
+        lines, cur = [], ""
+        for tok in txt.split("_"):
+            cand = f"{cur}_{tok}" if cur else tok
+            if cur and pdf.get_string_width(cand) > maxw:
+                lines.append(cur + "_")
+                cur = tok
+            else:
+                cur = cand
+        return "\n".join(lines + [cur])
+
+    rows[-1] = (rows[-1][0], _wrap_name(rows[-1][1], vw - 2 * pad - 10), None)
     pdf.set_line_width(0.5); pdf.set_draw_color(0, 0, 0)
     for label, value, link in rows:
         pdf.set_font("Gelasio", "", 10)
@@ -4886,6 +4914,9 @@ elif page == "🎬 Influencer Scripts":
             on_click="ignore",
         )
 
+    def _vid(r):
+        return r.get("video") or str(r["number"])
+
     def _sname(s):
         return s["title"] or s["product"] or "General"
 
@@ -5090,7 +5121,7 @@ elif page == "🎬 Influencer Scripts":
             for r in members:
                 c = st.columns([2.2, 2, 1.1, 1.3, 0.7], vertical_alignment="center")
                 c[0].write(r["influencer"])
-                c[1].write(r["campaign"])
+                c[1].write(" · ".join(x for x in (_vid(r), r["campaign"]) if x))
                 c[2].markdown(f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>', unsafe_allow_html=True)
                 with c[3]:
                     _pdf_button(r, key=f"inf_dl_s_{r['row']}")
@@ -5258,7 +5289,7 @@ elif page == "🎬 Influencer Scripts":
                         st.write("No scripts assigned yet.")
                     for r in reversed(mine):
                         c = st.columns([0.9, 3, 1.1, 1.3, 0.7], vertical_alignment="center")
-                        c[0].markdown(f"**#{r['number']}**")
+                        c[0].markdown(f"**{_vid(r)}**")
                         c[1].write(_what(r))
                         c[2].markdown(f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>', unsafe_allow_html=True)
                         with c[3]:
@@ -5301,14 +5332,17 @@ elif page == "🎬 Influencer Scripts":
         if not records:
             st.info("Nothing here yet — assign a script to an influencer and it'll show up here.")
             return
-        f1, f2 = st.columns(2)
+        f1, f2, f3 = st.columns(3)
         q = f1.selectbox("Influencer", ["All"] + sorted({r["influencer"] for r in records}, key=str.lower),
                          key="inf_t_search")
+        video_f = f3.selectbox("Video", sorted({_vid(r) for r in records}), index=None, key="inf_t_video",
+                               placeholder="All videos — type an ID like 1001-02")
         script_f = f2.selectbox("Script", [None] + [s["number"] for s in reversed(library)], key="inf_t_script",
                                 format_func=lambda n: "All" if n is None else f"#{n} · {_sname(lib_by_num[n])}")
 
         shown = [r for r in reversed(records)
-                 if (script_f is None or r["number"] == script_f) and (q == "All" or r["influencer"] == q)]
+                 if (script_f is None or r["number"] == script_f) and (q == "All" or r["influencer"] == q)
+                 and (not video_f or _vid(r) == video_f)]
         if script_f is not None and q != "All":
             # Both picked: answer "was this script sent to this person?" directly.
             hit = next((r for r in records if r["number"] == script_f and r["influencer"] == q), None)
@@ -5334,15 +5368,16 @@ elif page == "🎬 Influencer Scripts":
         if stage == "In progress":
             widths = [0.9, 2, 2.4, 1.1, 1.6, 1.4, 0.9]
             head = st.columns(widths)
-            for col, label in zip(head, ("SCRIPT #", "INFLUENCER", "SCRIPT / CAMPAIGN", "STATUS", "SENT", "DONE", "")):
+            for col, label in zip(head, ("VIDEO", "INFLUENCER", "SCRIPT / CAMPAIGN", "STATUS", "SENT", "DONE", "")):
                 col.caption(label)
             if not todo:
                 st.info("Nothing in progress here.")
             for r in todo:
                 c = st.columns(widths, vertical_alignment="center")
-                c[0].markdown(f"**#{r['number']}**")
+                c[0].markdown(f"**{_vid(r)}**")
                 c[1].write(r["influencer"])
                 c[2].write(_what(r))
+                c[2].caption(influencer_video_name(r))
                 c[3].markdown(_pill(r), unsafe_allow_html=True)
                 if r["status"] == "Assigned":
                     c[4].button("Sent", icon=":material/send:", key=f"inf_sent_{r['row']}",
@@ -5360,15 +5395,16 @@ elif page == "🎬 Influencer Scripts":
         if stage == "Done":
             widths = [0.9, 2, 2.4, 1.4, 1.6, 0.9]
             head = st.columns(widths)
-            for col, label in zip(head, ("SCRIPT #", "INFLUENCER", "SCRIPT / CAMPAIGN", "SENT", "DONE", "")):
+            for col, label in zip(head, ("VIDEO", "INFLUENCER", "SCRIPT / CAMPAIGN", "SENT", "DONE", "")):
                 col.caption(label)
             if not done:
                 st.info("Nothing is done yet — press Done on a sent script once the influencer has filmed it.")
             for r in done:
                 c = st.columns(widths, vertical_alignment="center")
-                c[0].markdown(f"**#{r['number']}**")
+                c[0].markdown(f"**{_vid(r)}**")
                 c[1].write(r["influencer"])
                 c[2].write(_what(r))
+                c[2].caption(influencer_video_name(r))
                 c[3].caption(r["sent_at"][:10] or "—")
                 c[4].button(f"Done {r['done_at'][:10]}" if r["done_at"] else "Done", icon=":material/undo:",
                             key=f"inf_undone_{r['row']}", help="Click to set back to sent",

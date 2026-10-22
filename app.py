@@ -335,7 +335,7 @@ INFLUENCER_SHEET_ID = "18rAUERGi2tRvDM-VFpoX5eAhXpxZCpvpM3pH36QSKBU"
 INF_LIBRARY_TAB = "Script Library"
 INF_LIBRARY_HEADERS = ["Script #", "Title", "Product", "Format", "Script", "Created By", "Created At", "Avatar", "Angle"]
 INF_PEOPLE_TAB = "Influencers"
-INF_PEOPLE_HEADERS = ["Name", "Platform / Handle", "Contact", "Notes", "Added At"]
+INF_PEOPLE_HEADERS = ["Name", "Platform / Handle", "Contact", "Notes", "Added At", "Rating"]
 INF_ASSIGN_TAB = "Assignments"
 INF_ASSIGN_HEADERS = ["Script #", "Influencer", "Campaign", "Status", "Assigned At", "Sent At", "Assigned By", "Done At"]
 INFLUENCER_STATUSES = ["Assigned", "Sent", "Done"]  # Done = the influencer has filmed it
@@ -395,12 +395,13 @@ def load_inf_library():
 def load_inf_people():
     out = []
     for i, row in enumerate(get_inf_people_ws().get_all_values()[1:], start=2):
-        row = _inf_pad(row, 5)
+        row = _inf_pad(row, 6)
         if not row[0].strip():
             continue
         out.append({
             "row": i, "name": row[0].strip(), "handle": row[1].strip(), "contact": row[2].strip(),
             "notes": row[3].strip(), "added": row[4].strip(),
+            "rating": int(row[5]) if row[5].strip() in ("1", "2", "3", "4", "5") else 0,
         })
     return out
 
@@ -465,6 +466,14 @@ def add_inf_person(name, handle, contact, notes):
     get_inf_people_ws().append_row([name, handle, contact, notes, _inf_now()])
     load_inf_people.clear()
     return True
+
+def set_inf_rating(name, stars):
+    """Sets an influencer's star rating (1-5), or clears it with 0."""
+    for p in _inf_fresh(load_inf_people):
+        if p["name"].lower() == name.lower():
+            get_inf_people_ws().batch_update([{"range": f"F{p['row']}", "values": [[stars or ""]]}])
+            break
+    load_inf_people.clear()
 
 def assign_inf_script(number, names, campaign, by):
     """Assigns a script to each influencer not already holding it; returns who was added."""
@@ -4670,6 +4679,10 @@ elif page == "🎬 Influencer Scripts":
         ss["inf_p_pick"] = name
         ss["inf_msg"] = ("success", f"{name} added.")
 
+    def _rate(name, key):
+        v = st.session_state.get(key)
+        set_inf_rating(name, (v + 1) if v is not None else 0)
+
     def _assign_script(number):
         ss = st.session_state
         names = list(ss.get(f"inf_asg_{number}") or [])
@@ -4953,16 +4966,26 @@ elif page == "🎬 Influencer Scripts":
 
             shown_people = sorted(people, key=lambda p: p["name"].lower())
             if True:
-                st.dataframe(
-                    pd.DataFrame([{
-                        "Name": p["name"], "Platform / handle": p["handle"],
-                        "Products": ", ".join(_person_products(p)),
-                        "Scripts": len(recs_by_person.get(p["name"].lower(), [])),
-                        "Done": sum(1 for r in recs_by_person.get(p["name"].lower(), []) if r["status"] == "Done"),
-                        "Last sent": max([r["sent_at"][:10] for r in recs_by_person.get(p["name"].lower(), []) if r["sent_at"]] or [""]),
-                    } for p in shown_people]),
-                    use_container_width=True, hide_index=True,
-                )
+                sort_by = st.segmented_control("Sort", ["Name", "Best rated"], default="Name", required=True,
+                                               key="inf_p_sort", label_visibility="collapsed")
+                if sort_by == "Best rated":
+                    shown_people = sorted(people, key=lambda p: (-p["rating"], p["name"].lower()))
+                widths = [2, 1.6, 2.4, 0.8, 0.8, 1.2, 1.9]
+                head = st.columns(widths)
+                for col, label in zip(head, ("NAME", "PLATFORM / HANDLE", "PRODUCTS", "SCRIPTS", "DONE", "LAST SENT", "RATING")):
+                    col.caption(label)
+                for p in shown_people:
+                    mine_p = recs_by_person.get(p["name"].lower(), [])
+                    c = st.columns(widths, vertical_alignment="center")
+                    c[0].markdown(f"**{p['name']}**")
+                    c[1].write(p["handle"])
+                    c[2].write(", ".join(_person_products(p)))
+                    c[3].write(len(mine_p))
+                    c[4].write(sum(1 for r in mine_p if r["status"] == "Done"))
+                    c[5].write(max([r["sent_at"][:10] for r in mine_p if r["sent_at"]] or [""]))
+                    rk = f"inf_rate_{p['name'].lower()}"
+                    st.session_state.setdefault(rk, p["rating"] - 1 if p["rating"] else None)
+                    c[6].feedback("stars", key=rk, on_change=_rate, args=(p["name"], rk))
 
                 pnames = [p["name"] for p in shown_people]
                 if st.session_state.get("inf_p_pick") not in pnames:

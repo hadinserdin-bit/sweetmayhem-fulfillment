@@ -1875,24 +1875,36 @@ def render_reorder_table(df, product_images=None, lead_time=None, color_images=N
         target_date = (datetime.now().date() + timedelta(days=d)).strftime("%b %d, %y")
         return f'<div class="rr-t-strong">{d} day{"s" if d != 1 else ""}</div><div class="rr-t-sub">{target_date}</div>'
 
-    def fmt_reorder_in(v, reorder_qty):
+    def fmt_reorder_in(v, reorder_qty, status=None):
         if v is None or (isinstance(v, float) and math.isnan(v)):
             return "—"
         if isinstance(v, float) and math.isinf(v):
             return '<span class="rr-pill rr-pill-green">∞</span>'
-        d = int(math.floor(v))
+        # Rounded up, to match the Status column: Reorder Now is days-left <= lead time
+        # (v <= 0), Reorder Soon is up to 7 days after that. Rounding down made 0.4 days
+        # to go read as "Order now" while the Status said Reorder Soon.
+        d = math.ceil(v)
+        # The Status column is the source of truth, so the badge can never contradict it
+        # (v is rounded to 1 decimal, which could otherwise tip an edge case over a line).
+        if status == "Reorder Now":
+            d = min(d, 0)
+        elif status == "Reorder Soon":
+            d = max(1, min(7, d))
+        elif status == "OK":
+            d = max(8, d)
         # The timing math alone would flag this urgent, but nothing more
         # is actually needed — already fully covered by what's incoming —
         # so don't show a false alarm.
         if reorder_qty == 0 and d <= 7:
             return '<span class="rr-pill rr-pill-green">Covered</span>'
         target_date = (datetime.now().date() + timedelta(days=max(0, d))).strftime("%b %d, %y")
+        label = f'{d} day{"s" if d != 1 else ""}'
         if d <= 0:
             pill = '<span class="rr-pill rr-pill-red">Order now</span>'
         elif d <= 7:
-            pill = f'<span class="rr-pill rr-pill-amber">{d} days</span>'
+            pill = f'<span class="rr-pill rr-pill-amber">{label}</span>'
         else:
-            pill = f'<span class="rr-pill rr-pill-green">{d} days</span>'
+            pill = f'<span class="rr-pill rr-pill-green">{label}</span>'
         return f'{pill}<div class="rr-t-sub">{target_date}</div>'
 
     product_images = product_images or {}
@@ -1924,7 +1936,7 @@ def render_reorder_table(df, product_images=None, lead_time=None, color_images=N
           <td class="rr-t-num">{fmt_int(r['Incoming Qty'])}</td>
           <td class="rr-t-num">{r['Daily Demand']:.2f}</td>
           <td class="rr-t-num">{fmt_stockout(r['Days Left'])}</td>
-          <td class="rr-t-num">{fmt_reorder_in(r['Reorder In'], r['Reorder Qty'])}</td>
+          <td class="rr-t-num">{fmt_reorder_in(r['Reorder In'], r['Reorder Qty'], r['Status'])}</td>
           <td class="rr-t-num rr-t-strong">{fmt_int(r['Reorder Qty'])}</td>
         </tr>""")
 
@@ -2179,9 +2191,11 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
             daily_demand = total_sold / window_days
 
         days_left = (cur_qty / daily_demand) if daily_demand > 0 else float("inf")
-        # Uses the raw (possibly negative) stock, not cur_qty: units already
-        # oversold on Shopify have to be covered by this order too.
-        reorder_qty = max(0, math.ceil(daily_demand * coverage_days) - stock_qty - incoming_qty)
+        # Order enough to still have coverage_days of stock once it arrives, so the
+        # demand during the lead time is added on top. Uses the raw (possibly
+        # negative) stock, not cur_qty: units already oversold on Shopify have to
+        # be covered by this order too.
+        reorder_qty = max(0, math.ceil(daily_demand * (lead_time + coverage_days)) - stock_qty - incoming_qty)
         # How many days from today you'd need to place the order to have it
         # land before you actually run out — stockout minus lead time. Once
         # this hits zero or below, the order is already overdue.
@@ -2200,6 +2214,10 @@ def build_reorder_table(inv, sold, stock_days, start_date, end_date, lead_time, 
             status = "Reorder Soon"
         else:
             status = "OK"
+        # Nothing to order: either already fully covered by what's on its way, or (e.g. out
+        # of stock with no sales in the window) no demand to cover. Not "reorder" items.
+        if status in ("Reorder Now", "Reorder Soon") and reorder_qty == 0:
+            status = "Incoming" if incoming_qty > 0 else "OK"
 
         rows.append({
             "Product": v["product"], "Color": v["color"], "Size": v["size"],
@@ -3876,7 +3894,8 @@ elif page == "📊 Demand & Reorder":
         lead_time = d3.slider("Lead time (days)", min_value=5, max_value=21, value=9,
                                help="Sweet Mayhem's supplier lead time is ~7–10 days.")
         coverage_days = d4.number_input("Target stock coverage (days)", min_value=5, max_value=90, value=25, step=1,
-                                         help="Reorder quantity tops stock up to cover this many days of demand.")
+                                         help="How many days of stock you want on hand once the order arrives. "
+                                              "Reorder qty = daily demand × (lead time + this) − stock − incoming.")
 
         if start_date > end_date:
             st.error("'Sales data from' must be on or before 'Sales data to'.")
@@ -3929,7 +3948,12 @@ elif page == "📊 Demand & Reorder":
 
         fc1, fc2 = st.columns(2)
         status_options = df["Status"].unique().tolist()
-        status_filter = fc1.multiselect("Filter by Status", status_options, default=status_options)
+        status_filter = fc1.multiselect(
+            "Filter by Status", status_options,
+            default=[x for x in ("Reorder Now", "Reorder Soon") if x in status_options] or status_options,
+            help="Reorder Now: order today. Reorder Soon: stock runs out within 7 days after the lead time. "
+                 "OK: no order needed yet. Create Order and the Excel report use exactly what is shown here.",
+        )
         products = ["All"] + sorted(df["Product"].unique().tolist())
         prod_filter = fc2.selectbox("Filter by Product", products)
 
@@ -3970,22 +3994,28 @@ elif page == "📊 Demand & Reorder":
         st.markdown("")
         oc1, oc2 = st.columns(2)
         if oc1.button(
-            f"Create Order — {len(reorder_items)} item(s), {int(reorder_items['Reorder Qty'].sum())} units",
+            f"Create Order — {len(reorder_items)} item(s), {int(reorder_items['Reorder Qty'].sum())} units (as filtered)",
             icon=":material/local_shipping:", type="primary", use_container_width=True,
             disabled=reorder_items.empty,
         ):
             prefill = {}
             for _, r in reorder_items.iterrows():
                 prefill.setdefault(r["Product"], {})[(r["Color"], r["Size"])] = int(r["Reorder Qty"])
+            # Start the order form fresh, so it shows exactly these filtered quantities and
+            # nothing left over from an earlier visit.
+            for k in list(st.session_state.keys()):
+                if k.startswith("new_ship_"):
+                    del st.session_state[k]
+            st.session_state.pop("prefill_reorder_applied", None)
             st.session_state["prefill_reorder"] = prefill
             st.session_state.page = "📥 Purchase Orders"
             st.rerun()
 
         buf = io.BytesIO()
-        df.sort_values("Days Left").to_excel(buf, index=False)
+        fdf.sort_values("Days Left").to_excel(buf, index=False)
         buf.seek(0)
         oc2.download_button(
-            "Download Full Reorder Report",
+            "Download Reorder Report (as filtered)",
             icon=":material/download:",
             data=buf,
             file_name=f"reorder_report_{datetime.now().strftime('%Y-%m-%d')}.xlsx",

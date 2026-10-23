@@ -4143,14 +4143,17 @@ elif page == "📥 Purchase Orders":
                     help="Remembered from last time — changing it here updates the fixed price for future shipments too.",
                 )
                 nb_unit_prices[prod] = unit_price
+                prod_items = 0
                 for color in colors:
                     for size in sizes:
                         qty = int(st.session_state.get(f"new_ship_qty_{prod}__{color}__{size}", 0) or 0)
                         if qty > 0:
+                            prod_items += qty
                             nb_line_items.append({
                                 "product": prod, "color": color, "size": size,
                                 "qty": qty, "unit_price": unit_price,
                             })
+                st.caption(f"Total: **{prod_items} items · ${prod_items * unit_price:,.2f}**")
 
             if nb_line_items:
                 nb_total_items = sum(e["qty"] for e in nb_line_items)

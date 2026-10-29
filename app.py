@@ -1663,7 +1663,17 @@ def add_shopify_onhand_quantity(inventory_item_id, location_id, delta):
     is — does not overwrite it to match the sheet, so manual additions made directly
     in Shopify (e.g. for incoming batches) aren't clobbered."""
     current = _current_shopify_onhand(inventory_item_id, location_id)
-    quantity = current + delta
+    _write_shopify_onhand(inventory_item_id, location_id, current + delta, current)
+
+def set_shopify_onhand_quantity(inventory_item_id, location_id, quantity):
+    """Sets Shopify's 'On hand' quantity to exactly this number (used when a quantity is
+    edited by hand in the app, so Shopify matches). Safe to repeat: setting the same
+    number twice is a no-op."""
+    current = _current_shopify_onhand(inventory_item_id, location_id)
+    if current != quantity:
+        _write_shopify_onhand(inventory_item_id, location_id, quantity, current)
+
+def _write_shopify_onhand(inventory_item_id, location_id, quantity, current):
     query = """
     mutation setOnHand($input: InventorySetQuantitiesInput!, $key: String!) {
       inventorySetQuantities(input: $input) @idempotent(key: $key) {
@@ -3828,16 +3838,75 @@ elif page == "➕ Add Product":
 
 elif page == "📋 View Inventory":
     st.subheader("Current Inventory")
+    is_admin_inv = st.session_state.get("role") == "admin"
+
+    for _m in st.session_state.pop("inv_edit_msgs", []):
+        getattr(st, _m["kind"])(_m["text"], icon=_m.get("icon"))
+
+    def _save_inventory_edits(changes, sync_shopify):
+        """changes: [(sheet_row, label, old_qty, new_qty, product, color, size)]. Writes the Studio
+        sheet, then (if asked) sets Shopify's on-hand to the same number. Setting an exact number
+        is safe to repeat, so a double click can't double-apply anything."""
+        msgs = []
+        load_inventory.clear()
+        current = {v["row"]: v for v in load_inventory().values()}
+        todo, conflicts = [], []
+        for row, label, old, new, prod, color, size in changes:
+            cur = current.get(row)
+            if cur is None or cur["qty"] != old:
+                conflicts.append(label)  # someone changed it since this page loaded
+            else:
+                todo.append((row, label, new, prod, color, size))
+        if todo:
+            try:
+                batch_update_qty(get_ws(), [(row, new) for row, _, new, *_ in todo])
+                msgs.append({"kind": "success", "icon": ":material/check_circle:",
+                             "text": f"Saved {len(todo)} quantit{'y' if len(todo) == 1 else 'ies'} to the Studio sheet."})
+            except Exception as e:
+                msgs.append({"kind": "error", "text": f"Could not save to the Studio sheet: {e}"})
+                todo = []
+        if todo and sync_shopify:
+            synced, unmatched, failed = 0, [], []
+            try:
+                variant_map = fetch_shopify_variant_map()
+                location_id = get_primary_location_id()
+                for row, label, new, prod, color, size in todo:
+                    item_id = find_shopify_inventory_item(variant_map, prod, color, size)
+                    if item_id is None:
+                        unmatched.append(label)
+                        continue
+                    try:
+                        set_shopify_onhand_quantity(item_id, location_id, new)
+                        synced += 1
+                    except Exception as e:
+                        failed.append(f"{label}: {e}")
+            except Exception as e:
+                failed.append(str(e))
+            if synced:
+                msgs.append({"kind": "success", "icon": ":material/sync:",
+                             "text": f"Shopify's on-hand updated for {synced} item(s)."})
+            if unmatched:
+                msgs.append({"kind": "warning", "text": "Not found in Shopify (the sheet was still saved):"
+                                                        + chr(10) * 2 + chr(10).join(f"- {m}" for m in unmatched)})
+            if failed:
+                msgs.append({"kind": "error", "text": "Saved to the sheet, but Shopify's update failed:"
+                                                      + chr(10) * 2 + chr(10).join(f"- {f}" for f in failed)})
+        if conflicts:
+            msgs.append({"kind": "warning", "text": "Skipped because someone else changed them first. "
+                                                    "Check the new value and edit again:"
+                                                    + chr(10) * 2 + chr(10).join(f"- {c}" for c in conflicts)})
+        st.session_state["inv_edit_msgs"] = msgs
+        st.session_state["inv_editor_ver"] = st.session_state.get("inv_editor_ver", 0) + 1  # reset the grid
 
     try:
         with st.spinner("Loading…"):
             inv = load_inventory()
 
-        df = pd.DataFrame([
-            {"Product": v["product"], "Color": v["color"],
-             "Size": v["size"], "Qty": v["qty"]}
-            for v in inv.values()
-        ])
+        df = pd.DataFrame(
+            [{"Product": v["product"], "Color": v["color"], "Size": v["size"], "Qty": v["qty"]}
+             for v in inv.values()],
+            index=[v["row"] for v in inv.values()],
+        )
 
         fc1, fc2 = st.columns(2)
         products = ["All"] + sorted(df["Product"].unique().tolist())
@@ -3849,7 +3918,34 @@ elif page == "📋 View Inventory":
             if sel_col != "All":
                 df = df[df["Color"] == sel_col]
 
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        if is_admin_inv:
+            sync_shopify = st.checkbox(
+                "Also set Shopify's on-hand to the same number when I save", value=True, key="inv_sync_shopify",
+                help="Off = only the Studio sheet changes. Nothing syncs automatically — only what you save here.",
+            )
+            edited = st.data_editor(
+                df, hide_index=True, use_container_width=True,
+                disabled=["Product", "Color", "Size"], key=f"inv_editor_{st.session_state.get('inv_editor_ver', 0)}",
+                column_config={"Qty": st.column_config.NumberColumn("Qty", step=1, format="%d", help="Click a number to change it.")},
+            )
+            changes = []
+            for row in df.index:
+                old, new = df.at[row, "Qty"], edited.at[row, "Qty"]
+                if pd.isna(new) or int(new) == int(old):
+                    continue
+                r = df.loc[row]
+                changes.append((int(row), f"{r['Product']} — {r['Color']} / {r['Size']}", int(old), int(new),
+                                r["Product"], r["Color"], r["Size"]))
+            if changes:
+                st.markdown(f"**{len(changes)} change{'s' if len(changes) != 1 else ''} not saved yet**")
+                for _, label, old, new, *_ in changes:
+                    st.caption(f"{label}: {old} → **{new}**")
+                st.button(
+                    f"Save {len(changes)} change{'s' if len(changes) != 1 else ''}", type="primary", icon=":material/save:",
+                    key="inv_save", on_click=_save_inventory_edits, args=(changes, sync_shopify),
+                )
+        else:
+            st.dataframe(df, use_container_width=True, hide_index=True)
         st.caption(f"{len(df)} variant(s)  |  {df['Qty'].sum()} total units")
 
     except Exception as e:

@@ -1103,18 +1103,25 @@ def rr_date_range(delivered_records):
 # One line per Mark Paid run — dates and counts only, no customer details —
 # so it's obvious which delivery dates were already covered by the last upload.
 MARK_PAID_LOG_TAB = "Mark Paid Log"
-MARK_PAID_LOG_COLUMNS = ["Run At", "User", "Deliveries From", "Deliveries To", "Marked Paid", "Failed", "Skipped"]
+MARK_PAID_LOG_COLUMNS = ["Run At", "User", "Deliveries From", "Deliveries To", "Marked Paid", "Failed", "Skipped", "Status"]
+MARK_PAID_LOG_KEYS = ["run_at", "user", "from", "to", "marked", "failed", "skipped", "status"]
 
 @st.cache_resource
 @_resilient_google_call
 def get_mark_paid_log_ws():
     sh = _spreadsheet()
     try:
-        return sh.worksheet(MARK_PAID_LOG_TAB)
+        ws = sh.worksheet(MARK_PAID_LOG_TAB)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=MARK_PAID_LOG_TAB, rows=500, cols=len(MARK_PAID_LOG_COLUMNS))
         ws.append_row(MARK_PAID_LOG_COLUMNS)
         return ws
+    # The first version of this tab had no Status column — add it in place.
+    if "Status" not in ws.row_values(1):
+        if ws.col_count < len(MARK_PAID_LOG_COLUMNS):
+            ws.add_cols(len(MARK_PAID_LOG_COLUMNS) - ws.col_count)
+        ws.update_cell(1, len(MARK_PAID_LOG_COLUMNS), "Status")
+    return ws
 
 @st.cache_data(ttl=60)
 @_resilient_google_call
@@ -1123,15 +1130,24 @@ def load_last_mark_paid_run():
     if not rows:
         return None
     r = rows[-1] + [""] * len(MARK_PAID_LOG_COLUMNS)
-    return dict(zip(["run_at", "user", "from", "to", "marked", "failed", "skipped"], r))
+    return dict(zip(MARK_PAID_LOG_KEYS, r))
 
+# A run is logged as soon as it starts ("In progress") and its counts are
+# refreshed as it goes, so a run that gets interrupted partway still leaves an
+# accurate record instead of nothing.
 @_resilient_google_call
-def log_mark_paid_run(user, d_from, d_to, marked, failed, skipped):
-    get_mark_paid_log_ws().append_row([
+def start_mark_paid_run(user, d_from, d_to, skipped):
+    resp = get_mark_paid_log_ws().append_row([
         datetime.now().strftime("%Y-%m-%d %H:%M"), user,
         d_from.isoformat() if d_from else "", d_to.isoformat() if d_to else "",
-        marked, failed, skipped,
+        0, 0, skipped, "In progress",
     ])
+    load_last_mark_paid_run.clear()
+    return int(re.search(r"!\D*(\d+)", resp["updates"]["updatedRange"]).group(1))
+
+@_resilient_google_call
+def update_mark_paid_run(row, marked, failed, skipped, status):
+    get_mark_paid_log_ws().update(values=[[marked, failed, skipped, status]], range_name=f"E{row}:H{row}")
     load_last_mark_paid_run.clear()
 
 def add_cancelled_orders_batch(records, settings):
@@ -4854,16 +4870,18 @@ elif page == "✅ Mark Paid":
         pass  # the log is a convenience — never block the page on it
     if last_run:
         covered = f"deliveries {last_run['from']} to {last_run['to']}" if last_run["from"] else "no delivery dates"
+        incomplete = last_run["status"] in ("In progress", "Interrupted")
         st.info(
             f"**Last run:** {last_run['run_at']} by {last_run['user']} — {covered}, "
-            f"{last_run['marked'] or 0} marked paid.",
+            f"{last_run['marked'] or 0} marked paid"
+            + (" (this run was interrupted — upload the file again to finish it)." if incomplete else "."),
             icon=":material/history:",
         )
 
     mp_file = st.file_uploader("Roadrunner all-orders export (.xlsx or .csv)", type=["xlsx", "csv"], key="mp_file")
     if mp_file is None:
-        st.session_state.pop("mp_check", None)
-        st.session_state.pop("mp_results", None)
+        for k in ("mp_check", "mp_results", "mp_out"):
+            st.session_state.pop(k, None)
         st.stop()
 
     sig = f"{mp_file.name}:{mp_file.size}"
@@ -4877,8 +4895,8 @@ elif page == "✅ Mark Paid":
         st.stop()
     if st.session_state.get("mp_sig") != sig:
         st.session_state.mp_sig = sig
-        st.session_state.pop("mp_check", None)
-        st.session_state.pop("mp_results", None)
+        for k in ("mp_check", "mp_results", "mp_out"):
+            st.session_state.pop(k, None)
 
     eligible = [r for r in records if r["delivered"]]
     not_delivered = len(records) - len(eligible)
@@ -4975,6 +4993,7 @@ elif page == "✅ Mark Paid":
         bar.empty()
         st.session_state.mp_check = rows
         st.session_state.pop("mp_results", None)
+        st.session_state.pop("mp_out", None)
 
     results = st.session_state.get("mp_results")
     check = st.session_state.get("mp_check")
@@ -5019,29 +5038,64 @@ elif page == "✅ Mark Paid":
                 hide_index=True, use_container_width=True, column_config=_cfg,
             )
         if ready:
-            confirm = st.checkbox(f"I confirm I want to mark {len(ready)} order(s) as paid on Shopify")
-            if st.button("Mark as Paid on Shopify", type="primary", disabled=not confirm, icon=":material/check_circle:"):
-                out = []
-                bar = st.progress(0.0, text="Marking paid…")
-                for i, r in enumerate(ready):
-                    try:
-                        shopify_mark_order_paid(r["gid"])
-                        out.append({"name": r["name"], "customer": r["customer"], "ok": True, "error": ""})
-                    except Exception as e:
-                        out.append({"name": r["name"], "customer": r["customer"], "ok": False, "error": str(e)})
-                    bar.progress((i + 1) / len(ready), text=f"Marking paid… {i + 1}/{len(ready)}")
-                    time.sleep(0.3)
-                bar.empty()
-                try:
-                    log_mark_paid_run(
-                        st.session_state.username, mp_from, mp_to,
-                        sum(1 for o in out if o["ok"]), sum(1 for o in out if not o["ok"]),
-                        len(check) - len(ready),
-                    )
-                except Exception as e:
-                    st.session_state.mp_log_error = str(e)
+            # Orders marked by an earlier run in this session that got interrupted
+            # (a click while it was running) — never mark those a second time.
+            out = st.session_state.setdefault("mp_out", [])
+            done = {o["name"] for o in out}
+            todo = [r for r in ready if r["name"] not in done]
+            if done and not todo:
                 st.session_state.mp_results = out
                 st.session_state.pop("mp_check", None)
+                st.session_state.pop("mp_out", None)
+                st.rerun()
+            if done:
+                st.info(
+                    f"{len(done)} order(s) were already handled by a run that was interrupted. "
+                    f"Continuing with the remaining {len(todo)}.",
+                    icon=":material/info:",
+                )
+            confirm = st.checkbox(f"I confirm I want to mark {len(todo)} order(s) as paid on Shopify")
+            if st.button("Mark as Paid on Shopify", type="primary", disabled=not confirm, icon=":material/check_circle:"):
+                skipped_n = len(check) - len(ready)
+                log_row = None
+                try:
+                    log_row = start_mark_paid_run(st.session_state.username, mp_from, mp_to, skipped_n)
+                except Exception as e:
+                    st.session_state.mp_log_error = str(e)
+
+                def _log_progress(status):
+                    if log_row is None:
+                        return
+                    try:
+                        seg = out[len(done):]
+                        update_mark_paid_run(
+                            log_row, sum(1 for o in seg if o["ok"]), sum(1 for o in seg if not o["ok"]),
+                            skipped_n, status,
+                        )
+                    except Exception as e:
+                        st.session_state.mp_log_error = str(e)
+
+                bar = st.progress(0.0, text="Marking paid…")
+                finished = False
+                try:
+                    for i, r in enumerate(todo):
+                        try:
+                            shopify_mark_order_paid(r["gid"])
+                            out.append({"name": r["name"], "customer": r["customer"], "ok": True, "error": ""})
+                        except Exception as e:
+                            out.append({"name": r["name"], "customer": r["customer"], "ok": False, "error": str(e)})
+                        if (i + 1) % 5 == 0:
+                            _log_progress("In progress")
+                        bar.progress((i + 1) / len(todo), text=f"Marking paid… {i + 1}/{len(todo)}")
+                        time.sleep(0.3)
+                    finished = True
+                finally:
+                    # Also runs when Streamlit interrupts the script mid-loop.
+                    _log_progress("Done" if finished else "Interrupted")
+                bar.empty()
+                st.session_state.mp_results = out
+                st.session_state.pop("mp_check", None)
+                st.session_state.pop("mp_out", None)
                 st.rerun()
         else:
             st.info("Nothing here is ready to mark — see the reasons in the Skipped list above.")

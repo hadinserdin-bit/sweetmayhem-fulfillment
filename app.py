@@ -1040,6 +1040,8 @@ def parse_roadrunner_all_orders(file):
             "status": get(r, "Status"),
             "total_usd": _parse_amount(get(r, "Total USD")),
             "delivered": rr_is_delivered(get(r, "Status")),
+            "deliver_date": get(r, "Deliver Date"),
+            "created": get(r, "Creation Date"),
         })
     return records
 
@@ -1087,6 +1089,50 @@ def shopify_mark_order_paid(order_gid):
     errs = (body["data"]["orderMarkAsPaid"] or {}).get("userErrors") or []
     if errs:
         raise Exception("; ".join(e["message"] for e in errs))
+
+def rr_date_range(delivered_records):
+    """(first, last) delivery date of the given orders as date objects, or
+    (None, None). Uses Deliver Date, falling back to Creation Date."""
+    days = []
+    for r in delivered_records:
+        d = pd.to_datetime(r.get("deliver_date") or r.get("created"), errors="coerce")
+        if pd.notna(d):
+            days.append(d.date())
+    return (min(days), max(days)) if days else (None, None)
+
+# One line per Mark Paid run — dates and counts only, no customer details —
+# so it's obvious which delivery dates were already covered by the last upload.
+MARK_PAID_LOG_TAB = "Mark Paid Log"
+MARK_PAID_LOG_COLUMNS = ["Run At", "User", "Deliveries From", "Deliveries To", "Marked Paid", "Failed", "Skipped"]
+
+@st.cache_resource
+@_resilient_google_call
+def get_mark_paid_log_ws():
+    sh = _spreadsheet()
+    try:
+        return sh.worksheet(MARK_PAID_LOG_TAB)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=MARK_PAID_LOG_TAB, rows=500, cols=len(MARK_PAID_LOG_COLUMNS))
+        ws.append_row(MARK_PAID_LOG_COLUMNS)
+        return ws
+
+@st.cache_data(ttl=60)
+@_resilient_google_call
+def load_last_mark_paid_run():
+    rows = [r for r in get_mark_paid_log_ws().get_all_values()[1:] if r and r[0].strip()]
+    if not rows:
+        return None
+    r = rows[-1] + [""] * len(MARK_PAID_LOG_COLUMNS)
+    return dict(zip(["run_at", "user", "from", "to", "marked", "failed", "skipped"], r))
+
+@_resilient_google_call
+def log_mark_paid_run(user, d_from, d_to, marked, failed, skipped):
+    get_mark_paid_log_ws().append_row([
+        datetime.now().strftime("%Y-%m-%d %H:%M"), user,
+        d_from.isoformat() if d_from else "", d_to.isoformat() if d_to else "",
+        marked, failed, skipped,
+    ])
+    load_last_mark_paid_run.clear()
 
 def add_cancelled_orders_batch(records, settings):
     ws = get_co_ws()
@@ -4801,6 +4847,19 @@ elif page == "✅ Mark Paid":
         "marked as paid on Shopify (COD orders sit as Payment pending until then)."
     )
 
+    last_run = None
+    try:
+        last_run = load_last_mark_paid_run()
+    except Exception:
+        pass  # the log is a convenience — never block the page on it
+    if last_run:
+        covered = f"deliveries {last_run['from']} to {last_run['to']}" if last_run["from"] else "no delivery dates"
+        st.info(
+            f"**Last run:** {last_run['run_at']} by {last_run['user']} — {covered}, "
+            f"{last_run['marked'] or 0} marked paid.",
+            icon=":material/history:",
+        )
+
     mp_file = st.file_uploader("Roadrunner all-orders export (.xlsx or .csv)", type=["xlsx", "csv"], key="mp_file")
     if mp_file is None:
         st.session_state.pop("mp_check", None)
@@ -4823,6 +4882,15 @@ elif page == "✅ Mark Paid":
 
     eligible = [r for r in records if r["delivered"]]
     not_delivered = len(records) - len(eligible)
+
+    mp_from, mp_to = rr_date_range(eligible)
+    if mp_from:
+        st.markdown(f"**This file:** deliveries from **{mp_from:%b %d}** to **{mp_to:%b %d, %Y}**")
+        if last_run and last_run["to"] and mp_from.isoformat() <= last_run["to"]:
+            st.caption(
+                f"This overlaps the last run (up to {last_run['to']}). That's safe — orders already "
+                "paid on Shopify are skipped."
+            )
 
     s1, s2 = st.columns(2)
     s1.markdown(f'<div class="stat"><p class="num" style="color:#227A55">{len(eligible)}</p><p class="lbl">Delivered</p></div>', unsafe_allow_html=True)
@@ -4914,6 +4982,8 @@ elif page == "✅ Mark Paid":
     if results is not None:
         ok = [r for r in results if r["ok"]]
         bad = [r for r in results if not r["ok"]]
+        if st.session_state.pop("mp_log_error", None):
+            st.warning("Orders were marked, but the run couldn't be saved to the Mark Paid Log sheet.")
         if ok:
             st.success(f"Marked {len(ok)} order(s) as paid on Shopify.")
         if bad:
@@ -4962,6 +5032,14 @@ elif page == "✅ Mark Paid":
                     bar.progress((i + 1) / len(ready), text=f"Marking paid… {i + 1}/{len(ready)}")
                     time.sleep(0.3)
                 bar.empty()
+                try:
+                    log_mark_paid_run(
+                        st.session_state.username, mp_from, mp_to,
+                        sum(1 for o in out if o["ok"]), sum(1 for o in out if not o["ok"]),
+                        len(check) - len(ready),
+                    )
+                except Exception as e:
+                    st.session_state.mp_log_error = str(e)
                 st.session_state.mp_results = out
                 st.session_state.pop("mp_check", None)
                 st.rerun()

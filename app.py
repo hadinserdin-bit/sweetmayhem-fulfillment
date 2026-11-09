@@ -338,7 +338,7 @@ INF_LIBRARY_HEADERS = ["Script #", "Title", "Product", "Format", "Script", "Crea
 INF_PEOPLE_TAB = "Influencers"
 INF_PEOPLE_HEADERS = ["Name", "Platform / Handle", "Contact", "Notes", "Added At", "Rating"]
 INF_ASSIGN_TAB = "Assignments"
-INF_ASSIGN_HEADERS = ["Script #", "Influencer", "Campaign", "Status", "Assigned At", "Sent At", "Assigned By", "Done At", "Video ID"]
+INF_ASSIGN_HEADERS = ["Script #", "Influencer", "Campaign", "Status", "Assigned At", "Sent At", "Assigned By", "Done At", "Video ID", "Product Sent At"]
 INFLUENCER_STATUSES = ["Assigned", "Sent", "Done"]  # Done = the influencer has filmed it
 INFLUENCER_FIRST_NUMBER = 1001
 
@@ -368,7 +368,13 @@ def get_inf_people_ws():
 @st.cache_resource
 @_resilient_google_call
 def get_inf_assign_ws():
-    return _influencer_tab(INF_ASSIGN_TAB, INF_ASSIGN_HEADERS)
+    ws = _influencer_tab(INF_ASSIGN_TAB, INF_ASSIGN_HEADERS)
+    # Older sheets have no "Product Sent At" column yet: add it (once per app start).
+    if len(ws.row_values(1)) < len(INF_ASSIGN_HEADERS):
+        if ws.col_count < len(INF_ASSIGN_HEADERS):
+            ws.add_cols(len(INF_ASSIGN_HEADERS) - ws.col_count)
+        ws.update_cell(1, len(INF_ASSIGN_HEADERS), INF_ASSIGN_HEADERS[-1])
+    return ws
 
 def _inf_pad(row, n):
     return row + [""] * (n - len(row))
@@ -411,7 +417,7 @@ def load_inf_people():
 def load_inf_assignments():
     out = []
     for i, row in enumerate(get_inf_assign_ws().get_all_values()[1:], start=2):
-        row = _inf_pad(row, 9)
+        row = _inf_pad(row, 10)
         if not row[0].strip().isdigit() or not row[1].strip():
             continue
         st_ = row[3].strip()
@@ -419,7 +425,7 @@ def load_inf_assignments():
             "row": i, "number": int(row[0]), "influencer": row[1].strip(), "campaign": row[2].strip(),
             "status": "Done" if st_ == "Done" else "Sent" if st_ in ("Sent", "Used") else "Assigned",
             "assigned_at": row[4].strip(), "sent_at": row[5].strip(), "assigned_by": row[6].strip(),
-            "done_at": row[7].strip(), "video": row[8].strip(),
+            "done_at": row[7].strip(), "video": row[8].strip(), "product_sent_at": row[9].strip(),
         })
     return out
 
@@ -488,7 +494,7 @@ def assign_inf_script(number, names, campaign, by):
         if (number, n.lower()) in have:
             continue
         seq += 1
-        rows.append([number, n, campaign, "Assigned", now, "", by, "", f"{number}-{seq:02d}"])
+        rows.append([number, n, campaign, "Assigned", now, "", by, "", f"{number}-{seq:02d}", ""])
         added.append(n)
     if rows:
         get_inf_assign_ws().append_rows(rows)
@@ -517,6 +523,15 @@ def set_inf_status(number, name, status):
         {"range": f"F{a['row']}", "values": [[sent_at]]},
         {"range": f"H{a['row']}", "values": [[done_at]]},
     ])
+    load_inf_assignments.clear()
+    return True
+
+def set_inf_product_sent(number, name, sent):
+    """Marks whether the product itself (not the script) has been sent to the influencer."""
+    a = _inf_find(number, name)
+    if not a:
+        return False
+    get_inf_assign_ws().batch_update([{"range": f"J{a['row']}", "values": [[_inf_now() if sent else ""]]}])
     load_inf_assignments.clear()
     return True
 
@@ -5308,6 +5323,20 @@ elif page == "🎬 Influencer Scripts":
                 "Sent": "marked as sent.", "Done": "marked as done.",
                 "Assigned": "set back to not sent."}[status])
 
+    def _set_product_sent(number, name, sent):
+        if set_inf_product_sent(number, name, sent):
+            _toast(f"Script #{number} for {name}: product " + ("marked as sent." if sent else "set back to not sent."))
+
+    def _product_button(r, key):
+        """Product-sent toggle: separate from the script's Sent status."""
+        if r["product_sent_at"]:
+            st.button(f"Product {r['product_sent_at'][:10]}", icon=":material/inventory_2:", key=key, type="tertiary",
+                      help="Product sent. Click to set back to not sent",
+                      on_click=_set_product_sent, args=(r["number"], r["influencer"], False))
+        else:
+            st.button("Product sent", icon=":material/package_2:", key=key, help="Mark the product itself as sent",
+                      on_click=_set_product_sent, args=(r["number"], r["influencer"], True))
+
     def _unassign(number, name):
         delete_inf_assignment(number, name)
         st.session_state["inf_open_card"] = number
@@ -5627,9 +5656,9 @@ elif page == "🎬 Influencer Scripts":
             return f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>'
 
         if stage == "In progress":
-            widths = [0.9, 2, 2.4, 1.1, 1.6, 1.4, 0.9]
+            widths = [0.9, 1.7, 2.1, 1.0, 1.5, 1.5, 1.3, 0.9]
             head = st.columns(widths)
-            for col, label in zip(head, ("VIDEO", "INFLUENCER", "SCRIPT / CAMPAIGN", "STATUS", "SENT", "DONE", "")):
+            for col, label in zip(head, ("VIDEO", "INFLUENCER", "SCRIPT / CAMPAIGN", "STATUS", "SCRIPT SENT", "PRODUCT", "DONE", "")):
                 col.caption(label)
             if not todo:
                 st.info("Nothing in progress here.")
@@ -5641,22 +5670,24 @@ elif page == "🎬 Influencer Scripts":
                 c[2].caption(influencer_video_name(r))
                 c[3].markdown(_pill(r), unsafe_allow_html=True)
                 if r["status"] == "Assigned":
-                    c[4].button("Sent", icon=":material/send:", key=f"inf_sent_{r['row']}",
+                    c[4].button("Script sent", icon=":material/send:", key=f"inf_sent_{r['row']}",
                                 on_click=_set_status, args=(r["number"], r["influencer"], "Sent"))
                 else:
                     c[4].button(f"Sent {r['sent_at'][:10]}" if r["sent_at"] else "Sent", icon=":material/undo:",
                                 key=f"inf_unsent_{r['row']}", help="Click to set back to not sent",
                                 on_click=_set_status, args=(r["number"], r["influencer"], "Assigned"), type="tertiary")
-                    c[5].button("Done", icon=":material/task_alt:", key=f"inf_done_{r['row']}",
+                    c[6].button("Done", icon=":material/task_alt:", key=f"inf_done_{r['row']}",
                                 help="The influencer has filmed it",
                                 on_click=_set_status, args=(r["number"], r["influencer"], "Done"))
-                with c[6]:
+                with c[5]:
+                    _product_button(r, key=f"inf_prod_{r['row']}")
+                with c[7]:
                     _pdf_button(r, key=f"inf_dl_{r['row']}")
 
         if stage == "Done":
-            widths = [0.9, 2, 2.4, 1.4, 1.6, 0.9]
+            widths = [0.9, 1.8, 2.2, 1.2, 1.5, 1.6, 0.9]
             head = st.columns(widths)
-            for col, label in zip(head, ("VIDEO", "INFLUENCER", "SCRIPT / CAMPAIGN", "SENT", "DONE", "")):
+            for col, label in zip(head, ("VIDEO", "INFLUENCER", "SCRIPT / CAMPAIGN", "SCRIPT SENT", "PRODUCT", "DONE", "")):
                 col.caption(label)
             if not done:
                 st.info("Nothing is done yet — press Done on a sent script once the influencer has filmed it.")
@@ -5667,10 +5698,12 @@ elif page == "🎬 Influencer Scripts":
                 c[2].write(_what(r))
                 c[2].caption(influencer_video_name(r))
                 c[3].caption(r["sent_at"][:10] or "—")
-                c[4].button(f"Done {r['done_at'][:10]}" if r["done_at"] else "Done", icon=":material/undo:",
+                with c[4]:
+                    _product_button(r, key=f"inf_prod_d_{r['row']}")
+                c[5].button(f"Done {r['done_at'][:10]}" if r["done_at"] else "Done", icon=":material/undo:",
                             key=f"inf_undone_{r['row']}", help="Click to set back to sent",
                             on_click=_set_status, args=(r["number"], r["influencer"], "Sent"), type="tertiary")
-                with c[5]:
+                with c[6]:
                     _pdf_button(r, key=f"inf_dl_d_{r['row']}")
 
     if view == "Tracking":

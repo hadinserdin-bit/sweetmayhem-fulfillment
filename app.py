@@ -339,6 +339,9 @@ INF_PEOPLE_TAB = "Influencers"
 INF_PEOPLE_HEADERS = ["Name", "Platform / Handle", "Contact", "Notes", "Added At", "Rating"]
 INF_ASSIGN_TAB = "Assignments"
 INF_ASSIGN_HEADERS = ["Script #", "Influencer", "Campaign", "Status", "Assigned At", "Sent At", "Assigned By", "Done At", "Video ID", "Product Sent At"]
+INF_SHIP_TAB = "Product Shipments"
+INF_SHIP_HEADERS = ["Influencer", "Product", "Sent At"]
+PRODUCT_SEP = " + "  # a script that needs several products stores them as "Bra + Thong"
 INFLUENCER_STATUSES = ["Assigned", "Sent", "Done"]  # Done = the influencer has filmed it
 INFLUENCER_FIRST_NUMBER = 1001
 
@@ -376,6 +379,9 @@ def get_inf_assign_ws():
         ws.update_cell(1, len(INF_ASSIGN_HEADERS), INF_ASSIGN_HEADERS[-1])
     return ws
 
+def split_products(s):
+    return [p.strip() for p in (s or "").split(PRODUCT_SEP) if p.strip()]
+
 def _inf_pad(row, n):
     return row + [""] * (n - len(row))
 
@@ -392,6 +398,7 @@ def load_inf_library():
             continue
         out.append({
             "row": i, "number": int(row[0]), "title": row[1].strip(), "product": row[2].strip(),
+            "products": split_products(row[2]),
             "format": row[3].strip(), "script": row[4], "created_by": row[5].strip(), "created": row[6].strip(),
             "avatar": row[7].strip(), "angle": row[8].strip(),
         })
@@ -490,17 +497,11 @@ def assign_inf_script(number, names, campaign, by):
     seq = max([int(a["video"].rsplit("-", 1)[1]) for a in existing
                if a["number"] == number and re.fullmatch(r"\d+-\d+", a["video"])] + [0])
     now, rows, added = _inf_now(), [], []
-    lib = {s["number"]: s for s in load_inf_library()}
-    product = lib[number]["product"] if number in lib else ""
     for n in names:
         if (number, n.lower()) in have:
             continue
         seq += 1
-        # A product already sent to this person stays sent for the new script too.
-        sent = min([a["product_sent_at"] for a in existing
-                    if product and a["influencer"].lower() == n.lower() and a["product_sent_at"]
-                    and a["number"] in lib and _pkey(lib[a["number"]]["product"]) == _pkey(product)] or [""])
-        rows.append([number, n, campaign, "Assigned", now, "", by, "", f"{number}-{seq:02d}", sent])
+        rows.append([number, n, campaign, "Assigned", now, "", by, "", f"{number}-{seq:02d}", ""])
         added.append(n)
     if rows:
         get_inf_assign_ws().append_rows(rows)
@@ -535,30 +536,71 @@ def set_inf_status(number, name, status):
 def _pkey(s):
     return (s or "").strip().lower()
 
-def inf_product_status(records):
-    """{influencer (lowercase): {product: date sent or ""}} — one entry per product an influencer
-    has a script for. Sent is per influencer+product, so two scripts for the same product share it."""
-    out = {}
-    for r in records:
-        if not r.get("product"):
-            continue
-        prods = out.setdefault(r["influencer"].lower(), {})
-        # the first spelling seen names the product; any row carrying a date makes it sent
-        key = next((k for k in prods if _pkey(k) == _pkey(r["product"])), r["product"])
-        prods[key] = min([d for d in (prods.get(key, ""), r.get("product_sent_at", "")) if d] or [""])
+@st.cache_resource
+@_resilient_google_call
+def get_inf_ship_ws():
+    sh = _influencer_spreadsheet()
+    try:
+        return sh.worksheet(INF_SHIP_TAB)
+    except gspread.WorksheetNotFound:
+        pass
+    ws = _influencer_tab(INF_SHIP_TAB, INF_SHIP_HEADERS)
+    # First time: carry over any per-script "product sent" dates from the earlier version.
+    lib = {s["number"]: s for s in load_inf_library()}
+    seen, rows, clears = set(), [], []
+    for a in load_inf_assignments():
+        if a["product_sent_at"] and a["number"] in lib:
+            for prod in lib[a["number"]]["products"]:
+                k = (a["influencer"].lower(), _pkey(prod))
+                if k not in seen:
+                    seen.add(k)
+                    rows.append([a["influencer"], prod, a["product_sent_at"]])
+            clears.append({"range": f"J{a['row']}", "values": [[""]]})
+    if rows:
+        ws.append_rows(rows)
+    if clears:
+        get_inf_assign_ws().batch_update(clears)
+        load_inf_assignments.clear()
+    return ws
+
+@st.cache_data(ttl=30)
+@_resilient_google_call
+def load_inf_shipments():
+    out = []
+    for i, row in enumerate(get_inf_ship_ws().get_all_values()[1:], start=2):
+        row = _inf_pad(row, 3)
+        if row[0].strip() and row[1].strip():
+            out.append({"row": i, "influencer": row[0].strip(), "product": row[1].strip(), "sent_at": row[2].strip()})
     return out
 
+def inf_product_status(records, shipments):
+    """{influencer (lowercase): {product: date sent or ""}} — every product the influencer has a script
+    for. Sent belongs to the influencer and the product, not to a script, so scripts that share a
+    product share its status, and a script with several products tracks each one."""
+    sent = {(s["influencer"].lower(), _pkey(s["product"])): s["sent_at"] for s in shipments}
+    out = {}
+    for r in records:
+        prods = out.setdefault(r["influencer"].lower(), {})
+        for prod in r.get("products") or split_products(r.get("product")):
+            key = next((k for k in prods if _pkey(k) == _pkey(prod)), prod)
+            prods[key] = sent.get((r["influencer"].lower(), _pkey(prod)), "")
+    return {k: v for k, v in out.items() if v}
+
 def set_inf_product_sent(name, product, sent):
-    """Marks a product as sent (or not) to an influencer, on every script of theirs for that product."""
-    lib = {s["number"]: s for s in _inf_fresh(load_inf_library)}
-    rows = [a for a in _inf_fresh(load_inf_assignments)
-            if a["influencer"].lower() == name.lower() and a["number"] in lib
-            and _pkey(lib[a["number"]]["product"]) == _pkey(product)]
-    if not rows:
-        return False
-    when = (min([a["product_sent_at"] for a in rows if a["product_sent_at"]] or [_inf_now()])) if sent else ""
-    get_inf_assign_ws().batch_update([{"range": f"J{a['row']}", "values": [[when]]} for a in rows])
-    load_inf_assignments.clear()
+    """Marks a product as sent (or not) to an influencer."""
+    ws = get_inf_ship_ws()
+    mine = [s for s in _inf_fresh(load_inf_shipments)
+            if s["influencer"].lower() == name.lower() and _pkey(s["product"]) == _pkey(product)]
+    if sent:
+        if mine:
+            if not mine[0]["sent_at"]:
+                ws.batch_update([{"range": f"C{mine[0]['row']}", "values": [[_inf_now()]]}])
+        else:
+            ws.append_row([name, product, _inf_now()])
+    else:
+        for s in sorted(mine, key=lambda s: -s["row"]):
+            ws.delete_rows(s["row"])
+    load_inf_shipments.clear()
     return True
 
 def delete_inf_assignment(number, name):
@@ -5234,7 +5276,7 @@ elif page == "🎬 Influencer Scripts":
             ss["inf_msg"] = ("warning", "Write the script first.")
             return
         title = (ss.get("inf_s_title") or "").strip()
-        prod = ss.get("inf_s_product") or ""
+        prod = PRODUCT_SEP.join(ss.get("inf_s_product") or [])
         fmt = (ss.get("inf_s_format") or "").strip()
         avatar = (ss.get("inf_s_avatar") or "").strip()
         angle = (ss.get("inf_s_angle") or "").strip()
@@ -5249,8 +5291,9 @@ elif page == "🎬 Influencer Scripts":
         ss["inf_last_sig"] = (sig, time.time())
         ss["inf_msg"] = ("success", f"Script #{rec['number']} created"
                          + (f" and assigned to {', '.join(added)}" if added else "") + ".")
-        for k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product"):
+        for k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp"):
             ss[k] = ""
+        ss["inf_s_product"] = []
         ss["inf_s_avatar"] = ""
         ss["inf_s_angle"] = ""
         ss["inf_s_assign"] = []
@@ -5318,7 +5361,7 @@ elif page == "🎬 Influencer Scripts":
         ss[f"inf_edit_{n}"] = True
         ss["inf_open_card"] = n
         ss[f"inf_e_title_{n}"] = s["title"]
-        ss[f"inf_e_product_{n}"] = s["product"]
+        ss[f"inf_e_product_{n}"] = s["products"]
         ss[f"inf_e_format_{n}"] = s["format"]
         ss[f"inf_e_body_{n}"] = s["script"]
 
@@ -5337,7 +5380,7 @@ elif page == "🎬 Influencer Scripts":
         if not body:
             _toast("The script can't be empty.", icon=":material/warning:")
             return
-        update_inf_script(n, (ss.get(f"inf_e_title_{n}") or "").strip(), ss.get(f"inf_e_product_{n}") or "",
+        update_inf_script(n, (ss.get(f"inf_e_title_{n}") or "").strip(), PRODUCT_SEP.join(ss.get(f"inf_e_product_{n}") or []),
                           (ss.get(f"inf_e_format_{n}") or "").strip(), body)
         ss.pop(f"inf_edit_{n}", None)
         ss["inf_open_card"] = n
@@ -5413,8 +5456,8 @@ elif page == "🎬 Influencer Scripts":
             if st.session_state.get(f"inf_edit_{n}"):
                 st.text_input("Title", key=f"inf_e_title_{n}")
                 e1, e2 = st.columns(2)
-                e1.selectbox("Product", list(dict.fromkeys(product_options + [s["product"]])),
-                             format_func=_fmt_product, key=f"inf_e_product_{n}")
+                e1.multiselect("Product(s)", list(dict.fromkeys(inv_products + s["products"])),
+                               key=f"inf_e_product_{n}", placeholder="Pick one or more products…")
                 e2.text_input("Format", key=f"inf_e_format_{n}")
                 st.text_area("Script", height=240, key=f"inf_e_body_{n}")
                 e3, e4, _sp = st.columns([1, 1, 3])
@@ -5484,8 +5527,11 @@ elif page == "🎬 Influencer Scripts":
     # ── Scripts: create, then assign ─────────────────────────────────────────
     if view == "Scripts":
         ss = st.session_state
-        for _k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_product", "inf_s_avatar", "inf_s_angle"):
+        for _k in ("inf_s_title", "inf_s_format", "inf_s_body", "inf_s_camp", "inf_s_avatar", "inf_s_angle"):
             ss.setdefault(_k, "")
+        ss.setdefault("inf_s_product", [])
+        if not isinstance(ss["inf_s_product"], list):
+            ss["inf_s_product"] = []
         ss.setdefault("inf_s_assign", [])
 
         with st.expander(":material/add_circle: Create a new script", expanded=not library):
@@ -5493,7 +5539,8 @@ elif page == "🎬 Influencer Scripts":
                 st.caption(f"This will be script **#{next_inf_number(library)}**.")
                 st.text_input("Title", placeholder="e.g. Cross-Back Posture Bra — hook v1", key="inf_s_title")
                 c1, c2 = st.columns(2)
-                c1.selectbox("Product", product_options, format_func=_fmt_product, key="inf_s_product")
+                c1.multiselect("Product(s)", inv_products, key="inf_s_product", placeholder="Pick one or more products…",
+                               help="Pick every product this script needs. You track each one separately per influencer.")
                 c2.text_input(
                     "Format", placeholder="Vertical video / UGC", key="inf_s_format",
                     help="Shown in the PDF. Left blank, it's filled in from the product.",
@@ -5522,7 +5569,8 @@ elif page == "🎬 Influencer Scripts":
             sf1, sf2, sf3, sf4 = st.columns(4)
             n_by_prod = {}
             for x in library:
-                n_by_prod[x["product"]] = n_by_prod.get(x["product"], 0) + 1
+                for pr in x["products"] or [""]:
+                    n_by_prod[pr] = n_by_prod.get(pr, 0) + 1
             all_products = sorted({p for p in inv_products if p} | {p for p in n_by_prod if p}, key=str.lower)
             prod_q = sf1.selectbox("Product", all_products, index=None, key="inf_s_prod_f",
                                    placeholder="All products — type to search",
@@ -5533,7 +5581,7 @@ elif page == "🎬 Influencer Scripts":
             angle_q = sf4.selectbox("Angle", angle_opts, index=None, key="inf_s_angle_f", placeholder="All angles")
             shown = [
                 s for s in reversed(library)
-                if (not prod_q or s["product"] == prod_q)
+                if (not prod_q or prod_q in s["products"])
                 and (not avatar_q or s["avatar"] == avatar_q)
                 and (not angle_q or s["angle"] == angle_q)
                 and (not who_q or any(r["influencer"] == who_q for r in recs_by_num.get(s["number"], [])))
@@ -5575,7 +5623,7 @@ elif page == "🎬 Influencer Scripts":
         if not people:
             st.info("No influencers yet — add your first one above.")
         else:
-            pstat_all = inf_product_status(records)
+            pstat_all = inf_product_status(records, load_inf_shipments())
 
             def _person_products(p):
                 st_ = pstat_all.get(p["name"].lower(), {})
@@ -5632,11 +5680,11 @@ elif page == "🎬 Influencer Scripts":
                     if open_scripts:
                         st.caption("ASSIGN A SCRIPT")
                         b0, b1, b2, b3 = st.columns([2, 2.4, 2, 1.2], vertical_alignment="bottom")
-                        pa_prods = sorted({lib_by_num[n]["product"] for n in open_scripts if lib_by_num[n]["product"]},
+                        pa_prods = sorted({pr for n in open_scripts for pr in lib_by_num[n]["products"]},
                                           key=str.lower)
                         pa_prod = b0.selectbox("Product", pa_prods, index=None, placeholder="Any product",
                                                key=f"inf_pa_prod_{p['row']}")
-                        pa_options = [n for n in open_scripts if not pa_prod or lib_by_num[n]["product"] == pa_prod]
+                        pa_options = [n for n in open_scripts if not pa_prod or pa_prod in lib_by_num[n]["products"]]
                         b1.selectbox(
                             "Script", pa_options, index=None, placeholder="Choose a script…", key=f"inf_pa_pick_{p['row']}",
                             format_func=lambda n: f"#{n} · {_sname(lib_by_num[n])}",
@@ -5694,15 +5742,17 @@ elif page == "🎬 Influencer Scripts":
         def _pill(r):
             return f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>'
 
-        pstat = inf_product_status(records)
+        pstat = inf_product_status(records, load_inf_shipments())
 
         def _prod_cell(col, r):
             """The product this script needs, and whether it has reached this influencer."""
-            if not r["product"]:
+            if not r["products"]:
                 col.caption("—")
                 return
-            sent = next((v for k, v in pstat.get(r["influencer"].lower(), {}).items() if _pkey(k) == _pkey(r["product"])), "")
-            col.markdown(f"{r['product']}  \n" + (":green[✓ sent]" if sent else ":orange[not sent yet]"))
+            mine = pstat.get(r["influencer"].lower(), {})
+            for prod in r["products"]:
+                sent = next((v for k, v in mine.items() if _pkey(k) == _pkey(prod)), "")
+                col.markdown(f"{prod}: " + (":green[✓ sent]" if sent else ":orange[not sent yet]"))
 
         def _by_person(rows):
             groups = {}

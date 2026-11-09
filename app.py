@@ -490,11 +490,17 @@ def assign_inf_script(number, names, campaign, by):
     seq = max([int(a["video"].rsplit("-", 1)[1]) for a in existing
                if a["number"] == number and re.fullmatch(r"\d+-\d+", a["video"])] + [0])
     now, rows, added = _inf_now(), [], []
+    lib = {s["number"]: s for s in load_inf_library()}
+    product = lib[number]["product"] if number in lib else ""
     for n in names:
         if (number, n.lower()) in have:
             continue
         seq += 1
-        rows.append([number, n, campaign, "Assigned", now, "", by, "", f"{number}-{seq:02d}", ""])
+        # A product already sent to this person stays sent for the new script too.
+        sent = min([a["product_sent_at"] for a in existing
+                    if product and a["influencer"].lower() == n.lower() and a["product_sent_at"]
+                    and a["number"] in lib and _pkey(lib[a["number"]]["product"]) == _pkey(product)] or [""])
+        rows.append([number, n, campaign, "Assigned", now, "", by, "", f"{number}-{seq:02d}", sent])
         added.append(n)
     if rows:
         get_inf_assign_ws().append_rows(rows)
@@ -526,12 +532,32 @@ def set_inf_status(number, name, status):
     load_inf_assignments.clear()
     return True
 
-def set_inf_product_sent(number, name, sent):
-    """Marks whether the product itself (not the script) has been sent to the influencer."""
-    a = _inf_find(number, name)
-    if not a:
+def _pkey(s):
+    return (s or "").strip().lower()
+
+def inf_product_status(records):
+    """{influencer (lowercase): {product: date sent or ""}} — one entry per product an influencer
+    has a script for. Sent is per influencer+product, so two scripts for the same product share it."""
+    out = {}
+    for r in records:
+        if not r.get("product"):
+            continue
+        prods = out.setdefault(r["influencer"].lower(), {})
+        # the first spelling seen names the product; any row carrying a date makes it sent
+        key = next((k for k in prods if _pkey(k) == _pkey(r["product"])), r["product"])
+        prods[key] = min([d for d in (prods.get(key, ""), r.get("product_sent_at", "")) if d] or [""])
+    return out
+
+def set_inf_product_sent(name, product, sent):
+    """Marks a product as sent (or not) to an influencer, on every script of theirs for that product."""
+    lib = {s["number"]: s for s in _inf_fresh(load_inf_library)}
+    rows = [a for a in _inf_fresh(load_inf_assignments)
+            if a["influencer"].lower() == name.lower() and a["number"] in lib
+            and _pkey(lib[a["number"]]["product"]) == _pkey(product)]
+    if not rows:
         return False
-    get_inf_assign_ws().batch_update([{"range": f"J{a['row']}", "values": [[_inf_now() if sent else ""]]}])
+    when = (min([a["product_sent_at"] for a in rows if a["product_sent_at"]] or [_inf_now()])) if sent else ""
+    get_inf_assign_ws().batch_update([{"range": f"J{a['row']}", "values": [[when]]} for a in rows])
     load_inf_assignments.clear()
     return True
 
@@ -5323,19 +5349,28 @@ elif page == "🎬 Influencer Scripts":
                 "Sent": "marked as sent.", "Done": "marked as done.",
                 "Assigned": "set back to not sent."}[status])
 
-    def _set_product_sent(number, name, sent):
-        if set_inf_product_sent(number, name, sent):
-            _toast(f"Script #{number} for {name}: product " + ("marked as sent." if sent else "set back to not sent."))
+    def _set_product_sent(name, product, sent):
+        if set_inf_product_sent(name, product, sent):
+            _toast(f"{product} for {name}: " + ("marked as sent." if sent else "set back to not sent."))
 
-    def _product_button(r, key):
-        """Product-sent toggle: separate from the script's Sent status."""
-        if r["product_sent_at"]:
-            st.button(f"Product {r['product_sent_at'][:10]}", icon=":material/inventory_2:", key=key, type="tertiary",
-                      help="Product sent. Click to set back to not sent",
-                      on_click=_set_product_sent, args=(r["number"], r["influencer"], False))
-        else:
-            st.button("Product sent", icon=":material/package_2:", key=key, help="Mark the product itself as sent",
-                      on_click=_set_product_sent, args=(r["number"], r["influencer"], True))
+    def _product_buttons(name, status, key):
+        """One button per product this influencer has a script for: sent to her or not.
+        It belongs to the person and product, so every script for that product shares it."""
+        prods = sorted(status, key=str.lower)
+        if not prods:
+            return
+        cols = st.columns([1.2] + [1.6] * len(prods) + [0.2], vertical_alignment="center")
+        cols[0].caption("PRODUCTS")
+        for col, prod in zip(cols[1:], prods):
+            when = status[prod]
+            if when:
+                col.button(f"{prod} · sent {when[5:10]}", icon=":material/check_circle:", type="tertiary",
+                           key=f"{key}_{_pkey(prod)}", help=f"{prod} has been sent to {name}. Click to set back to not sent",
+                           on_click=_set_product_sent, args=(name, prod, False))
+            else:
+                col.button(f"Mark {prod} sent", icon=":material/package_2:", key=f"{key}_{_pkey(prod)}",
+                           help=f"Click once the {prod} has been sent to {name}",
+                           on_click=_set_product_sent, args=(name, prod, True))
 
     def _unassign(number, name):
         delete_inf_assignment(number, name)
@@ -5540,8 +5575,11 @@ elif page == "🎬 Influencer Scripts":
         if not people:
             st.info("No influencers yet — add your first one above.")
         else:
+            pstat_all = inf_product_status(records)
+
             def _person_products(p):
-                return sorted({r["product"] for r in recs_by_person.get(p["name"].lower(), []) if r["product"]})
+                st_ = pstat_all.get(p["name"].lower(), {})
+                return [f"{k} ✓" if st_[k] else f"{k} (not sent)" for k in sorted(st_, key=str.lower)]
 
             shown_people = sorted(people, key=lambda p: p["name"].lower())
             if True:
@@ -5575,6 +5613,7 @@ elif page == "🎬 Influencer Scripts":
                 with st.container(border=True):
                     st.markdown(f"#### {p['name']}")
                     st.caption(" · ".join(x for x in (p["handle"], p["contact"], p["notes"]) if x) or "No details saved.")
+                    _product_buttons(p["name"], pstat_all.get(p["name"].lower(), {}), f"inf_pbp_{p['name'].lower()}")
                     if not mine:
                         st.write("No scripts assigned yet.")
                     for r in reversed(mine):
@@ -5655,56 +5694,76 @@ elif page == "🎬 Influencer Scripts":
         def _pill(r):
             return f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>'
 
+        pstat = inf_product_status(records)
+
+        def _prod_cell(col, r):
+            """The product this script needs, and whether it has reached this influencer."""
+            if not r["product"]:
+                col.caption("—")
+                return
+            sent = next((v for k, v in pstat.get(r["influencer"].lower(), {}).items() if _pkey(k) == _pkey(r["product"])), "")
+            col.markdown(f"{r['product']}  \n" + (":green[✓ sent]" if sent else ":orange[not sent yet]"))
+
+        def _by_person(rows):
+            groups = {}
+            for r in rows:
+                groups.setdefault(r["influencer"], []).append(r)
+            return sorted(groups.items(), key=lambda kv: kv[0].lower())
+
         if stage == "In progress":
-            widths = [0.9, 1.7, 2.1, 1.0, 1.5, 1.5, 1.3, 0.9]
-            head = st.columns(widths)
-            for col, label in zip(head, ("VIDEO", "INFLUENCER", "SCRIPT / CAMPAIGN", "STATUS", "SCRIPT SENT", "PRODUCT", "DONE", "")):
-                col.caption(label)
+            widths = [0.9, 2.4, 1.6, 1.0, 1.4, 1.2, 0.9]
             if not todo:
                 st.info("Nothing in progress here.")
-            for r in todo:
-                c = st.columns(widths, vertical_alignment="center")
-                c[0].markdown(f"**{_vid(r)}**")
-                c[1].write(r["influencer"])
-                c[2].write(_what(r))
-                c[2].caption(influencer_video_name(r))
-                c[3].markdown(_pill(r), unsafe_allow_html=True)
-                if r["status"] == "Assigned":
-                    c[4].button("Script sent", icon=":material/send:", key=f"inf_sent_{r['row']}",
-                                on_click=_set_status, args=(r["number"], r["influencer"], "Sent"))
-                else:
-                    c[4].button(f"Sent {r['sent_at'][:10]}" if r["sent_at"] else "Sent", icon=":material/undo:",
-                                key=f"inf_unsent_{r['row']}", help="Click to set back to not sent",
-                                on_click=_set_status, args=(r["number"], r["influencer"], "Assigned"), type="tertiary")
-                    c[6].button("Done", icon=":material/task_alt:", key=f"inf_done_{r['row']}",
-                                help="The influencer has filmed it",
-                                on_click=_set_status, args=(r["number"], r["influencer"], "Done"))
-                with c[5]:
-                    _product_button(r, key=f"inf_prod_{r['row']}")
-                with c[7]:
-                    _pdf_button(r, key=f"inf_dl_{r['row']}")
+            for person, rows in _by_person(todo):
+                with st.container(border=True):
+                    st.markdown(f"**{person}**")
+                    _product_buttons(person, pstat.get(person.lower(), {}), f"inf_pb_{person.lower()}")
+                    head = st.columns(widths)
+                    for col, label in zip(head, ("VIDEO", "SCRIPT / CAMPAIGN", "PRODUCT", "STATUS", "SCRIPT SENT", "DONE", "")):
+                        col.caption(label)
+                    for r in rows:
+                        c = st.columns(widths, vertical_alignment="center")
+                        c[0].markdown(f"**{_vid(r)}**")
+                        c[1].write(_what(r))
+                        c[1].caption(influencer_video_name(r))
+                        _prod_cell(c[2], r)
+                        c[3].markdown(_pill(r), unsafe_allow_html=True)
+                        if r["status"] == "Assigned":
+                            c[4].button("Script sent", icon=":material/send:", key=f"inf_sent_{r['row']}",
+                                        on_click=_set_status, args=(r["number"], r["influencer"], "Sent"))
+                        else:
+                            c[4].button(f"Sent {r['sent_at'][:10]}" if r["sent_at"] else "Sent", icon=":material/undo:",
+                                        key=f"inf_unsent_{r['row']}", help="Click to set back to not sent",
+                                        on_click=_set_status, args=(r["number"], r["influencer"], "Assigned"), type="tertiary")
+                            c[5].button("Done", icon=":material/task_alt:", key=f"inf_done_{r['row']}",
+                                        help="The influencer has filmed it",
+                                        on_click=_set_status, args=(r["number"], r["influencer"], "Done"))
+                        with c[6]:
+                            _pdf_button(r, key=f"inf_dl_{r['row']}")
 
         if stage == "Done":
-            widths = [0.9, 1.8, 2.2, 1.2, 1.5, 1.6, 0.9]
-            head = st.columns(widths)
-            for col, label in zip(head, ("VIDEO", "INFLUENCER", "SCRIPT / CAMPAIGN", "SCRIPT SENT", "PRODUCT", "DONE", "")):
-                col.caption(label)
+            widths = [0.9, 2.4, 1.6, 1.2, 1.4, 0.9]
             if not done:
                 st.info("Nothing is done yet — press Done on a sent script once the influencer has filmed it.")
-            for r in done:
-                c = st.columns(widths, vertical_alignment="center")
-                c[0].markdown(f"**{_vid(r)}**")
-                c[1].write(r["influencer"])
-                c[2].write(_what(r))
-                c[2].caption(influencer_video_name(r))
-                c[3].caption(r["sent_at"][:10] or "—")
-                with c[4]:
-                    _product_button(r, key=f"inf_prod_d_{r['row']}")
-                c[5].button(f"Done {r['done_at'][:10]}" if r["done_at"] else "Done", icon=":material/undo:",
-                            key=f"inf_undone_{r['row']}", help="Click to set back to sent",
-                            on_click=_set_status, args=(r["number"], r["influencer"], "Sent"), type="tertiary")
-                with c[6]:
-                    _pdf_button(r, key=f"inf_dl_d_{r['row']}")
+            for person, rows in _by_person(done):
+                with st.container(border=True):
+                    st.markdown(f"**{person}**")
+                    _product_buttons(person, pstat.get(person.lower(), {}), f"inf_pbd_{person.lower()}")
+                    head = st.columns(widths)
+                    for col, label in zip(head, ("VIDEO", "SCRIPT / CAMPAIGN", "PRODUCT", "SCRIPT SENT", "DONE", "")):
+                        col.caption(label)
+                    for r in rows:
+                        c = st.columns(widths, vertical_alignment="center")
+                        c[0].markdown(f"**{_vid(r)}**")
+                        c[1].write(_what(r))
+                        c[1].caption(influencer_video_name(r))
+                        _prod_cell(c[2], r)
+                        c[3].caption(r["sent_at"][:10] or "—")
+                        c[4].button(f"Done {r['done_at'][:10]}" if r["done_at"] else "Done", icon=":material/undo:",
+                                    key=f"inf_undone_{r['row']}", help="Click to set back to sent",
+                                    on_click=_set_status, args=(r["number"], r["influencer"], "Sent"), type="tertiary")
+                        with c[5]:
+                            _pdf_button(r, key=f"inf_dl_d_{r['row']}")
 
     if view == "Tracking":
         _tracking()

@@ -5630,48 +5630,73 @@ elif page == "🎬 Influencer Scripts":
                 return [f"{k} ✓" if st_[k] else f"{k} (not sent)" for k in sorted(st_, key=str.lower)]
 
             shown_people = sorted(people, key=lambda p: p["name"].lower())
-            if True:
-                sort_by = st.segmented_control("Sort", ["Name", "Best rated"], default="Name", required=True,
-                                               key="inf_p_sort", label_visibility="collapsed")
-                if sort_by == "Best rated":
-                    shown_people = sorted(people, key=lambda p: (-p["rating"], p["name"].lower()))
-                widths = [2, 1.6, 2.4, 0.8, 0.8, 1.2, 1.9]
-                head = st.columns(widths)
-                for col, label in zip(head, ("NAME", "PLATFORM / HANDLE", "PRODUCTS", "SCRIPTS", "DONE", "LAST SENT", "RATING")):
-                    col.caption(label)
-                for p in shown_people:
-                    mine_p = recs_by_person.get(p["name"].lower(), [])
-                    c = st.columns(widths, vertical_alignment="center")
-                    c[0].markdown(f"**{p['name']}**")
-                    c[1].write(p["handle"])
-                    c[2].write(", ".join(_person_products(p)))
-                    c[3].write(len(mine_p))
-                    c[4].write(sum(1 for r in mine_p if r["status"] == "Done"))
-                    c[5].write(max([r["sent_at"][:10] for r in mine_p if r["sent_at"]] or [""]))
-                    rk = f"inf_rate_{p['name'].lower()}"
-                    st.session_state.setdefault(rk, p["rating"] - 1 if p["rating"] else None)
-                    c[6].feedback("stars", key=rk, on_change=_rate, args=(p["name"], rk))
 
-                pnames = [p["name"] for p in shown_people]
-                if st.session_state.get("inf_p_pick") not in pnames:
-                    st.session_state.pop("inf_p_pick", None)
-                pick = st.selectbox("Open an influencer", pnames, key="inf_p_pick", help="Click and type a name to find them.")
+            def _open_person(name):
+                st.session_state["inf_p_pick"] = name
+                st.session_state["inf_p_scroll"] = True
+
+            def _prod_line(r):
+                """'Bra ✓ · Thong ✗ not sent' for the products a script needs, as they stand for this influencer."""
+                mine_st = pstat_all.get(r["influencer"].lower(), {})
+                return " · ".join(
+                    f"{pr} " + ("✓" if next((v for k, v in mine_st.items() if _pkey(k) == _pkey(pr)), "") else "✗ not sent")
+                    for pr in r["products"])
+
+            # ── The opened influencer: products sent, scripts to do, scripts done ──
+            pnames = [p["name"] for p in shown_people]
+            if st.session_state.get("inf_p_pick") not in pnames:
+                st.session_state.pop("inf_p_pick", None)
+            pick = st.selectbox("Open an influencer", pnames, index=None, key="inf_p_pick",
+                                placeholder="Click a name in the list below, or type to find one")
+            if st.session_state.pop("inf_p_scroll", False):
+                # Opening from a name far down the list: jump back up to the card.
+                components.html(
+                    "<script>try{window.parent.document.querySelector('[data-testid=\"stMain\"]')"
+                    ".scrollTo({top:0,behavior:'smooth'})}catch(e){}</script>", height=0)
+            if pick:
                 p = next(x for x in shown_people if x["name"] == pick)
                 mine = recs_by_person.get(pick.lower(), [])
+                todo_p = [r for r in reversed(mine) if r["status"] != "Done"]
+                done_p = [r for r in reversed(mine) if r["status"] == "Done"]
                 with st.container(border=True):
                     st.markdown(f"#### {p['name']}")
                     st.caption(" · ".join(x for x in (p["handle"], p["contact"], p["notes"]) if x) or "No details saved.")
-                    _product_buttons(p["name"], pstat_all.get(p["name"].lower(), {}), f"inf_pbp_{p['name'].lower()}")
-                    if not mine:
-                        st.write("No scripts assigned yet.")
-                    for r in reversed(mine):
+
+                    st.caption("PRODUCTS")
+                    if pstat_all.get(p["name"].lower()):
+                        _product_buttons(p["name"], pstat_all[p["name"].lower()], f"inf_pbp_{p['name'].lower()}")
+                    else:
+                        st.write("None yet — products show up here once she has a script that uses one.")
+
+                    st.caption(f"SCRIPTS TO DO ({len(todo_p)})")
+                    if not todo_p:
+                        st.write("Nothing waiting.")
+                    for r in todo_p:
                         c = st.columns([0.9, 3, 1.1, 1.3, 0.7], vertical_alignment="center")
                         c[0].markdown(f"**{_vid(r)}**")
                         c[1].write(_what(r))
+                        if r["products"]:
+                            c[1].caption(_prod_line(r))
                         c[2].markdown(f'<span class="rr-pill {pill_class[r["status"]]}">{r["status"]}</span>', unsafe_allow_html=True)
                         with c[3]:
                             _pdf_button(r, key=f"inf_dl_p_{r['row']}")
                         if r["status"] == "Assigned" or is_admin:
+                            c[4].button("", icon=":material/close:", key=f"inf_un_p_{r['row']}", help="Unassign",
+                                        on_click=_unassign, args=(r["number"], r["influencer"]))
+
+                    st.caption(f"SCRIPTS DONE ({len(done_p)})")
+                    if not done_p:
+                        st.write("None finished yet.")
+                    for r in done_p:
+                        c = st.columns([0.9, 3, 1.1, 1.3, 0.7], vertical_alignment="center")
+                        c[0].markdown(f"**{_vid(r)}**")
+                        c[1].write(_what(r))
+                        if r["products"]:
+                            c[1].caption(_prod_line(r))
+                        c[2].caption(f"Done {r['done_at'][:10]}" if r["done_at"] else "Done")
+                        with c[3]:
+                            _pdf_button(r, key=f"inf_dl_p_{r['row']}")
+                        if is_admin:
                             c[4].button("", icon=":material/close:", key=f"inf_un_p_{r['row']}", help="Unassign",
                                         on_click=_unassign, args=(r["number"], r["influencer"]))
 
@@ -5697,6 +5722,29 @@ elif page == "🎬 Influencer Scripts":
                     if is_admin:
                         _delete_button(f"inf_del_p_{p['row']}", "Delete influencer", f"influencer {p['name']}",
                                        lambda name=p["name"]: delete_inf_person(name))
+
+            # ── Everyone ──
+            sort_by = st.segmented_control("Sort", ["Name", "Best rated"], default="Name", required=True,
+                                           key="inf_p_sort", label_visibility="collapsed")
+            if sort_by == "Best rated":
+                shown_people = sorted(people, key=lambda p: (-p["rating"], p["name"].lower()))
+            widths = [2, 1.6, 2.4, 0.8, 0.8, 1.2, 1.9]
+            head = st.columns(widths)
+            for col, label in zip(head, ("NAME", "PLATFORM / HANDLE", "PRODUCTS", "SCRIPTS", "DONE", "LAST SENT", "RATING")):
+                col.caption(label)
+            for p in shown_people:
+                mine_p = recs_by_person.get(p["name"].lower(), [])
+                c = st.columns(widths, vertical_alignment="center")
+                c[0].button(p["name"], key=f"inf_open_{p['row']}", type="tertiary", help="Open",
+                            on_click=_open_person, args=(p["name"],))
+                c[1].write(p["handle"])
+                c[2].write(", ".join(_person_products(p)))
+                c[3].write(len(mine_p))
+                c[4].write(sum(1 for r in mine_p if r["status"] == "Done"))
+                c[5].write(max([r["sent_at"][:10] for r in mine_p if r["sent_at"]] or [""]))
+                rk = f"inf_rate_{p['name'].lower()}"
+                st.session_state.setdefault(rk, p["rating"] - 1 if p["rating"] else None)
+                c[6].feedback("stars", key=rk, on_change=_rate, args=(p["name"], rk))
 
     # ── Tracking: what's been sent ───────────────────────────────────────────
     @st.fragment

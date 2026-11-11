@@ -18,7 +18,6 @@ import os
 import math
 import re
 import html as html_lib
-from html.parser import HTMLParser
 import functools
 import secrets
 import time
@@ -118,7 +117,7 @@ USERS_SHEET_NAME = "Users"
 ALL_PAGES = [
     "📦 Fulfillment", "🔄 Restock", "➕ Add Product", "📋 View Inventory",
     "📊 Demand & Reorder", "📥 Purchase Orders", "🚢 Shipment Tracker", "🧾 Shipment Details",
-    "🚫 Cancelled Orders", "💸 Refunds", "✅ Mark Paid", "🧮 Fix RR Amounts", "🎬 Influencer Scripts",
+    "🚫 Cancelled Orders", "💸 Refunds", "✅ Mark Paid", "🎬 Influencer Scripts",
 ]
 ADMIN_PAGE = "👤 Manage Users"
 
@@ -142,7 +141,6 @@ PAGE_ICONS = {
     "🚫 Cancelled Orders": ":material/cancel:",
     "💸 Refunds": ":material/currency_exchange:",
     "✅ Mark Paid": ":material/paid:",
-    "🧮 Fix RR Amounts": ":material/price_change:",
     "🎬 Influencer Scripts": ":material/campaign:",
     "🚢 Shipment Tracker": ":material/directions_boat:",
     "🧾 Shipment Details": ":material/receipt_long:",
@@ -1174,215 +1172,6 @@ def shopify_mark_order_paid(order_gid):
     errs = (body["data"]["orderMarkAsPaid"] or {}).get("userErrors") or []
     if errs:
         raise Exception("; ".join(e["message"] for e in errs))
-
-# ─── RoadRunner amount fix ────────────────────────────────────────────────────
-# Shopify records store credit as a payment, so an order's total stays $34 while
-# its balance owed is $25 — but Roadrunner's Shopify connection picks up the
-# total. Roadrunner has no API, so this signs in to its merchant website the
-# way a person does and lowers "Total USD Price" on New orders whose total is
-# higher than the balance still owed on Shopify.
-
-_RR_BASE = "https://roadrunnerlb.com/clients"
-
-def _rr_money(v):
-    try:
-        return float(str(v).replace(",", "").strip())
-    except (ValueError, TypeError):
-        return None
-
-def _rr_text(cell):
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", html.unescape(str(cell if cell is not None else "")))).strip()
-
-class _RRFormParser(HTMLParser):
-    """Collects what a browser would submit for the order edit form (#ordersform):
-    disabled fields and unchecked boxes are left out, a <select> sends its
-    selected option, and the buttons are not included."""
-    def __init__(self):
-        super().__init__()
-        self.in_form = False
-        self.fields = []
-        self._sel = None
-        self._opt = None
-        self._ta = None
-
-    def handle_starttag(self, tag, attrs):
-        a = dict(attrs)
-        if tag == "form":
-            self.in_form = a.get("id") == "ordersform"
-            return
-        if not self.in_form:
-            return
-        name = a.get("name")
-        if tag == "input" and name and "disabled" not in a:
-            t = (a.get("type") or "text").lower()
-            if t in ("submit", "button", "image", "file", "reset"):
-                return
-            if t in ("checkbox", "radio") and "checked" not in a:
-                return
-            self.fields.append((name, a.get("value") or ""))
-        elif tag == "select":
-            self._sel = {"name": name, "multiple": "multiple" in a, "disabled": "disabled" in a, "opts": []}
-        elif tag == "option" and self._sel is not None:
-            self._opt = {"value": a.get("value"), "selected": "selected" in a, "text": ""}
-            self._sel["opts"].append(self._opt)
-        elif tag == "textarea" and name and "disabled" not in a:
-            self._ta = [name, ""]
-
-    def handle_data(self, data):
-        if self._opt is not None:
-            self._opt["text"] += data
-        elif self._ta is not None:
-            self._ta[1] += data
-
-    def handle_endtag(self, tag):
-        if tag == "form":
-            self.in_form = False
-        elif tag == "option":
-            self._opt = None
-        elif tag == "select" and self._sel is not None:
-            sel, self._sel = self._sel, None
-            if not sel["name"] or sel["disabled"]:
-                return
-            val = lambda o: o["value"] if o["value"] is not None else o["text"].strip()
-            chosen = [o for o in sel["opts"] if o["selected"]]
-            if not sel["multiple"] and not chosen and sel["opts"]:
-                chosen = [sel["opts"][0]]
-            for o in (chosen if sel["multiple"] else chosen[:1]):
-                self.fields.append((sel["name"], val(o)))
-        elif tag == "textarea" and self._ta is not None:
-            self.fields.append((self._ta[0], self._ta[1].lstrip("\n")))
-            self._ta = None
-
-def rr_login(username, password):
-    sess = requests.Session()
-    sess.headers["User-Agent"] = "Mozilla/5.0 (Sweet Mayhem Fulfillment Studio)"
-    # The login page posts its form in the background (multipart) and gets a JSON
-    # verdict back: [{"type": "success"|"error", "code": ..., "text": ...}].
-    resp = sess.post(
-        f"{_RR_BASE}/validate.php",
-        files={"username": (None, username), "password": (None, password), "remember": (None, "on")},
-        timeout=30,
-    )
-    try:
-        verdict = resp.json()[0]
-    except (ValueError, IndexError, KeyError, TypeError):
-        verdict = None
-    if verdict is None:
-        snippet = re.sub(r"\s+", " ", resp.text)[:80]
-        raise Exception(
-            f"RoadRunner's sign-in gave an unexpected reply (HTTP {resp.status_code}: {snippet!r}). "
-            "It may be blocking the app's server."
-        )
-    if verdict.get("type") == "error":
-        raise Exception(f"RoadRunner refused the sign-in: {verdict.get('text') or 'unknown error'}")
-    page = sess.get(f"{_RR_BASE}/orders/", timeout=30)
-    title = re.search(r"<title>(.*?)</title>", page.text, re.S | re.I)
-    if not title or "login" in title.group(1).lower():
-        raise Exception("RoadRunner accepted the sign-in but then showed the login page again.")
-    return sess
-
-def rr_load_orders(sess, days=45):
-    """Recent Roadrunner orders. 'edit_hash' is only present while an order can still be edited."""
-    end = date.today() + timedelta(days=1)
-    rng = f"{(end - timedelta(days=days)):%Y/%m/%d} - {end:%Y/%m/%d}"
-    orders, start = [], 0
-    while True:
-        resp = sess.post(
-            f"{_RR_BASE}/orders/load.php",
-            data={"draw": "1", "start": str(start), "length": "500", "filterdate": rng}, timeout=60,
-        )
-        body = resp.json()
-        rows = body.get("data") or []
-        for r in rows:
-            m = re.search(r"edit\.php\?v=([A-Za-z0-9]+)", " ".join(str(c) for c in r))
-            orders.append({
-                "reference": _rr_text(r[3]),
-                "total": _rr_money(_rr_text(r[9])),
-                "delivery": _rr_money(_rr_text(r[7])),
-                "status": _rr_text(r[10]),
-                "edit_hash": m.group(1) if m else "",
-            })
-        start += len(rows)
-        if not rows or start >= int(body.get("recordsFiltered") or 0):
-            return orders
-
-def shopify_balances(names):
-    """{'#19050': {...}} — total, balance still owed and status for each Shopify order name."""
-    out = {}
-    query = (
-        "query($q: String!) { orders(first: 50, query: $q) { nodes { name displayFinancialStatus cancelledAt "
-        "totalPriceSet { shopMoney { amount } } totalOutstandingSet { shopMoney { amount } } } } }"
-    )
-    for i in range(0, len(names), 20):
-        q = " OR ".join(f"name:{n.lstrip('#')}" for n in names[i:i + 20])
-        resp = _shopify_request("POST", f"{_SHOPIFY_BASE}/graphql.json", json={"query": query, "variables": {"q": q}})
-        resp.raise_for_status()
-        body = resp.json()
-        if body.get("errors"):
-            raise Exception("; ".join(e.get("message", "") for e in body["errors"]))
-        for o in body["data"]["orders"]["nodes"]:
-            out[o["name"]] = {
-                "total": _rr_money(o["totalPriceSet"]["shopMoney"]["amount"]),
-                "owed": _rr_money(o["totalOutstandingSet"]["shopMoney"]["amount"]),
-                "status": o["displayFinancialStatus"], "cancelled": bool(o.get("cancelledAt")),
-            }
-    return out
-
-def rr_plan(rr_orders, shop):
-    """One row per editable (New) Roadrunner order, with what to do about it."""
-    rows = []
-    for o in rr_orders:
-        if not o["edit_hash"] or not o["status"].lower().startswith("new"):
-            continue
-        m = re.search(r"(\d+)\s*$", o["reference"])
-        row = {**o, "name": ("#1" + m.group(1)) if m else "", "owed": None, "action": "", "reason": ""}
-        sh = shop.get(row["name"])
-        if not m:
-            row["action"], row["reason"] = "skip", "No order number in the reference"
-        elif sh is None:
-            row["action"], row["reason"] = "skip", "Not found on Shopify"
-        elif sh["cancelled"]:
-            row["action"], row["reason"] = "skip", "Cancelled on Shopify"
-        elif row["total"] is None or sh["owed"] is None:
-            row["action"], row["reason"] = "skip", "Couldn't read an amount"
-        else:
-            row["owed"] = sh["owed"]
-            if abs(row["total"] - sh["owed"]) < 0.01:
-                row["action"], row["reason"] = "ok", "Already matches"
-            elif row["total"] > sh["owed"]:
-                row["action"], row["reason"] = "fix", "Roadrunner total is higher than the balance owed"
-            else:
-                row["action"], row["reason"] = "review", "Roadrunner total is LOWER than the balance owed — check it by hand"
-        rows.append(row)
-    return rows
-
-def rr_set_total(sess, row):
-    """Lowers one order's Total USD Price to row['owed'], then re-reads the list to confirm it stuck."""
-    url = f"{_RR_BASE}/orders/edit.php?v={row['edit_hash']}"
-    page = sess.get(url, timeout=30)
-    parser = _RRFormParser()
-    parser.feed(page.text)
-    fields = parser.fields
-    cur = {}
-    for k, v in fields:
-        cur.setdefault(k, v)
-    if "total_usd_price" not in cur or "order_name" not in cur:
-        raise Exception("Couldn't read the RoadRunner edit form (signed out, or the page changed).")
-    if cur["order_name"].strip().lower() != row["reference"].strip().lower():
-        raise Exception(f"Edit page is for {cur['order_name']}, not {row['reference']} — not changed.")
-    now = _rr_money(cur["total_usd_price"])
-    if now is None or abs(now - row["total"]) >= 0.005:
-        raise Exception(f"RoadRunner now shows ${cur['total_usd_price']}, not ${row['total']:.2f} — not changed.")
-    new_total = f"{row['owed']:.2f}"
-    payload = [(k, new_total if k == "total_usd_price" else v) for k, v in fields]
-    payload.append(("sbmtorder", ""))
-    sess.post(url, data=payload, headers={"Referer": url}, timeout=60)
-    after = next((o for o in rr_load_orders(sess, days=7) if o["reference"].lower() == row["reference"].lower()), None)
-    if after is None or after["total"] is None or abs(after["total"] - row["owed"]) >= 0.01:
-        raise Exception(
-            f"Sent the change but RoadRunner shows ${after['total']:.2f}." if after and after["total"] is not None
-            else "Sent the change but couldn't find the order afterwards to confirm it — check it in RoadRunner."
-        )
 
 def rr_date_range(delivered_records):
     """(first, last) delivery date of the given orders as date objects, or
@@ -3697,7 +3486,7 @@ with st.sidebar:
         "➕ Add Product": "INVENTORY", "📋 View Inventory": "INVENTORY",
         "📊 Demand & Reorder": "SHIPMENTS", "📥 Purchase Orders": "SHIPMENTS",
         "🚢 Shipment Tracker": "SHIPMENTS", "🧾 Shipment Details": "SHIPMENTS",
-        "🚫 Cancelled Orders": "SUPPORT", "💸 Refunds": "SUPPORT", "✅ Mark Paid": "SUPPORT", "🧮 Fix RR Amounts": "SUPPORT",
+        "🚫 Cancelled Orders": "SUPPORT", "💸 Refunds": "SUPPORT", "✅ Mark Paid": "SUPPORT",
         "🎬 Influencer Scripts": "MARKETING",
     }
     with st.container(key="sidebar_nav"):
@@ -5393,112 +5182,6 @@ elif page == "✅ Mark Paid":
                 st.rerun()
         else:
             st.info("Nothing here is ready to mark — see the reasons in the Skipped list above.")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PAGE: FIX RR AMOUNTS
-# ─────────────────────────────────────────────────────────────────────────────
-
-elif page == "🧮 Fix RR Amounts":
-    st.subheader("Fix RoadRunner Amounts")
-    st.caption(
-        "Store credit is a payment on Shopify, so the order total stays the same but the balance owed drops — "
-        "and RoadRunner picks up the total. This lowers a New RoadRunner order's total to the balance still owed on Shopify."
-    )
-
-    rr_secret = st.secrets.get("roadrunner")
-    if not rr_secret or not rr_secret.get("username") or not rr_secret.get("password"):
-        st.warning("RoadRunner sign-in isn't set up yet. Add this to the app's secrets:")
-        st.code('[roadrunner]\nusername = "your RoadRunner username"\npassword = "your RoadRunner password"', language="toml")
-        st.stop()
-
-    if st.button("Check RoadRunner against Shopify", type="primary", icon=":material/search:"):
-        st.session_state.pop("rrfix_results", None)
-        try:
-            with st.spinner("Signing in to RoadRunner and reading orders…"):
-                rr_sess = rr_login(rr_secret["username"], rr_secret["password"])
-                rr_orders = rr_load_orders(rr_sess)
-            new_orders = [o for o in rr_orders if o["edit_hash"] and o["status"].lower().startswith("new")]
-            names = []
-            for o in new_orders:
-                m = re.search(r"(\d+)\s*$", o["reference"])
-                if m:
-                    names.append("#1" + m.group(1))
-            with st.spinner("Checking Shopify…"):
-                shop = shopify_balances(names) if names else {}
-            st.session_state.rrfix_plan = {"rows": rr_plan(rr_orders, shop), "seen": len(rr_orders)}
-        except Exception as e:
-            st.session_state.pop("rrfix_plan", None)
-            st.error(f"Check failed: {e}")
-
-    results = st.session_state.get("rrfix_results")
-    plan = st.session_state.get("rrfix_plan")
-
-    if results is not None:
-        ok = [r for r in results if r["ok"]]
-        if ok:
-            st.success(f"Updated {len(ok)} order(s) on RoadRunner.")
-        if len(ok) < len(results):
-            st.error(f"{len(results) - len(ok)} order(s) were not changed:")
-        st.dataframe(
-            pd.DataFrame([{"Order": r["reference"], "Result": r["result"]} for r in results]),
-            hide_index=True, use_container_width=True,
-        )
-    elif plan is not None:
-        rows = plan["rows"]
-        fixes = [r for r in rows if r["action"] == "fix"]
-        reviews = [r for r in rows if r["action"] == "review"]
-        okays = [r for r in rows if r["action"] == "ok"]
-        skips = [r for r in rows if r["action"] == "skip"]
-
-        s1, s2, s3 = st.columns(3)
-        s1.markdown(f'<div class="stat"><p class="num" style="color:#966600">{len(fixes)}</p><p class="lbl">Need fixing</p></div>', unsafe_allow_html=True)
-        s2.markdown(f'<div class="stat"><p class="num" style="color:#227A55">{len(okays)}</p><p class="lbl">Already correct</p></div>', unsafe_allow_html=True)
-        s3.markdown(f'<div class="stat"><p class="num" style="color:var(--rr-red)">{len(reviews) + len(skips)}</p><p class="lbl">Left alone</p></div>', unsafe_allow_html=True)
-        st.caption(f"Looked at {plan['seen']} recent RoadRunner orders; {len(rows)} are still New (the only ones that can be edited).")
-
-        _cfg = {c: st.column_config.NumberColumn(format="$%.2f") for c in ("RoadRunner total", "Balance owed on Shopify", "Change to")}
-        if fixes:
-            st.markdown("**Will be changed**")
-            st.dataframe(
-                pd.DataFrame([{
-                    "Order": r["reference"], "Shopify": r["name"], "RoadRunner total": r["total"],
-                    "Balance owed on Shopify": r["owed"], "Change to": r["owed"],
-                } for r in fixes]),
-                hide_index=True, use_container_width=True, column_config=_cfg,
-            )
-        if reviews or skips:
-            st.markdown("**Left alone**")
-            st.dataframe(
-                pd.DataFrame([{
-                    "Order": r["reference"], "Shopify": r["name"] or "—", "RoadRunner total": r["total"],
-                    "Balance owed on Shopify": r["owed"], "Reason": r["reason"],
-                } for r in reviews + skips]),
-                hide_index=True, use_container_width=True, column_config=_cfg,
-            )
-        if not fixes:
-            st.info("Nothing needs changing right now.")
-        else:
-            confirm = st.checkbox(f"I confirm I want to change {len(fixes)} order(s) on RoadRunner")
-            if st.button("Fix these orders on RoadRunner", type="primary", disabled=not confirm, icon=":material/price_check:"):
-                out = []
-                try:
-                    rr_sess = rr_login(rr_secret["username"], rr_secret["password"])
-                except Exception as e:
-                    out = [{"reference": r["reference"], "ok": False, "result": str(e)} for r in fixes]
-                    fixes = []
-                bar = st.progress(0.0, text="Updating RoadRunner…")
-                for i, r in enumerate(fixes):
-                    try:
-                        rr_set_total(rr_sess, r)
-                        out.append({"reference": r["reference"], "ok": True, "result": f"${r['total']:.2f} → ${r['owed']:.2f}"})
-                    except Exception as e:
-                        out.append({"reference": r["reference"], "ok": False, "result": str(e)})
-                    bar.progress((i + 1) / len(fixes), text=f"Updating RoadRunner… {i + 1}/{len(fixes)}")
-                    time.sleep(0.5)
-                bar.empty()
-                st.session_state.rrfix_results = out
-                st.session_state.pop("rrfix_plan", None)
-                st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: INFLUENCER SCRIPTS

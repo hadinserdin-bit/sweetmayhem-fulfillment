@@ -1256,11 +1256,29 @@ class _RRFormParser(HTMLParser):
 def rr_login(username, password):
     sess = requests.Session()
     sess.headers["User-Agent"] = "Mozilla/5.0 (Sweet Mayhem Fulfillment Studio)"
-    sess.post(f"{_RR_BASE}/validate.php", data={"username": username, "password": password, "login": ""}, timeout=30)
+    # The login page posts its form in the background (multipart) and gets a JSON
+    # verdict back: [{"type": "success"|"error", "code": ..., "text": ...}].
+    resp = sess.post(
+        f"{_RR_BASE}/validate.php",
+        files={"username": (None, username), "password": (None, password), "remember": (None, "on")},
+        timeout=30,
+    )
+    try:
+        verdict = resp.json()[0]
+    except (ValueError, IndexError, KeyError, TypeError):
+        verdict = None
+    if verdict is None:
+        snippet = re.sub(r"\s+", " ", resp.text)[:80]
+        raise Exception(
+            f"RoadRunner's sign-in gave an unexpected reply (HTTP {resp.status_code}: {snippet!r}). "
+            "It may be blocking the app's server."
+        )
+    if verdict.get("type") == "error":
+        raise Exception(f"RoadRunner refused the sign-in: {verdict.get('text') or 'unknown error'}")
     page = sess.get(f"{_RR_BASE}/orders/", timeout=30)
     title = re.search(r"<title>(.*?)</title>", page.text, re.S | re.I)
     if not title or "login" in title.group(1).lower():
-        raise Exception("RoadRunner sign-in failed — check the username and password in the app's secrets.")
+        raise Exception("RoadRunner accepted the sign-in but then showed the login page again.")
     return sess
 
 def rr_load_orders(sess, days=45):

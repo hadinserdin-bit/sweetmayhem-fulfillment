@@ -1755,6 +1755,70 @@ def fetch_shopify_available_by_key():
             break
     return result
 
+@st.cache_data(ttl=120)
+def fetch_shopify_catalog():
+    """Every variant of every active Shopify product: [{product, color, size, on_hand}]."""
+    location_id = get_primary_location_id()
+    out, cursor = [], None
+    query = """
+    query($cursor: String, $locationId: ID!) {
+      products(first: 50, after: $cursor) {
+        edges { node { title status variants(first: 100) { edges { node { title
+          inventoryItem { inventoryLevel(locationId: $locationId) { quantities(names: ["on_hand"]) { quantity } } }
+        } } } } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    while True:
+        resp = requests.post(
+            f"{_SHOPIFY_BASE}/graphql.json", headers=_SHOPIFY_HEADERS,
+            json={"query": query, "variables": {"cursor": cursor, "locationId": _gid("Location", location_id)}},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("errors"):
+            raise Exception("; ".join(e["message"] for e in data["errors"]))
+        page = data["data"]["products"]
+        for edge in page["edges"]:
+            p = edge["node"]
+            if p.get("status") != "ACTIVE":
+                continue
+            for ve in p["variants"]["edges"]:
+                v = ve["node"]
+                parts = (v.get("title") or "").split(" / ", 1)
+                if len(parts) != 2:
+                    continue
+                level = v["inventoryItem"].get("inventoryLevel")
+                out.append({"product": p["title"].strip(), "color": parts[0].strip(), "size": parts[1].strip(),
+                            "on_hand": level["quantities"][0]["quantity"] if level else 0})
+        if page["pageInfo"]["hasNextPage"]:
+            cursor = page["pageInfo"]["endCursor"]
+        else:
+            break
+    return out
+
+def _same_product(a, b):
+    """True when one title's words are all inside the other's, e.g. Studio's
+    "Seamless Deep V Push-Up Bra" and Shopify's "Seamless Deep V Push-Up Wireless Bra"."""
+    wa, wb = set(a.lower().split()), set(b.lower().split())
+    return bool(wa and wb) and (wa <= wb or wb <= wa)
+
+def shopify_variants_missing_from_studio(inv, catalog):
+    """(missing variants, titles skipped because Studio already has that product under a similar name).
+    These are the Shopify variants that Demand & Reorder, fulfillment and restock can't see yet."""
+    studio_titles = {k[0] for k in inv}
+    missing, skipped = [], set()
+    for v in catalog:
+        title = v["product"].lower()
+        if (title, v["color"].lower(), v["size"].lower()) in inv:
+            continue
+        if title not in studio_titles and any(_same_product(title, t) for t in studio_titles):
+            skipped.add(v["product"])
+            continue
+        missing.append(v)
+    return missing, sorted(skipped)
+
 def find_shopify_inventory_item(variant_map, product, color, size):
     """Same exact-color/size + fuzzy-product-name matching as find_key(), applied to
     Shopify's variant list instead of the Google Sheet inventory."""
@@ -3940,6 +4004,46 @@ elif page == "🔄 Restock":
 elif page == "➕ Add Product":
     st.subheader("Add New Product to Inventory")
 
+    # Products created in Shopify only show up in Studio (Demand & Reorder, fulfillment, restock)
+    # once they have rows in the inventory sheet — offer to copy them over.
+    if "ap_import_msg" in st.session_state:
+        st.success(st.session_state.pop("ap_import_msg"), icon=":material/check_circle:")
+    try:
+        _missing, _skipped = shopify_variants_missing_from_studio(load_inventory(), fetch_shopify_catalog())
+    except Exception as e:
+        _missing, _skipped = [], []
+        st.warning(f"Couldn't check Shopify for new products: {e}")
+    if _missing:
+        _by_prod = {}
+        for v in _missing:
+            _by_prod.setdefault(v["product"], []).append(v)
+        with st.container(border=True):
+            st.markdown("**New in Shopify, not in Studio yet**")
+            st.caption("Until they're added here they don't appear in Demand & Reorder, and fulfillment can't take stock off them.")
+            _picked = st.multiselect(
+                "Products to add", list(_by_prod), default=list(_by_prod), key="ap_import_products",
+                format_func=lambda t: f"{t}  —  {len(_by_prod[t])} variants",
+            )
+            st.caption("Each variant starts at its Shopify on-hand quantity (0 if you haven't received stock yet).")
+            if st.button("Add to Studio inventory", type="primary", icon=":material/download:",
+                         disabled=not _picked, key="ap_import_btn"):
+                with st.spinner("Adding to Google Sheets…"):
+                    try:
+                        _rows = [[v["product"], v["color"], v["size"], max(0, v["on_hand"])]
+                                 for t in _picked for v in _by_prod[t]]
+                        get_ws().append_rows(_rows)
+                        load_inventory.clear()
+                        st.session_state["ap_import_msg"] = f"Added {len(_rows)} variants from {len(_picked)} product(s) to Studio."
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+    else:
+        st.success("Everything in Shopify is already in Studio.", icon=":material/check_circle:")
+    if _skipped:
+        st.caption("Not listed because Studio already has them under a similar name: " + ", ".join(_skipped))
+    st.divider()
+    st.markdown("**Or add a product by hand**")
+
     name = st.text_input("Product Name", placeholder="e.g. High Waist Leggings")
     col1, col2 = st.columns(2)
     with col1:
@@ -4141,6 +4245,18 @@ elif page == "📊 Demand & Reorder":
         if start_date > end_date:
             st.error("'Sales data from' must be on or before 'Sales data to'.")
             st.stop()
+
+        try:
+            _new_in_shopify, _ = shopify_variants_missing_from_studio(inv, fetch_shopify_catalog())
+        except Exception:
+            _new_in_shopify = []
+        if _new_in_shopify:
+            _names = sorted({v["product"] for v in _new_in_shopify}, key=str.lower)
+            st.warning(
+                "These Shopify products aren't in Studio inventory yet, so they're missing from this list: "
+                + ", ".join(_names) + ". Open **➕ Add Product** and press *Add to Studio inventory*.",
+                icon=":material/inventory:",
+            )
 
         with st.spinner("Fetching sales history from Shopify…"):
             orders = fetch_shopify_sales(start_date=start_date, end_date=end_date)

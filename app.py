@@ -2768,6 +2768,20 @@ def save_line_items(batch, entries):
     ws.append_rows([header] + kept + new_rows)
     load_line_items.clear()
 
+def build_po_quantity_edit(old_items, new_qtys):
+    """old_items: a batch's line items (as load_line_items() returns them).
+    new_qtys: {(product, color, size): qty}, one entry per cell the person could edit.
+    Returns (entries to save, old totals, new totals). Each product keeps the unit price it had;
+    cells set to 0 simply drop out of the order."""
+    price_of = {}
+    for it in old_items:
+        if it["unit_price"] is not None:
+            price_of.setdefault(it["product"], it["unit_price"])
+    entries = [{"product": p, "color": c, "size": s, "qty": int(q), "unit_price": price_of.get(p)}
+               for (p, c, s), q in new_qtys.items() if int(q) > 0]
+    tot = lambda rows: (sum(r["qty"] for r in rows), sum(r["qty"] * (r["unit_price"] or 0) for r in rows))
+    return entries, tot(old_items), tot(entries)
+
 SIZE_ORDER = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL", "5XL"]
 
 def _size_sort_key(size):
@@ -4577,6 +4591,67 @@ elif page == "📥 Purchase Orders":
                 po_shopify_done = (po_row["Shopify Inventory Status"] or "").strip() == SHOPIFY_ADDED_MARKER
                 po_received_done = po_row["Status"] == "Received"
                 po_marked_done = (po_row["Marked as Ordered"] or "").strip() == MARKED_ORDERED_MARKER
+
+                with st.expander("Edit quantities", icon=":material/edit:"):
+                    if po_shopify_done:
+                        st.warning("This batch was already added to Shopify. Changing the quantities here does not "
+                                   "change Shopify — adjust its on-hand separately if you need to.")
+                    elif po_marked_done:
+                        st.caption("Incoming on Demand & Reorder updates as soon as you save.")
+                    inv_all = load_inventory()
+                    by_prod = {}
+                    for it in po_line_items:
+                        by_prod.setdefault(it["product"], []).append(it)
+                    with st.form(f"po_edit_form_{po_batch}"):
+                        edits = {}
+                        for prod, its in by_prod.items():
+                            # Every colour/size the product has, so a size left at 0 can be raised too.
+                            colors, sizes = {}, {}
+                            for c in [it["color"] for it in its] + [v["color"] for v in inv_all.values() if v["product"] == prod]:
+                                colors.setdefault(c.lower(), c)
+                            for s in [it["size"] for it in its] + [v["size"] for v in inv_all.values() if v["product"] == prod]:
+                                sizes.setdefault(s.lower(), s)
+                            colors = sorted(colors.values())
+                            sizes = sorted(sizes.values(), key=_size_sort_key)
+                            current = {(it["color"].lower(), it["size"].lower()): it["qty"] for it in its}
+                            st.markdown(f"**{prod}**")
+                            hdr = st.columns([2] + [1] * len(sizes))
+                            for hc, size in zip(hdr[1:], sizes):
+                                hc.caption(size)
+                            for color in colors:
+                                rc = st.columns([2] + [1] * len(sizes))
+                                rc[0].write(color)
+                                for cc, size in zip(rc[1:], sizes):
+                                    edits[(prod, color, size)] = cc.number_input(
+                                        f"{prod} — {color} / {size}", min_value=0, step=1,
+                                        value=int(current.get((color.lower(), size.lower()), 0)),
+                                        key=f"po_edit_{po_batch}__{prod}__{color}__{size}", label_visibility="collapsed",
+                                    )
+                        save_edit = st.form_submit_button("Save quantities", type="primary", use_container_width=True)
+                    if save_edit:
+                        entries, (old_n, old_price), (new_n, new_price) = build_po_quantity_edit(po_line_items, edits)
+                        if new_n == 0:
+                            st.error("An order can't have every quantity at 0. To remove the order, delete it in Shipment Details.")
+                        else:
+                            save_line_items(po_batch, entries)
+                            fields = _row_to_fields(po_row)
+                            # Keep the tracker's totals in step, unless someone typed their own there.
+                            def _blank_or_equal(cell, old):
+                                try:
+                                    return pd.isna(cell) or abs(float(cell) - float(old)) < 0.005
+                                except (TypeError, ValueError):
+                                    return True
+                            if _blank_or_equal(po_row["Total Items"], old_n):
+                                fields["Total Items"] = new_n
+                            if _blank_or_equal(po_row["Price"], old_price):
+                                fields["Price"] = new_price
+                            update_shipment(int(po_row["row"]), fields)
+                            for k in [k for k in st.session_state if k.startswith(f"po_edit_{po_batch}__")]:
+                                del st.session_state[k]
+                            st.session_state["shipment_edit_message"] = (
+                                f"{po_batch} updated: {old_n} → {new_n} items" +
+                                (f" · ${old_price:,.2f} → ${new_price:,.2f}" if old_price or new_price else "") + ".")
+                            st.rerun()
 
                 if po_marked_done:
                     st.success(f"{po_batch} is marked as ordered — its quantities count as incoming on Demand & Reorder.", icon=":material/check_circle:")

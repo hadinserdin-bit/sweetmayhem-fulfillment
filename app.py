@@ -2795,74 +2795,77 @@ def _size_sort_key(size):
     return (1, s)
 
 def render_quantity_editor(batch, batch_items, row):
-    """'Edit quantities' panel for an in-app batch (Shipment Details): a colour x size grid per
-    product, saved back to the batch's line items. `row` is the batch's Shipment Tracker row (or None)."""
-    with st.expander("Edit quantities", icon=":material/edit:"):
-        if row is not None:
-            if (row["Shopify Inventory Status"] or "").strip() == SHOPIFY_ADDED_MARKER:
-                st.warning("This batch was already added to Shopify. Changing the quantities here does not "
-                           "change Shopify — adjust its on-hand separately if you need to.")
-            if row["Status"] == "Received":
-                st.warning("This batch is already received. Changing the quantities here does not change the "
-                           "Studio inventory.")
-            if (row["Marked as Ordered"] or "").strip() == MARKED_ORDERED_MARKER and row["Status"] != "Received":
-                st.caption("Incoming on Demand & Reorder updates as soon as you save.")
-        inv_all = load_inventory()
-        by_prod = {}
-        for it in batch_items:
-            by_prod.setdefault(it["product"], []).append(it)
-        with st.form(f"po_edit_form_{batch}"):
-            edits = {}
-            for prod, its in by_prod.items():
-                # Every colour/size the product has, so a size left at 0 can be raised too.
-                colors, sizes = {}, {}
-                for c in [it["color"] for it in its] + [v["color"] for v in inv_all.values() if v["product"] == prod]:
-                    colors.setdefault(c.lower(), c)
-                for s in [it["size"] for it in its] + [v["size"] for v in inv_all.values() if v["product"] == prod]:
-                    sizes.setdefault(s.lower(), s)
-                colors = sorted(colors.values())
-                sizes = sorted(sizes.values(), key=_size_sort_key)
-                current = {(it["color"].lower(), it["size"].lower()): it["qty"] for it in its}
-                st.markdown(f"**{prod}**")
-                hdr = st.columns([2] + [1] * len(sizes))
-                for hc, size in zip(hdr[1:], sizes):
-                    hc.caption(size)
-                for color in colors:
-                    rc = st.columns([2] + [1] * len(sizes))
-                    rc[0].write(color)
-                    for cc, size in zip(rc[1:], sizes):
-                        edits[(prod, color, size)] = cc.number_input(
-                            f"{prod} — {color} / {size}", min_value=0, step=1,
-                            value=int(current.get((color.lower(), size.lower()), 0)),
-                            key=f"po_edit_{batch}__{prod}__{color}__{size}", label_visibility="collapsed",
-                        )
-            save_edit = st.form_submit_button("Save quantities", type="primary", use_container_width=True)
-        if not save_edit:
-            return
-        entries, (old_n, old_price), (new_n, new_price) = build_po_quantity_edit(batch_items, edits)
-        if new_n == 0:
-            st.error("An order can't have every quantity at 0. To remove the order, delete the batch (admins can do this at the bottom of this page).")
-            return
-        save_line_items(batch, entries)
-        if row is not None:
-            fields = _row_to_fields(row)
-            # Keep the tracker's totals in step, unless someone typed their own there.
-            def _blank_or_equal(cell, old):
-                try:
-                    return pd.isna(cell) or abs(float(cell) - float(old)) < 0.005
-                except (TypeError, ValueError):
-                    return True
-            if _blank_or_equal(row["Total Items"], old_n):
-                fields["Total Items"] = new_n
-            if _blank_or_equal(row["Price"], old_price):
-                fields["Price"] = new_price
-            update_shipment(int(row["row"]), fields)
-        for k in [k for k in st.session_state if k.startswith(f"po_edit_{batch}__")]:
-            del st.session_state[k]
-        st.session_state["shipment_edit_message"] = (
-            f"{batch} updated: {old_n} → {new_n} items"
-            + (f" · ${old_price:,.2f} → ${new_price:,.2f}" if old_price or new_price else "") + ".")
+    """Edit mode for an in-app batch's quantities (Shipment Details): it replaces the read-only product
+    tables with one editable colour x size table per product. `row` is the batch's Shipment Tracker row (or None)."""
+    editing_key = f"qty_editing_{batch}"
+    if row is not None:
+        if (row["Shopify Inventory Status"] or "").strip() == SHOPIFY_ADDED_MARKER:
+            st.warning("Already added to Shopify — changing quantities here does not change Shopify.")
+        if row["Status"] == "Received":
+            st.warning("Already received — changing quantities here does not change the Studio inventory.")
+        elif (row["Marked as Ordered"] or "").strip() == MARKED_ORDERED_MARKER:
+            st.caption("Incoming on Demand & Reorder updates as soon as you save.")
+    inv_all = load_inventory()
+    by_prod = {}
+    for it in batch_items:
+        by_prod.setdefault(it["product"], []).append(it)
+    grids = {}
+    with st.form(f"po_edit_form_{batch}"):
+        for prod, its in by_prod.items():
+            # Every colour/size the product has, so a size left at 0 can be raised too.
+            colors, sizes = {}, {}
+            for c in [it["color"] for it in its] + [v["color"] for v in inv_all.values() if v["product"] == prod]:
+                colors.setdefault(c.lower(), c)
+            for s in [it["size"] for it in its] + [v["size"] for v in inv_all.values() if v["product"] == prod]:
+                sizes.setdefault(s.lower(), s)
+            colors = sorted(colors.values())
+            sizes = sorted(sizes.values(), key=_size_sort_key)
+            current = {(it["color"].lower(), it["size"].lower()): it["qty"] for it in its}
+            price = next((it["unit_price"] for it in its if it["unit_price"] is not None), None)
+            st.markdown(f"#### {prod}")
+            df = pd.DataFrame([[int(current.get((c.lower(), s.lower()), 0)) for s in sizes] for c in colors],
+                              index=colors, columns=sizes)
+            grids[prod] = st.data_editor(
+                df, key=f"po_edit_{batch}__{prod}", use_container_width=True,
+                column_config={s: st.column_config.NumberColumn(s, min_value=0, step=1, format="%d") for s in sizes},
+            )
+            if price is not None:
+                st.caption(f"Unit price ${price:,.2f}")
+        b1, b2 = st.columns(2)
+        save_edit = b1.form_submit_button("Save quantities", type="primary", use_container_width=True)
+        cancel_edit = b2.form_submit_button("Cancel", use_container_width=True)
+    if cancel_edit:
+        st.session_state.pop(editing_key, None)
         st.rerun()
+    if not save_edit:
+        return
+    edits = {(prod, c, s): int(pd.to_numeric(g.loc[c, s], errors="coerce") if pd.notna(g.loc[c, s]) else 0)
+             for prod, g in grids.items() for c in g.index for s in g.columns}
+    entries, (old_n, old_price), (new_n, new_price) = build_po_quantity_edit(batch_items, edits)
+    if new_n == 0:
+        st.error("An order can't have every quantity at 0. To remove the order, delete the batch (admins can do this at the bottom of this page).")
+        return
+    save_line_items(batch, entries)
+    if row is not None:
+        fields = _row_to_fields(row)
+        # Keep the tracker's totals in step, unless someone typed their own there.
+        def _blank_or_equal(cell, old):
+            try:
+                return pd.isna(cell) or abs(float(cell) - float(old)) < 0.005
+            except (TypeError, ValueError):
+                return True
+        if _blank_or_equal(row["Total Items"], old_n):
+            fields["Total Items"] = new_n
+        if _blank_or_equal(row["Price"], old_price):
+            fields["Price"] = new_price
+        update_shipment(int(row["row"]), fields)
+    for k in [k for k in st.session_state if k.startswith(f"po_edit_{batch}__")]:
+        del st.session_state[k]
+    st.session_state.pop(editing_key, None)
+    st.session_state["shipment_edit_message"] = (
+        f"{batch} updated: {old_n} → {new_n} items"
+        + (f" · ${old_price:,.2f} → ${new_price:,.2f}" if old_price or new_price else "") + ".")
+    st.rerun()
 
 def line_items_to_products(batch, all_items):
     """Groups one batch's line items into the same shape parse_shipment_detail()
@@ -6307,22 +6310,28 @@ elif page == "🧾 Shipment Details":
             if not products:
                 st.warning("Couldn't find any recognizable product blocks in this shipment.")
             else:
-                for p in products:
-                    st.markdown(f"#### {p['name']}")
-                    st.dataframe(product_grid(p), use_container_width=True)
-                    price_str = f"${p['unit_price']:,.2f}" if p["unit_price"] is not None else "—"
-                    subtotal_str = f"${p['subtotal']:,.2f}" if p["subtotal"] is not None else "—"
-                    st.caption(
-                        f"Total ordered: {p['total_qty']}  |  Unit price: {price_str}  |  "
-                        f"Subtotal: {subtotal_str}"
-                    )
-                    st.markdown("")
-
-                if grand_total is not None:
-                    st.markdown(f"### Grand Total: ${grand_total:,.2f}")
-
-                if sel_name in sheet_batches:
+                qty_key = f"qty_editing_{sel_name}"
+                if sel_name in sheet_batches and st.session_state.get(qty_key):
+                    # Edit mode replaces the read-only tables, so nothing is shown twice.
                     render_quantity_editor(sel_name, [it for it in all_line_items if it["batch"] == sel_name], edit_row)
+                else:
+                    if sel_name in sheet_batches:
+                        if st.button("Edit quantities", icon=":material/edit:", key=f"qty_edit_btn_{sel_name}"):
+                            st.session_state[qty_key] = True
+                            st.rerun()
+                    for p in products:
+                        st.markdown(f"#### {p['name']}")
+                        st.dataframe(product_grid(p), use_container_width=True)
+                        price_str = f"${p['unit_price']:,.2f}" if p["unit_price"] is not None else "—"
+                        subtotal_str = f"${p['subtotal']:,.2f}" if p["subtotal"] is not None else "—"
+                        st.caption(
+                            f"Total ordered: {p['total_qty']}  |  Unit price: {price_str}  |  "
+                            f"Subtotal: {subtotal_str}"
+                        )
+                        st.markdown("")
+
+                    if grand_total is not None:
+                        st.markdown(f"### Grand Total: ${grand_total:,.2f}")
 
                 st.divider()
                 st.markdown("##### Order Summary")

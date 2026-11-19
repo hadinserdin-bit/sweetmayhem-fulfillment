@@ -338,11 +338,11 @@ INF_LIBRARY_HEADERS = ["Script #", "Title", "Product", "Format", "Script", "Crea
 INF_PEOPLE_TAB = "Influencers"
 INF_PEOPLE_HEADERS = ["Name", "Platform / Handle", "Contact", "Notes", "Added At", "Rating"]
 INF_ASSIGN_TAB = "Assignments"
-INF_ASSIGN_HEADERS = ["Script #", "Influencer", "Campaign", "Status", "Assigned At", "Sent At", "Assigned By", "Done At", "Video ID", "Product Sent At"]
+INF_ASSIGN_HEADERS = ["Script #", "Influencer", "Campaign", "Status", "Assigned At", "Sent At", "Assigned By", "Done At", "Video ID", "Product Sent At", "Posted At"]
 INF_SHIP_TAB = "Product Shipments"
 INF_SHIP_HEADERS = ["Influencer", "Product", "Sent At"]
 PRODUCT_SEP = " + "  # a script that needs several products stores them as "Bra + Thong"
-INFLUENCER_STATUSES = ["Assigned", "Sent", "Done"]  # Done = the influencer has filmed it
+INFLUENCER_STATUSES = ["Assigned", "Sent", "Done", "Posted"]  # Done = filmed; Posted = it has gone live
 INFLUENCER_FIRST_NUMBER = 1001
 
 @st.cache_resource
@@ -372,11 +372,13 @@ def get_inf_people_ws():
 @_resilient_google_call
 def get_inf_assign_ws():
     ws = _influencer_tab(INF_ASSIGN_TAB, INF_ASSIGN_HEADERS)
-    # Older sheets have no "Product Sent At" column yet: add it (once per app start).
-    if len(ws.row_values(1)) < len(INF_ASSIGN_HEADERS):
+    # Older sheets lack the newest columns ("Product Sent At", "Posted At"): add them (once per app start).
+    have = len(ws.row_values(1))
+    if have < len(INF_ASSIGN_HEADERS):
         if ws.col_count < len(INF_ASSIGN_HEADERS):
             ws.add_cols(len(INF_ASSIGN_HEADERS) - ws.col_count)
-        ws.update_cell(1, len(INF_ASSIGN_HEADERS), INF_ASSIGN_HEADERS[-1])
+        for col in range(have + 1, len(INF_ASSIGN_HEADERS) + 1):
+            ws.update_cell(1, col, INF_ASSIGN_HEADERS[col - 1])
     return ws
 
 def split_products(s):
@@ -424,15 +426,16 @@ def load_inf_people():
 def load_inf_assignments():
     out = []
     for i, row in enumerate(get_inf_assign_ws().get_all_values()[1:], start=2):
-        row = _inf_pad(row, 10)
+        row = _inf_pad(row, 11)
         if not row[0].strip().isdigit() or not row[1].strip():
             continue
         st_ = row[3].strip()
         out.append({
             "row": i, "number": int(row[0]), "influencer": row[1].strip(), "campaign": row[2].strip(),
-            "status": "Done" if st_ == "Done" else "Sent" if st_ in ("Sent", "Used") else "Assigned",
+            "status": "Posted" if st_ == "Posted" else "Done" if st_ == "Done" else "Sent" if st_ in ("Sent", "Used") else "Assigned",
             "assigned_at": row[4].strip(), "sent_at": row[5].strip(), "assigned_by": row[6].strip(),
             "done_at": row[7].strip(), "video": row[8].strip(), "product_sent_at": row[9].strip(),
+            "posted_at": row[10].strip(),
         })
     return out
 
@@ -501,7 +504,7 @@ def assign_inf_script(number, names, campaign, by):
         if (number, n.lower()) in have:
             continue
         seq += 1
-        rows.append([number, n, campaign, "Assigned", now, "", by, "", f"{number}-{seq:02d}", ""])
+        rows.append([number, n, campaign, "Assigned", now, "", by, "", f"{number}-{seq:02d}", "", ""])
         added.append(n)
     if rows:
         get_inf_assign_ws().append_rows(rows)
@@ -513,22 +516,25 @@ def _inf_find(number, name):
                  if a["number"] == number and a["influencer"].lower() == name.lower()), None)
 
 def set_inf_status(number, name, status):
-    """Moves an assignment to Assigned, Sent or Done (filmed), keeping the dates that still apply."""
+    """Moves an assignment to Assigned, Sent, Done (filmed) or Posted (live), keeping the dates that still apply."""
     a = _inf_find(number, name)
     if not a:
         return False
     now = _inf_now()
-    sent_at, done_at = a["sent_at"], a["done_at"]
+    sent_at, done_at, posted_at = a["sent_at"], a["done_at"], a["posted_at"]
     if status == "Assigned":
-        sent_at = done_at = ""
+        sent_at = done_at = posted_at = ""
     elif status == "Sent":
-        sent_at, done_at = sent_at or now, ""
+        sent_at, done_at, posted_at = sent_at or now, "", ""
     elif status == "Done":
-        sent_at, done_at = sent_at or now, now
+        sent_at, done_at, posted_at = sent_at or now, now, ""
+    elif status == "Posted":
+        sent_at, done_at, posted_at = sent_at or now, done_at or now, now
     get_inf_assign_ws().batch_update([
         {"range": f"D{a['row']}", "values": [[status]]},
         {"range": f"F{a['row']}", "values": [[sent_at]]},
         {"range": f"H{a['row']}", "values": [[done_at]]},
+        {"range": f"K{a['row']}", "values": [[posted_at]]},
     ])
     load_inf_assignments.clear()
     return True
@@ -5436,7 +5442,7 @@ elif page == "🎬 Influencer Scripts":
     me = st.session_state.get("username", "")
     is_admin = st.session_state.role == "admin"
     product_options = [""] + inv_products
-    pill_class = {"Assigned": "rr-pill-gray", "Sent": "rr-pill-blue", "Done": "rr-pill-green"}
+    pill_class = {"Assigned": "rr-pill-gray", "Sent": "rr-pill-blue", "Done": "rr-pill-amber", "Posted": "rr-pill-green"}
 
     lib_by_num = {s["number"]: s for s in library}
     avatar_opts = sorted({s["avatar"] for s in library if s["avatar"]}, key=str.lower)
@@ -5593,10 +5599,10 @@ elif page == "🎬 Influencer Scripts":
     def _set_status(number, name, status):
         if set_inf_status(number, name, status):
             _toast(f"Script #{number} for {name}: " + {
-                "Sent": "marked as sent.", "Done": "marked as done.",
+                "Sent": "marked as sent.", "Done": "marked as done.", "Posted": "marked as posted.",
                 "Assigned": "set back to not sent."}[status])
 
-    _STATUS_LABELS = {"Assigned": "Not sent", "Sent": "Sent", "Done": "Done"}
+    _STATUS_LABELS = {"Assigned": "Not sent", "Sent": "Sent", "Done": "Done", "Posted": "Posted"}
     _STATUS_FROM_LABEL = {v: k for k, v in _STATUS_LABELS.items()}
 
     def _remember_person(name):
@@ -5625,12 +5631,12 @@ elif page == "🎬 Influencer Scripts":
                       on_change=_toggle_product, args=(name, prod, key))
 
     def _script_rows(rows, k, can_remove=False):
-        """A script per line: its number, what it is, where it's at (Not sent / Sent / Done), and the PDF."""
+        """A script per line: its number, what it is, where it's at (Not sent / Sent / Done / Posted), and the PDF."""
         for r in rows:
-            c = st.columns([0.9, 3.2, 2.6, 0.9, 0.5] if can_remove else [0.9, 3.2, 2.6, 0.9], vertical_alignment="center")
+            c = st.columns([0.9, 3.0, 3.6, 0.9, 0.5] if can_remove else [0.9, 3.0, 3.6, 0.9], vertical_alignment="center")
             c[0].markdown(f"**{_vid(r)}**")
             c[1].write(_what(r))
-            when = r["done_at"] if r["status"] == "Done" else r["sent_at"] if r["status"] == "Sent" else ""
+            when = {"Posted": r["posted_at"], "Done": r["done_at"], "Sent": r["sent_at"]}.get(r["status"], "")
             if when:
                 c[1].caption(f"{r['status']} {when[:10]}")
             key = f"{k}_s{r['row']}_{r['status']}"
@@ -5858,13 +5864,15 @@ elif page == "🎬 Influencer Scripts":
             shown_people = sorted(people, key=lambda p: p["name"].lower())
             if sort_by == "Best rated":
                 shown_people = sorted(people, key=lambda p: (-p["rating"], p["name"].lower()))
-            st.caption("Click a name to see the products sent to her, the scripts she has to do and the ones she's done.")
+            st.caption("Click a name to see the products sent to her, the scripts she has to do, the ones she's filmed and the ones she's posted.")
 
             for p in shown_people:
                 mine = recs_by_person.get(p["name"].lower(), [])
-                todo_p = [r for r in reversed(mine) if r["status"] != "Done"]
+                todo_p = [r for r in reversed(mine) if r["status"] in ("Assigned", "Sent")]
                 done_p = [r for r in reversed(mine) if r["status"] == "Done"]
-                label = f"{p['name']}   {'★' * p['rating']}   ·   {len(todo_p)} to do   ·   {len(done_p)} done"
+                posted_p = [r for r in reversed(mine) if r["status"] == "Posted"]
+                label = (f"{p['name']}   {'★' * p['rating']}   ·   {len(todo_p)} to do   ·   "
+                         f"{len(done_p)} to post   ·   {len(posted_p)} posted")
                 with st.expander(label, key=f"inf_pe_{p['row']}",
                                  expanded=st.session_state.get("inf_open_person") == p["name"]):
                     k = f"ip{p['row']}"
@@ -5882,11 +5890,17 @@ elif page == "🎬 Influencer Scripts":
                     else:
                         st.caption("Nothing waiting.")
 
-                    st.markdown(f"**Scripts done ({len(done_p)})**")
+                    st.markdown(f"**Done — not posted yet ({len(done_p)})**")
                     if done_p:
                         _script_rows(done_p, k, can_remove=is_admin)
                     else:
-                        st.caption("None finished yet.")
+                        st.caption("Nothing waiting to be posted.")
+
+                    st.markdown(f"**Posted ({len(posted_p)})**")
+                    if posted_p:
+                        _script_rows(posted_p, k, can_remove=is_admin)
+                    else:
+                        st.caption("None posted yet.")
 
                     held = {r["number"] for r in mine}
                     open_scripts = [s["number"] for s in reversed(library) if s["number"] not in held]
@@ -5927,16 +5941,19 @@ elif page == "🎬 Influencer Scripts":
         shown = [r for r in reversed(records)
                  if (script_f is None or r["number"] == script_f) and (q == "All" or r["influencer"] == q)
                  and (not video_f or _vid(r) == video_f)]
-        todo = [r for r in shown if r["status"] != "Done"]
+        todo = [r for r in shown if r["status"] in ("Assigned", "Sent")]
         done = [r for r in shown if r["status"] == "Done"]
-        _stages = {"In progress": f"To do ({len(todo)})", "Done": f"Done ({len(done)})"}
+        posted = [r for r in shown if r["status"] == "Posted"]
+        _stages = {"In progress": f"To do ({len(todo)})", "Done": f"Done · not posted ({len(done)})",
+                   "Posted": f"Posted ({len(posted)})"}
         stage = st.segmented_control("Stage", list(_stages), default="In progress", required=True,
                                      key="inf_t_view", format_func=_stages.get, label_visibility="collapsed")
         pstat = inf_product_status(records, load_inf_shipments())
 
-        rows = todo if stage == "In progress" else done
+        rows = {"In progress": todo, "Done": done, "Posted": posted}[stage]
         if not rows:
-            st.info("Nothing to do here." if stage == "In progress" else "Nothing is done yet.")
+            st.info({"In progress": "Nothing to do here.", "Done": "Nothing is waiting to be posted.",
+                     "Posted": "Nothing is posted yet."}[stage])
         groups = {}
         for r in rows:
             groups.setdefault(r["influencer"], []).append(r)

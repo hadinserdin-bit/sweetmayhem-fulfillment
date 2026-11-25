@@ -1277,6 +1277,14 @@ def update_co_order(row, **fields):
     patches = st.session_state.setdefault("co_local_patches", {})
     patches.setdefault(row, {}).update(fields)
 
+def co_no_reply(row, stage):
+    """No answer at this step: on to the next one, or lost after the last."""
+    idx = CO_STAGE_ORDER.index(stage)
+    if idx < len(CO_STAGE_ORDER) - 1:
+        update_co_order(row, stage=CO_STAGE_ORDER[idx + 1])
+    else:
+        update_co_order(row, outcome="lost")
+
 def update_co_orders_stage(rows, stage):
     """Moves several orders to the same follow-up stage in ONE sheet write."""
     if not rows:
@@ -4927,9 +4935,15 @@ elif page == "🚫 Cancelled Orders":
         return o["outcome"] if o["outcome"] in ("recovered", "lost") else o["stage"]
     co_view_names = {"wa1": "1st WhatsApp", "call": "Call", "coupon": "Coupon", "recovered": "Recovered", "lost": "Lost"}
     co_view_counts = {v: sum(1 for o in co_filtered if _co_view_of(o) == v) for v in co_view_names}
+    # The counts are part of each tab's label, so when an order moves Streamlit sees a "new" radio
+    # and resets it to the first tab — remember the pick ourselves and put it back every run.
+    if st.session_state.get("co_view_keep") not in co_view_names:
+        st.session_state["co_view_keep"] = "wa1"
+    st.session_state["co_view"] = st.session_state["co_view_keep"]
     co_view = st.radio(
         "Step", list(co_view_names), horizontal=True, label_visibility="collapsed", key="co_view",
         format_func=lambda v: f"{co_view_names[v]} ({co_view_counts[v]})",
+        on_change=lambda: st.session_state.__setitem__("co_view_keep", st.session_state["co_view"]),
     )
     co_shown = [o for o in co_filtered if _co_view_of(o) == co_view]
 
@@ -4969,12 +4983,11 @@ elif page == "🚫 Cancelled Orders":
                 f"I've {'sent the WhatsApp to' if co_view == 'wa1' else 'called'} all {len(co_shown)} below and none replied",
                 key=f"co_bulk_ok_{co_view}_{len(co_shown)}",
             )
-            if bk2.button(
+            bk2.button(
                 f"Move all {len(co_shown)} to {co_view_names[co_next_stage]}", icon=":material/fast_forward:",
                 key=f"co_bulk_btn_{co_view}", disabled=not co_bulk_ok, use_container_width=True,
-            ):
-                update_co_orders_stage([o["row"] for o in co_shown], co_next_stage)
-                st.rerun()
+                on_click=update_co_orders_stage, args=([o["row"] for o in co_shown], co_next_stage),
+            )
         for o in co_shown:
             with st.container(border=True, key=f"co_card_{o['row']}"):
                 cc1, cc2, cc3 = st.columns([1.6, 2.6, 1.4])
@@ -5008,9 +5021,8 @@ elif page == "🚫 Cancelled Orders":
 
                 st.markdown("")
                 if o["outcome"]:
-                    if st.button("Reopen", key=f"co_reopen_{o['row']}"):
-                        update_co_order(o["row"], outcome="")
-                        st.rerun()
+                    st.button("Reopen", key=f"co_reopen_{o['row']}", on_click=update_co_order,
+                              args=(o["row"],), kwargs={"outcome": ""})
                 else:
                     co_stage = o["stage"]
                     ac1, ac2, ac3 = st.columns([2.0, 1.3, 1.3])
@@ -5029,22 +5041,15 @@ elif page == "🚫 Cancelled Orders":
                         else:
                             st.caption("No phone")
                     with ac2:
-                        if st.button("Recovered", key=f"co_yes_{o['row']}", use_container_width=True):
-                            update_co_order(o["row"], outcome="recovered")
-                            st.rerun()
+                        st.button("Recovered", key=f"co_yes_{o['row']}", use_container_width=True,
+                                  on_click=update_co_order, args=(o["row"],), kwargs={"outcome": "recovered"})
                     with ac3:
-                        if st.button(
+                        st.button(
                             "No reply" if co_stage != CO_STAGE_ORDER[-1] else "Lost", key=f"co_no_{o['row']}",
-                            use_container_width=True,
+                            use_container_width=True, on_click=co_no_reply, args=(o["row"], co_stage),
                             help="Didn't answer — move to the next step" if co_stage != CO_STAGE_ORDER[-1]
                             else "Didn't answer the coupon either — mark as lost",
-                        ):
-                            co_idx = CO_STAGE_ORDER.index(co_stage)
-                            if co_idx < len(CO_STAGE_ORDER) - 1:
-                                update_co_order(o["row"], stage=CO_STAGE_ORDER[co_idx + 1])
-                            else:
-                                update_co_order(o["row"], outcome="lost")
-                            st.rerun()
+                        )
                 co_notes = st.text_input(
                     "Notes", value=o["notes"], key=f"co_notes_{o['row']}",
                     label_visibility="collapsed", placeholder="Call notes…",

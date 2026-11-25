@@ -1179,6 +1179,35 @@ def shopify_mark_order_paid(order_gid):
     if errs:
         raise Exception("; ".join(e["message"] for e in errs))
 
+def rr_export_uploader(label, key, source, label_visibility="visible"):
+    """The Roadrunner export is uploaded once per session and shared by Cancelled Orders and
+    Mark Paid. Returns a fresh file-like (name, size) of the saved file, or None until one is
+    uploaded. 'source' records which page it came from."""
+    saved = st.session_state.get("rr_export")
+    gen = st.session_state.get("rr_export_gen", 0)
+    if saved:
+        c1, c2 = st.columns([5, 1.6], vertical_alignment="center")
+        c1.markdown(
+            f"Using **{saved['name']}** · uploaded {saved['at']} — shared with Cancelled Orders and Mark Paid, "
+            "so you only upload it once."
+        )
+        if c2.button("Replace file", key=f"{key}_replace_{gen}", icon=":material/swap_horiz:", use_container_width=True):
+            st.session_state.pop("rr_export", None)
+            st.session_state["rr_export_gen"] = gen + 1   # a new uploader key, so the old file isn't re-picked up
+            st.rerun()
+        f = io.BytesIO(saved["bytes"])
+        f.name, f.size = saved["name"], saved["size"]
+        return f
+    up = st.file_uploader(label, type=["xlsx", "xls", "csv"], key=f"{key}_up_{gen}", label_visibility=label_visibility)
+    if up is None:
+        return None
+    data = up.getvalue()
+    st.session_state["rr_export"] = {
+        "name": up.name, "size": len(data), "bytes": data, "source": source,
+        "at": datetime.now().strftime("%H:%M"),
+    }
+    st.rerun()
+
 def rr_date_range(delivered_records):
     """(first, last) delivery date of the given orders as date objects, or
     (None, None). Uses Deliver Date, falling back to Creation Date."""
@@ -4821,12 +4850,18 @@ elif page == "🚫 Cancelled Orders":
     if is_admin:
         with st.expander("Upload today's Roadrunner export", icon=":material/upload:"):
             st.caption('.xlsx or .csv — the "Orders" export from the dashboard. Already-tracked orders are skipped automatically.')
-            co_file = st.file_uploader("Roadrunner export", type=["xlsx", "xls", "csv"], label_visibility="collapsed")
+            co_file = rr_export_uploader("Roadrunner export", "co", "cancelled", label_visibility="collapsed")
             # The uploaded file stays in the widget's state across the rerun
             # triggered below, so without this guard the same file would be
             # re-parsed and re-added in an infinite loop.
             co_file_id = f"{co_file.name}:{co_file.size}" if co_file is not None else None
-            if co_file is not None and co_file_id != st.session_state.get("co_last_uploaded_file_id"):
+            co_pending = co_file is not None and co_file_id != st.session_state.get("co_last_uploaded_file_id")
+            # A file uploaded here is imported straight away, as before. One uploaded on Mark Paid waits for a
+            # click, so just visiting this page never adds orders by itself.
+            if co_pending and st.session_state["rr_export"]["source"] != "cancelled":
+                co_pending = st.button("Add the cancelled orders from this file", type="primary",
+                                       icon=":material/playlist_add:", key="co_import_shared")
+            if co_pending:
                 try:
                     with st.spinner("Parsing…"):
                         co_records, co_total_rows, co_skipped = parse_roadrunner_export(co_file)
@@ -5219,7 +5254,7 @@ elif page == "✅ Mark Paid":
             icon=":material/history:",
         )
 
-    mp_file = st.file_uploader("Roadrunner all-orders export (.xlsx or .csv)", type=["xlsx", "csv"], key="mp_file")
+    mp_file = rr_export_uploader("Roadrunner all-orders export (.xlsx or .csv)", "mp", "markpaid")
     if mp_file is None:
         for k in ("mp_check", "mp_results", "mp_out"):
             st.session_state.pop(k, None)
@@ -5295,12 +5330,12 @@ elif page == "✅ Mark Paid":
         rows, seen = [], set()
         bar = st.progress(0.0, text="Checking Shopify…")
         for i, r in enumerate(eligible):
-            m = re.search(r"(\d+)\s*$", r["reference_id"])
+            m = re.fullmatch(r"[A-Za-z]+(\d{4})", r["reference_id"].strip())
             row = {"reference": r["reference_id"], "customer": r["customer"], "rr_total": r["total_usd"],
                    "name": "", "gid": "", "shop_total": None, "shop_status": "", "verdict": "", "ready": False}
             try:
                 if not m:
-                    row["verdict"] = "No order number in Reference ID"
+                    row["verdict"] = f"Reference isn't an order number like MHM9050 ({r['reference_id'] or 'blank'})"
                 else:
                     row["name"] = "#1" + m.group(1)
                     if row["name"] in seen:

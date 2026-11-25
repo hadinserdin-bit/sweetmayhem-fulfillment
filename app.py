@@ -1277,6 +1277,17 @@ def update_co_order(row, **fields):
     patches = st.session_state.setdefault("co_local_patches", {})
     patches.setdefault(row, {}).update(fields)
 
+def update_co_orders_stage(rows, stage):
+    """Moves several orders to the same follow-up stage in ONE sheet write."""
+    if not rows:
+        return
+    get_co_ws().batch_update([
+        {"range": gspread.utils.rowcol_to_a1(r, 13), "values": [[stage]]} for r in rows
+    ])
+    patches = st.session_state.setdefault("co_local_patches", {})
+    for r in rows:
+        patches.setdefault(r, {}).update(stage=stage)
+
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
 def _autofill_fix_script():
@@ -4909,6 +4920,19 @@ elif page == "🚫 Cancelled Orders":
         co_filtered = [o for o in co_filtered if o["assigned_to"] == co_active_tab]
     co_filtered.sort(key=lambda o: o["creation_date"], reverse=True)
 
+    # One tab per step, so support works a step at a time instead of scanning
+    # one long list: every order sits in exactly one tab, and acting on it
+    # moves it to the next, so each tab doubles as a to-do list.
+    def _co_view_of(o):
+        return o["outcome"] if o["outcome"] in ("recovered", "lost") else o["stage"]
+    co_view_names = {"wa1": "1st WhatsApp", "call": "Call", "coupon": "Coupon", "recovered": "Recovered", "lost": "Lost"}
+    co_view_counts = {v: sum(1 for o in co_filtered if _co_view_of(o) == v) for v in co_view_names}
+    co_view = st.radio(
+        "Step", list(co_view_names), horizontal=True, label_visibility="collapsed", key="co_view",
+        format_func=lambda v: f"{co_view_names[v]} ({co_view_counts[v]})",
+    )
+    co_shown = [o for o in co_filtered if _co_view_of(o) == co_view]
+
     if co_filtered:
         co_tsv = ["Order ID\tCustomer\tPhone\tAmount USD\tPayment\tCreated\tAddress\tItems\tFollow-up\tCoupon\tNotes"]
         for o in co_filtered:
@@ -4930,8 +4954,28 @@ elif page == "🚫 Cancelled Orders":
             if is_admin else
             "No cancellations tracked yet — ask an admin to upload today's export."
         )
+    elif not co_shown:
+        st.info({
+            "wa1": "No one is waiting for a first WhatsApp.", "call": "No one is waiting for a call.",
+            "coupon": "No one is waiting for a coupon message.", "recovered": "Nothing recovered yet.",
+            "lost": "Nothing lost.",
+        }[co_view])
     else:
-        for o in co_filtered:
+        # After a batch of messages/calls, move them all on with one click instead of one per order.
+        if co_view in ("wa1", "call") and len(co_shown) > 1:
+            co_next_stage = CO_STAGE_ORDER[CO_STAGE_ORDER.index(co_view) + 1]
+            bk1, bk2 = st.columns([3, 2], vertical_alignment="center")
+            co_bulk_ok = bk1.checkbox(
+                f"I've {'sent the WhatsApp to' if co_view == 'wa1' else 'called'} all {len(co_shown)} below and none replied",
+                key=f"co_bulk_ok_{co_view}_{len(co_shown)}",
+            )
+            if bk2.button(
+                f"Move all {len(co_shown)} to {co_view_names[co_next_stage]}", icon=":material/fast_forward:",
+                key=f"co_bulk_btn_{co_view}", disabled=not co_bulk_ok, use_container_width=True,
+            ):
+                update_co_orders_stage([o["row"] for o in co_shown], co_next_stage)
+                st.rerun()
+        for o in co_shown:
             with st.container(border=True, key=f"co_card_{o['row']}"):
                 cc1, cc2, cc3 = st.columns([1.6, 2.6, 1.4])
                 with cc1:
@@ -4969,7 +5013,7 @@ elif page == "🚫 Cancelled Orders":
                         st.rerun()
                 else:
                     co_stage = o["stage"]
-                    ac1, ac2, ac3 = st.columns([2.2, 1.3, 1])
+                    ac1, ac2, ac3 = st.columns([2.0, 1.3, 1.3])
                     with ac1:
                         if o["phone"]:
                             if co_stage == "wa1":
@@ -4989,7 +5033,12 @@ elif page == "🚫 Cancelled Orders":
                             update_co_order(o["row"], outcome="recovered")
                             st.rerun()
                     with ac3:
-                        if st.button("No", key=f"co_no_{o['row']}", use_container_width=True):
+                        if st.button(
+                            "No reply" if co_stage != CO_STAGE_ORDER[-1] else "Lost", key=f"co_no_{o['row']}",
+                            use_container_width=True,
+                            help="Didn't answer — move to the next step" if co_stage != CO_STAGE_ORDER[-1]
+                            else "Didn't answer the coupon either — mark as lost",
+                        ):
                             co_idx = CO_STAGE_ORDER.index(co_stage)
                             if co_idx < len(CO_STAGE_ORDER) - 1:
                                 update_co_order(o["row"], stage=CO_STAGE_ORDER[co_idx + 1])
